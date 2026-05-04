@@ -16,8 +16,10 @@ export const settlementsTable = pgTable("settlements", {
   bankName: text("bank_name").notNull(),
   eligibleBags: integer("eligible_bags").notNull(),
   bagIds: text("bag_ids").notNull().default("[]"),
+  // Waterfall fields
   grossGmv: numeric("gross_gmv", { precision: 14, scale: 2 }).notNull(),
   brandPromotions: numeric("brand_promotions", { precision: 14, scale: 2 }).notNull().default("0"),
+  marketplacePromotions: numeric("marketplace_promotions", { precision: 14, scale: 2 }).notNull().default("0"),
   netBeforeCommission: numeric("net_before_commission", { precision: 14, scale: 2 }).notNull(),
   commission: numeric("commission", { precision: 14, scale: 2 }).notNull(),
   commissionRate: numeric("commission_rate", { precision: 5, scale: 2 }).notNull(),
@@ -27,6 +29,7 @@ export const settlementsTable = pgTable("settlements", {
   mdrCharges: numeric("mdr_charges", { precision: 14, scale: 2 }).notNull().default("0"),
   penalty: numeric("penalty", { precision: 14, scale: 2 }).notNull().default("0"),
   netPayable: numeric("net_payable", { precision: 14, scale: 2 }).notNull(),
+  // Approval workflow
   status: settlementStatusEnum("status").notNull().default("COMPUTED"),
   financeNotes: text("finance_notes"),
   approvedBy: text("approved_by"),

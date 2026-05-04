@@ -28,21 +28,26 @@ A full-stack, deployable React web application for a finance team to manage a 6-
 
 ## Settlement Module — 6 Phases
 
-1. **Brand Onboarding** — Maker creates draft (company, brand, warehouse, commercial terms), submits for Checker review
-2. **Checker Approval** — Queue of pending submissions; Checker approves/rejects with notes
+1. **Brand Onboarding** — Maker creates draft (company, brand, warehouse, commercial terms), KYB verified, documents uploaded, submits for Checker review
+2. **Checker Approval** — Queue of pending submissions; Checker approves/rejects with notes; Fynd sync triggered on approval
 3. **Fynd Sync** — After approval, brand is synced to Fynd platform (Company Code, Brand ID, Location ID)
 4. **Order Tracking** — Bag register with OMS state, return window eligibility, TCS/TDS accrual per bag
-5. **Settlement Computation** — Deduction waterfall: GMV → promotions → commission → GST on commission → TCS → TDS → MDR → penalty → net payable
+5. **Settlement Computation** — Deduction waterfall: GMV → brand promotions (not marketplace) → commission → GST on commission → TCS → TDS → MDR → penalty → net payable
 6. **Payout with UTR** — NEFT/RTGS payout initiation and UTR bank acknowledgment recording
 
 ## Database Schema
 
 Tables:
 - `onboardings` — Brand onboarding submissions (status: DRAFT → SUBMITTED → APPROVED/REJECTED → ACTIVE)
+  - Fields: registeredAddress, brandLegalName, stateCode, tcsApplicable (BRD §2)
+  - Document URLs: panDocUrl, gstCertUrl, cinDocUrl, cancelledChequeUrl, signedAgreementUrl, digitalSignatureUrl (BRD §3.1)
+  - KYB tracking: kybStatus, kybVerifiedAt, kybAttempts (BRD §3.2)
+- `commission_master` — Versioned commission rate history per onboarding (BRD §3.4)
+  - Fields: commissionType (FLAT_PERCENT/TIERED), commissionPercent, effectiveFromDate, effectiveToDate, isCurrent
 - `bags` — OMS bag register with eligibility (eligible/in_window/on_hold/settled/awaiting_delivery)
-- `tcs_records` — TCS accruals by state GSTIN per month
-- `tds_records` — TDS deductions by company TAN per month
-- `settlements` — Settlement computation runs with deduction waterfall
+- `tcs_records` — TCS accruals by state GSTIN per month; supports reversal entries (isReversal, reversalReason, originalBagId)
+- `tds_records` — TDS deductions by company TAN per month; supports reversal entries
+- `settlements` — Settlement computation runs with deduction waterfall; includes brandPromotions + marketplacePromotions (BRD §7)
 - `payouts` — Payout records with UTR confirmation
 - `activity` — Audit activity log
 
@@ -53,42 +58,62 @@ All routes under `/api/`:
 - `GET /dashboard/summary` — Cycle KPIs (GMV, net payable, TCS, TDS, pending approvals)
 - `GET /dashboard/brand-settlements` — Brand settlement status table
 - `GET /activity` — Recent activity log
-- `GET/POST /onboardings` — List & create onboardings
-- `GET/PUT /onboardings/:id` — Get & update onboarding
-- `POST /onboardings/:id/submit` — Maker submits for Checker
-- `POST /onboardings/:id/approve` — Checker approves
-- `POST /onboardings/:id/reject` — Checker rejects
+- `GET/POST /onboardings` — List & create onboardings (auto-creates initial commission_master record)
+- `GET/PUT /onboardings/:id` — Get & update onboarding (PUT recalculates docsUploaded count)
+- `POST /onboardings/:id/kyb-check` — Simulate KYB API (validates PAN format regex, 600ms delay); blocks submit if failed
+- `POST /onboardings/:id/submit` — Maker submits (blocked if kybStatus !== PASSED)
+- `POST /onboardings/:id/approve` — Checker approves (triggers Fynd sync, updates commission_master checker field)
+- `POST /onboardings/:id/reject` — Checker rejects with reason
+- `GET /commission-master/:onboardingId` — List all versioned commission rates
+- `POST /commission-master/:onboardingId` — Add new version (archives current, sets effectiveToDate)
 - `GET /orders` — Bag register with filters
 - `GET /orders/:id` — Bag detail with OMS timeline
-- `GET /compliance/tcs-tds` — TCS/TDS summary by month/year
-- `GET /compliance/tcs-records` — State-wise TCS register
-- `GET /compliance/tds-records` — Company TDS register
-- `GET /compliance/calendar` — Compliance due dates
-- `GET/POST /settlements` — Settlement list & compute new run
+- `GET /compliance/tcs-tds` — TCS/TDS summary (gross, reversals, net) by month/year
+- `GET /compliance/tcs-records` — State-wise TCS register (includes reversal entries)
+- `GET /compliance/tds-records` — Company TDS register (includes reversal entries)
+- `POST /compliance/reversal` — Log TCS/TDS reversal for a bag (BRD §5.4); inserts negative entries, marks bag on_hold
+- `GET /compliance/calendar` — 13 compliance due dates incl. Form 27EQ, 26Q, 16A
+- `GET/POST /settlements` — Settlement list & compute new run (brand vs marketplace promotions tracked separately)
 - `GET /settlements/:id` — Settlement with waterfall detail
-- `POST /settlements/:id/approve` — Finance sign-off (triggers payout creation)
+- `GET /settlements/:id/soc` — Download SoC as CSV (27 BRD fields per bag: Order ID, ESP, discounts, commission, TCS, TDS, UTR...)
+- `POST /settlements/:id/approve` — Checker finance sign-off (triggers payout creation)
 - `GET /payouts` — Payout list
 - `POST /payouts/:id/record-utr` — Record UTR and mark settled
 
 ## Frontend Pages
 
 - `/` — Dashboard (KPI cards, brand settlement table, activity feed)
-- `/onboarding` — Onboarding list with search/filter
-- `/onboarding/new` — Multi-step onboarding wizard
-- `/onboarding/:id` — Onboarding detail + Checker panel
+- `/onboarding` — Onboarding list with KYB status column and docs count
+- `/onboarding/new` — Full onboarding form (company, brand, banking, SPOC, warehouse, commercial terms)
+- `/onboarding/:id` — Onboarding detail with:
+  - KYB phase gate panel (Run KYB Check button → shows PASSED/FAILED)
+  - Document checklist (6 docs with simulated upload; blocked until KYB passes)
+  - Commission Master versioning panel (view history, add new version)
+  - Fynd Sync IDs (post-approval)
+  - Role-gated actions: Maker sees Submit, Checker sees Approve/Reject
 - `/orders` — Bag register (TCS/TDS per bag, eligibility, return window)
-- `/compliance` — TCS/TDS register (state-wise), TDS register (company-wise), compliance calendar
+- `/compliance` — TCS/TDS registers with reversal entry rows (amber highlighted), net after reversals in summary cards, Log Reversal button, 13-entry compliance calendar
 - `/settlements` — Settlement list with status filter
-- `/settlements/:id` — Settlement detail with deduction waterfall
+- `/settlements/:id` — Settlement detail with:
+  - BRD §7 deduction waterfall (numbered steps 1–10, brand vs marketplace promotions split)
+  - Download SoC CSV button (27-field per-bag report)
+  - Finance approval dialog with notes (Checker only)
 - `/payouts` — Payout management + UTR recording modal
+
+## Role Simulation (BRD §3.1 Maker-Checker)
+
+`RoleContext` (`artifacts/swasthera/src/contexts/RoleContext.tsx`) stores role in localStorage.
+Role switcher (Maker / Checker toggle) in the sidebar footer — active role label shown.
+- **Maker**: can create drafts, run KYB, upload documents, submit for review
+- **Checker**: can approve or reject submitted onboardings, approve settlements
 
 ## Seed Data (MAY-2026-C1 cycle)
 
-Active brands: Zara India, H&M India, Fabindia
-- 15 bags seeded across the cycle
-- 3 settlements (1 APPROVED/PAID, 1 PENDING_APPROVAL, 1 COMPUTED)
+Active brands: Zara India, H&M India, Fabindia + 2 new onboardings (Manyavar, Biba)
+- 30 bags seeded across the cycle
+- 3 settlements (1 APPROVED, 1 PENDING_APPROVAL, 1 COMPUTED)
 - 1 completed payout with UTR for Zara India
-- TCS/TDS records for May 2026 and April 2026
+- TCS/TDS records for May 2026 (3 entries each) and April 2026
 
 ## Codegen
 
@@ -99,13 +124,17 @@ pnpm --filter @workspace/api-spec run codegen
 echo 'export * from "./generated/api";' > lib/api-zod/src/index.ts
 ```
 
-Note: The `lib/api-zod/src/index.ts` gets overwritten by codegen with stale references — it must be fixed to only export from `./generated/api` after each codegen run.
+Note: New endpoints (KYB check, commission-master, SoC download, compliance reversal) use direct `fetch` in the frontend rather than generated hooks, since codegen requires OpenAPI spec updates.
 
 ## Key Business Rules
 
 - TCS rate: 1% of taxable supply (collected at source by marketplace operator per Section 52 GST)
 - TDS rate: 1% of gross payment (deducted at source per Section 194-O IT Act)
 - Commission is charged as a % of GMV; GST at 18% is applied on commission
+- Marketplace-funded promotions are NOT deducted from brand payout (BRD §7 note)
+- Brand-funded promotions ARE deducted from brand payout
 - Return window: typically 14–21 days post-delivery; bags in window are "in_window" (not eligible yet)
+- KYB must pass (PAN format validation) before Maker can submit for Checker review
 - GSTR-8 filing deadline: 10th of following month
 - TCS/TDS deposit deadline: 7th of following month
+- Commission versioning: each new rate archives the previous (effectiveToDate set); orders settled at rate effective on order date

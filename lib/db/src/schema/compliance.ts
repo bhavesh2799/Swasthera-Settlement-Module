@@ -1,4 +1,4 @@
-import { pgTable, serial, text, integer, numeric, pgEnum } from "drizzle-orm/pg-core";
+import { pgTable, serial, text, integer, numeric, boolean, pgEnum } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -18,6 +18,10 @@ export const tcsRecordsTable = pgTable("tcs_records", {
   tcsAmount: numeric("tcs_amount", { precision: 14, scale: 2 }).notNull(),
   status: tcsStatusEnum("status").notNull().default("Accrued"),
   paymentDueDate: text("payment_due_date").notNull(),
+  // Reversal tracking (BRD §5.4)
+  isReversal: boolean("is_reversal").notNull().default(false),
+  reversalReason: text("reversal_reason"),
+  originalBagId: text("original_bag_id"),
 });
 
 export const tdsRecordsTable = pgTable("tds_records", {
@@ -31,6 +35,10 @@ export const tdsRecordsTable = pgTable("tds_records", {
   tdsAmount: numeric("tds_amount", { precision: 14, scale: 2 }).notNull(),
   netPaid: numeric("net_paid", { precision: 14, scale: 2 }).notNull(),
   status: tdsStatusEnum("status").notNull().default("Pending"),
+  // Reversal tracking (BRD §5.4)
+  isReversal: boolean("is_reversal").notNull().default(false),
+  reversalReason: text("reversal_reason"),
+  originalBagId: text("original_bag_id"),
 });
 
 export const insertTcsRecordSchema = createInsertSchema(tcsRecordsTable).omit({ id: true });

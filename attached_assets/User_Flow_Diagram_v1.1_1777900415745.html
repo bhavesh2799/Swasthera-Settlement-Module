@@ -1,0 +1,934 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Swasthera · User Flow Diagram v1.1</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=JetBrains+Mono:wght@400;500;600&family=Inter+Tight:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#fafaf7; --bg-elev:#ffffff; --bg-elev2:#f5f5f0; --bg-elev3:#eeeee8;
+  --line:#e4e4dc; --line-strong:#cfcfc4;
+  --text:#1a1a1a; --text-mute:#6b6b6b; --text-dim:#9a9a92;
+  --purple:#7c3aed; --coral:#dc2626; --amber:#b45309;
+  --green:#15803d; --blue:#1d4ed8; --teal:#0f766e; --red:#b91c1c; --pink:#be185d;
+  --font-d:'Fraunces',serif;
+  --font-b:'Inter Tight',system-ui,sans-serif;
+  --font-m:'JetBrains Mono',monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:var(--font-b);font-size:13px;line-height:1.5;letter-spacing:-.005em}
+
+.page{padding:48px 40px 80px;min-width:2400px}
+
+/* HEADER */
+.hdr{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:1px solid var(--line);padding-bottom:24px;margin-bottom:36px;max-width:2400px}
+.hdr .crumb{font-family:var(--font-m);font-size:11px;color:var(--text-mute);letter-spacing:.12em;text-transform:uppercase;margin-bottom:14px}
+.hdr h1{font-family:var(--font-d);font-weight:400;font-size:48px;line-height:1;letter-spacing:-.025em;margin:0}
+.hdr h1 em{font-style:italic;color:var(--amber);font-weight:400}
+.hdr .lede{font-family:var(--font-d);font-style:italic;font-size:15px;color:var(--text-mute);max-width:520px;margin-top:10px}
+.hdr .meta{display:flex;gap:24px;align-items:flex-end}
+.hdr .mc{text-align:right}
+.hdr .mc .k{font-family:var(--font-m);font-size:9px;color:var(--text-dim);letter-spacing:.1em;text-transform:uppercase}
+.hdr .mc .v{font-family:var(--font-m);font-size:12px;color:var(--text);margin-top:3px}
+
+/* LEGEND */
+.legend{display:flex;flex-wrap:wrap;gap:18px;padding:14px 18px;background:var(--bg-elev);border:1px solid var(--line);border-radius:8px;margin-bottom:30px;max-width:2400px}
+.legend .item{display:inline-flex;align-items:center;gap:8px;font-family:var(--font-m);font-size:11px;color:var(--text-mute);letter-spacing:.04em}
+.legend .shape{display:inline-block}
+.shape-rect{width:22px;height:14px;background:var(--bg-elev2);border:1px solid var(--line-strong);border-radius:3px}
+.shape-rect.start{border-color:var(--green);background:rgba(74,222,128,.1)}
+.shape-rect.end{border-color:var(--blue);background:rgba(96,165,250,.1)}
+.shape-rect.proc{border-color:var(--text-dim)}
+.shape-rect.lock-shape{border-color:var(--amber);background:rgba(180,83,9,.08)}
+.shape-rect.exclude-shape{border-color:var(--coral);background:rgba(220,38,38,.08)}
+.shape-diamond{width:14px;height:14px;background:rgba(251,191,36,.1);border:1px solid var(--amber);transform:rotate(45deg);border-radius:2px}
+.shape-pill{width:22px;height:14px;background:var(--bg-elev2);border:1px solid var(--coral);border-radius:7px}
+.shape-doc{width:22px;height:14px;background:rgba(45,212,191,.06);border:1px solid var(--teal);border-radius:3px;border-bottom-right-radius:7px;border-top-right-radius:0}
+
+/* CANVAS */
+.canvas{position:relative;background:
+  linear-gradient(#ececdf 1px, transparent 1px),
+  linear-gradient(90deg, #ececdf 1px, transparent 1px);
+  background-size:40px 40px;
+  background-color:#fdfdfa;
+  border:1px solid var(--line);border-radius:12px;
+  padding:0;
+}
+
+/* SWIMLANES — wrapper */
+.swimlanes{position:relative}
+.lane{display:grid;grid-template-columns:200px 1fr;border-bottom:1px solid var(--line);min-height:280px;position:relative}
+.lane:last-child{border-bottom:0}
+.lane-label{padding:20px 18px;border-right:1px solid var(--line);background:var(--bg-elev);display:flex;flex-direction:column;justify-content:flex-start;gap:6px;position:sticky;left:0;z-index:5}
+.lane-label .ln{font-family:var(--font-d);font-size:22px;font-weight:500;color:var(--text);letter-spacing:-.01em}
+.lane-label .lr{font-family:var(--font-m);font-size:10px;color:var(--text-mute);letter-spacing:.06em;text-transform:uppercase}
+.lane-label .lhint{font-size:11px;color:var(--text-dim);margin-top:8px;line-height:1.4}
+.lane-label::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--lane-c)}
+.lane-body{position:relative;padding:28px 24px 32px;overflow:visible;min-height:280px}
+
+/* per-lane heights (v1.1 — accommodate added rework/reject/fail nodes) */
+.lane-maker{min-height:580px}
+.lane-maker .lane-body{min-height:580px}
+.lane-checker{min-height:600px}
+.lane-checker .lane-body{min-height:600px}
+.lane-system{min-height:var(--lane-system-h,460px)}
+.lane-system .lane-body{min-height:var(--lane-system-h,460px)}
+.lane-finance{min-height:520px}
+.lane-finance .lane-body{min-height:520px}
+.lane-brand{min-height:160px}
+.lane-brand .lane-body{min-height:160px}
+
+/* PHASE COLUMN HEADERS — top strip */
+.phase-strip{display:grid;grid-template-columns:200px repeat(6, 1fr);border-bottom:2px solid var(--line-strong);background:var(--bg-elev2);position:sticky;top:0;z-index:10}
+.phase-strip .ps-spacer{padding:14px 18px;border-right:1px solid var(--line);font-family:var(--font-m);font-size:10px;color:var(--text-dim);letter-spacing:.1em;text-transform:uppercase}
+.ps-cell{padding:14px 18px;border-right:1px solid var(--line);position:relative}
+.ps-cell:last-child{border-right:0}
+.ps-cell::before{content:'';position:absolute;left:0;right:0;bottom:-2px;height:2px;background:var(--ps-c)}
+.ps-num{font-family:var(--font-m);font-size:10px;color:var(--text-dim);letter-spacing:.1em}
+.ps-name{font-family:var(--font-d);font-size:18px;font-weight:500;letter-spacing:-.01em;margin-top:2px;color:var(--text)}
+.ps-cond{font-size:10px;color:var(--text-mute);margin-top:2px;font-family:var(--font-m);letter-spacing:.04em}
+
+/* PHASE BODY GRID — 6 columns aligned with header */
+.lane-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:0;height:100%;position:relative}
+.cell{position:relative;padding:var(--cell-pad-y,14px) var(--cell-pad-x,14px);border-right:1px dashed var(--line);min-height:var(--cell-min-h,140px)}
+.cell:last-child{border-right:0}
+
+/* NODES */
+.node{padding:10px 12px;background:var(--bg-elev);border:1px solid var(--line-strong);border-radius:6px;font-size:11px;line-height:1.4;position:relative;z-index:2;width:100%}
+.node .nt{font-family:var(--font-m);font-size:9px;color:var(--text-dim);letter-spacing:.08em;text-transform:uppercase;margin-bottom:4px}
+.node .nb{color:var(--text);font-size:11.5px;font-weight:500;line-height:1.35}
+.node .nd{color:var(--text-mute);font-size:10px;margin-top:3px;line-height:1.4}
+
+.node.start{border-color:var(--green);background:linear-gradient(180deg,rgba(21,128,61,.08),rgba(21,128,61,.02))}
+.node.start .nt{color:var(--green)}
+.node.end{border-color:var(--blue);background:linear-gradient(180deg,rgba(29,78,216,.08),rgba(29,78,216,.02))}
+.node.end .nt{color:var(--blue)}
+.node.proc{border-color:var(--line-strong)}
+.node.proc.maker{border-color:rgba(124,58,237,.55)}
+.node.proc.checker{border-color:rgba(220,38,38,.55)}
+.node.proc.finance{border-color:rgba(21,128,61,.55)}
+.node.proc.system{border-color:rgba(29,78,216,.55)}
+.node.proc.brand{border-color:rgba(15,118,110,.55)}
+.node.doc{border-color:var(--teal);background:rgba(15,118,110,.06)}
+.node.doc .nt{color:var(--teal)}
+.node.exclude{border-color:var(--coral);background:rgba(220,38,38,.05)}
+.node.exclude .nt{color:var(--coral)}
+.node.lock{border-color:var(--amber);background:rgba(180,83,9,.05)}
+.node.lock .nt{color:var(--amber)}
+
+/* DIAMOND DECISION */
+.diamond-wrap{display:flex;justify-content:center;align-items:center;width:100%;min-height:var(--diamond-h,130px);position:relative;margin:var(--diamond-mar,4px) 0}
+.diamond{width:128px;height:78px;background:rgba(180,83,9,.06);border:1.5px solid var(--amber);transform:rotate(45deg);border-radius:6px;position:relative}
+.diamond .dlabel{position:absolute;inset:0;transform:rotate(-45deg);display:flex;align-items:center;justify-content:center;text-align:center;font-size:10.5px;color:var(--text);font-weight:500;padding:8px;line-height:1.3}
+.diamond-tag{position:absolute;top:-8px;left:50%;transform:translateX(-50%);font-family:var(--font-m);font-size:9px;color:var(--amber);background:var(--bg-elev);padding:1px 6px;border:1px solid var(--amber);border-radius:3px;letter-spacing:.06em;text-transform:uppercase;z-index:5}
+
+/* GROUPED NODES STACK */
+.stack{display:flex;flex-direction:column;gap:var(--stack-gap,16px);position:relative;z-index:2}
+.stack.tight{gap:var(--stack-gap-tight,12px)}
+
+/* Decision branch row — two outcome nodes side-by-side after a diamond */
+.branch-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;width:100%}
+.branch-row .node{font-size:10.5px}
+.branch-row .node .nb{font-size:11px}
+.branch-row .node .nd{font-size:9.5px}
+
+/* SVG OVERLAY for arrows */
+.arrow-layer{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:1}
+.arrow-layer path{fill:none;stroke:var(--text-mute);stroke-width:1.5}
+.arrow-layer .arrow-head{fill:var(--text-mute)}
+.arrow-layer path.dim{stroke:var(--text-dim);stroke-dasharray:4 4}
+.arrow-layer path.amber{stroke:var(--amber)}
+.arrow-layer path.green{stroke:var(--green)}
+.arrow-layer path.coral{stroke:var(--coral)}
+.arrow-layer path.blue{stroke:var(--blue)}
+.arrow-layer .arrow-head.amber{fill:var(--amber)}
+.arrow-layer .arrow-head.green{fill:var(--green)}
+.arrow-layer .arrow-head.coral{fill:var(--coral)}
+.arrow-layer .arrow-head.blue{fill:var(--blue)}
+.arrow-layer text{font-family:'JetBrains Mono',monospace;font-size:9px;fill:var(--text-mute);letter-spacing:.04em;text-transform:uppercase}
+.arrow-layer text.amber{fill:var(--amber)}
+.arrow-layer text.green{fill:var(--green)}
+.arrow-layer text.coral{fill:var(--coral)}
+
+/* tweakable lane sizing — handled per-lane above */
+body.no-arrow-labels .arrow-layer text,
+body.no-arrow-labels .arrow-layer rect{display:none}
+
+/* FOOT */
+.foot{margin-top:32px;padding:16px 0;color:var(--text-dim);font-size:11px;font-family:var(--font-m);letter-spacing:.06em;text-transform:uppercase;display:flex;justify-content:space-between;border-top:1px solid var(--line);max-width:2400px}
+
+/* tag chips */
+.chip{display:inline-flex;align-items:center;gap:5px;font-family:var(--font-m);font-size:9px;padding:1px 6px;border-radius:3px;letter-spacing:.06em;text-transform:uppercase;background:var(--bg-elev2);color:var(--text-mute);border:1px solid var(--line);vertical-align:1px}
+.chip.gate{color:var(--amber);border-color:rgba(180,83,9,.4);background:rgba(180,83,9,.05)}
+
+/* GATE BADGES on phase strip bottom */
+.gate-strip{display:grid;grid-template-columns:200px repeat(6,1fr);background:var(--bg-elev);border-bottom:1px solid var(--line)}
+.gate-strip .gs-spacer{padding:8px 18px;border-right:1px solid var(--line);font-family:var(--font-m);font-size:9px;color:var(--text-dim);letter-spacing:.1em;text-transform:uppercase}
+
+/* CADENCE STRIP — when each phase fires */
+.cadence-strip{display:grid;grid-template-columns:200px repeat(6,1fr);background:var(--bg-elev2);border-bottom:1px solid var(--line)}
+.cadence-strip .cs-spacer{padding:8px 18px;border-right:1px solid var(--line);font-family:var(--font-m);font-size:9px;color:var(--text-dim);letter-spacing:.1em;text-transform:uppercase}
+.cs-cell{padding:8px 14px;border-right:1px solid var(--line);font-family:var(--font-m);font-size:10px;color:var(--text-mute);letter-spacing:.04em;line-height:1.5;display:flex;align-items:center;gap:8px}
+.cs-cell:last-child{border-right:0}
+.cs-tag{font-family:var(--font-m);font-size:8.5px;letter-spacing:.08em;text-transform:uppercase;padding:2px 6px;border-radius:3px;font-weight:600;white-space:nowrap}
+.cs-tag.manual{background:rgba(124,58,237,.1);color:var(--purple);border:1px solid rgba(124,58,237,.3)}
+.cs-tag.event{background:rgba(15,118,110,.1);color:var(--teal);border:1px solid rgba(15,118,110,.3)}
+.cs-tag.live{background:rgba(29,78,216,.1);color:var(--blue);border:1px solid rgba(29,78,216,.3)}
+.cs-tag.timer{background:rgba(180,83,9,.1);color:var(--amber);border:1px solid rgba(180,83,9,.3)}
+.cs-tag.batch{background:rgba(220,38,38,.1);color:var(--coral);border:1px solid rgba(220,38,38,.3)}
+.gs-cell{padding:8px 14px;border-right:1px solid var(--line);font-family:var(--font-m);font-size:10px;color:var(--text-mute);letter-spacing:.04em;line-height:1.4}
+.gs-cell:last-child{border-right:0}
+.gs-cell .glabel{color:var(--amber);font-size:9px;letter-spacing:.1em;text-transform:uppercase;margin-bottom:2px}
+
+/* mini sublabel */
+.subarrow{font-family:var(--font-m);font-size:9px;color:var(--text-dim);letter-spacing:.06em;text-transform:uppercase;text-align:center;padding:2px 0}
+
+/* exception block at bottom */
+.exception-row{margin-top:30px;padding:24px;background:var(--bg-elev);border:1px solid var(--line);border-radius:10px;max-width:2400px}
+.exception-row h3{font-family:var(--font-d);font-size:22px;font-weight:500;letter-spacing:-.015em;margin:0 0 6px;color:var(--text)}
+.exception-row .ex-dek{font-family:var(--font-d);font-style:italic;font-size:13px;color:var(--text-mute);margin-bottom:18px}
+.ex-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.ex-card{padding:12px 14px;background:var(--bg-elev);border:1px solid var(--line);border-radius:6px;border-left:3px solid var(--coral)}
+.ex-card.amber{border-left-color:var(--amber)}
+.ex-card.blue{border-left-color:var(--blue)}
+.ex-card .ex-trigger{font-family:var(--font-m);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--coral);margin-bottom:5px}
+.ex-card.amber .ex-trigger{color:var(--amber)}
+.ex-card.blue .ex-trigger{color:var(--blue)}
+.ex-card .ex-name{font-size:12px;color:var(--text);font-weight:500;margin-bottom:4px}
+.ex-card .ex-action{font-size:11px;color:var(--text-mute);line-height:1.45}
+
+</style>
+</head>
+<body>
+<div class="page">
+
+<!-- HEADER -->
+<header class="hdr">
+  <div>
+    <div class="crumb">Swasthera · Settlement Module · UFD v1.1 · Companion</div>
+    <h1>User Flow <em>Diagram</em></h1>
+    <p class="lede">Six phases on one canvas. Read top-down by actor lane, left-to-right by phase. Yellow diamonds are gates; coral nodes are exclusion paths; amber nodes are compliance locks; teal nodes are auto-generated outputs.</p>
+  </div>
+  <div class="meta">
+    <div class="mc"><div class="k">Cycle</div><div class="v">MAR-2026-C1</div></div>
+    <div class="mc"><div class="k">Phases</div><div class="v">06 sequential</div></div>
+    <div class="mc"><div class="k">Actors</div><div class="v">5 lanes</div></div>
+  </div>
+</header>
+
+<!-- LEGEND -->
+<div class="legend">
+  <span class="item"><span class="shape shape-rect start"></span> Start / entry</span>
+  <span class="item"><span class="shape shape-rect proc"></span> Process step</span>
+  <span class="item"><span class="shape shape-diamond"></span> Decision · gate</span>
+  <span class="item"><span class="shape shape-doc"></span> Auto-generated output</span>
+  <span class="item"><span class="shape shape-rect lock-shape"></span> Compliance lock</span>
+  <span class="item"><span class="shape shape-rect exclude-shape"></span> Exclusion / reversal</span>
+  <span class="item"><span class="shape shape-rect end"></span> Terminal · SETTLED</span>
+  <span class="item">★ &nbsp;Critical OMS state</span>
+</div>
+
+<!-- CANVAS -->
+<div class="canvas">
+
+  <!-- PHASE COLUMN HEADERS -->
+  <div class="phase-strip">
+    <div class="ps-spacer">Actor ↓ &nbsp;/&nbsp; Phase →</div>
+    <div class="ps-cell" style="--ps-c:var(--purple)"><div class="ps-num">PHASE 01</div><div class="ps-name">Onboarding</div><div class="ps-cond">Maker → Checker</div></div>
+    <div class="ps-cell" style="--ps-c:var(--teal)"><div class="ps-num">PHASE 02</div><div class="ps-name">Fynd Sync</div><div class="ps-cond">System</div></div>
+    <div class="ps-cell" style="--ps-c:var(--blue)"><div class="ps-num">PHASE 03</div><div class="ps-name">Order Tracking</div><div class="ps-cond">System · live</div></div>
+    <div class="ps-cell" style="--ps-c:var(--amber)"><div class="ps-num">PHASE 04</div><div class="ps-name">Return Window</div><div class="ps-cond">System</div></div>
+    <div class="ps-cell" style="--ps-c:var(--coral)"><div class="ps-num">PHASE 05</div><div class="ps-name">Settlement</div><div class="ps-cond">System → Finance</div></div>
+    <div class="ps-cell" style="--ps-c:var(--green)"><div class="ps-num">PHASE 06</div><div class="ps-name">Payout</div><div class="ps-cond">System → Bank</div></div>
+  </div>
+
+  <!-- CADENCE STRIP — when each phase fires -->
+  <div class="cadence-strip">
+    <div class="cs-spacer">Cadence ⏱</div>
+    <div class="cs-cell"><span class="cs-tag manual">manual</span> per brand · one-off</div>
+    <div class="cs-cell"><span class="cs-tag event">event</span> on Checker approve</div>
+    <div class="cs-cell"><span class="cs-tag live">continuous</span> per OMS webhook</div>
+    <div class="cs-cell"><span class="cs-tag timer">timer</span> per bag · N days</div>
+    <div class="cs-cell"><span class="cs-tag batch">bi-monthly</span> 1–15 / 16–end</div>
+    <div class="cs-cell"><span class="cs-tag event">event</span> on Finance approve</div>
+  </div>
+
+  <!-- GATE STRIP -->
+  <div class="gate-strip">
+    <div class="gs-spacer">Gate ⤓</div>
+    <div class="gs-cell"><div class="glabel">Gate 1 → 2</div>Checker approve · KYB &amp; docs verified within phase</div>
+    <div class="gs-cell"><div class="glabel">Gate 2 → 3</div>Fynd IDs persisted in mapping table</div>
+    <div class="gs-cell"><div class="glabel">Gate 3 → 4</div>delivery_done received per bag</div>
+    <div class="gs-cell"><div class="glabel">Gate 4 → 5</div>Window expired · no active return · no other HOLD</div>
+    <div class="gs-cell"><div class="glabel">Gate 5 → 6</div>Finance approve — per company · independent</div>
+    <div class="gs-cell"><div class="glabel">Gate 6 (term)</div>UTR captured · SETTLED lock applied</div>
+  </div>
+
+  <!-- LANE: MAKER -->
+  <div class="lane lane-maker" style="--lane-c:var(--purple)">
+    <div class="lane-label">
+      <div class="ln">Maker</div>
+      <div class="lr">Finance · BD</div>
+      <div class="lhint">Creates entities, submits for KYB, uploads docs on pass, submits to Checker.</div>
+    </div>
+    <div class="lane-body">
+      <div class="lane-grid">
+        <!-- P1 -->
+        <div class="cell">
+          <div class="stack">
+            <div class="node start" id="m-p1-1"><div class="nt">Step 01 · Start</div><div class="nb">Open onboarding wizard</div></div>
+            <div class="node proc maker" id="m-p1-2"><div class="nt">Step 02</div><div class="nb">Fill Company / Brand / Warehouse</div><div class="nd">PAN · GSTIN · CIN · bank · commission % · return window</div></div>
+            <div class="node proc maker" id="m-p1-3"><div class="nt">Step 03</div><div class="nb">Submit → triggers KYB</div><div class="nd">Status → KYB_PENDING</div></div>
+            <div class="node proc maker" id="m-p1-4"><div class="nt">Step 04 · on KYB pass</div><div class="nb">Upload 5 docs</div><div class="nd">GST · PAN · CIN · cheque · agreement</div></div>
+            <div class="node proc maker" id="m-p1-5"><div class="nt">Step 05</div><div class="nb">Submit for Checker</div><div class="nd">Status → SUBMITTED</div></div>
+            <div class="node exclude" id="m-p1-rework"><div class="nt">Rework loop</div><div class="nb">KYB fail · Checker reject</div><div class="nd">returns here with comments · resubmit</div></div>
+          </div>
+        </div>
+        <!-- P2 -->
+        <div class="cell"></div>
+        <!-- P3 -->
+        <div class="cell"></div>
+        <!-- P4 -->
+        <div class="cell"></div>
+        <!-- P5 -->
+        <div class="cell"></div>
+        <!-- P6 -->
+        <div class="cell"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- LANE: CHECKER -->
+  <div class="lane lane-checker" style="--lane-c:var(--coral)">
+    <div class="lane-label">
+      <div class="ln">Checker</div>
+      <div class="lr">Finance Supervisor</div>
+      <div class="lhint">Sole gate to brand activation.</div>
+    </div>
+    <div class="lane-body">
+      <div class="lane-grid">
+        <!-- P1 -->
+        <div class="cell">
+          <div class="stack">
+            <div class="node proc checker" id="c-p1-1"><div class="nt">Step 06</div><div class="nb">Open approval queue</div><div class="nd">Maker · KYB · docs · commission</div></div>
+            <div class="diamond-wrap" id="c-p1-2-wrap">
+              <div class="diamond-tag">Decision</div>
+              <div class="diamond"><div class="dlabel">Approve<br/>or reject?</div></div>
+            </div>
+            <div class="branch-row">
+              <div class="node end" id="c-p1-3"><div class="nt">Step 07 · Approve</div><div class="nb">Brand ACTIVE</div><div class="nd">fires Phase 02</div></div>
+              <div class="node exclude" id="c-p1-reject"><div class="nt">Step 07 · Reject</div><div class="nb">Back to Maker</div><div class="nd">comments · loops to Step 02</div></div>
+            </div>
+          </div>
+        </div>
+        <div class="cell"></div>
+        <div class="cell"></div>
+        <div class="cell"></div>
+        <div class="cell"></div>
+        <div class="cell"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- LANE: SYSTEM -->
+  <div class="lane lane-system" style="--lane-c:var(--blue)">
+    <div class="lane-label">
+      <div class="ln">System</div>
+      <div class="lr">Automated</div>
+      <div class="lhint">KYB · Fynd · OMS ingest · accruals · waterfall · bank file.</div>
+    </div>
+    <div class="lane-body">
+      <div class="lane-grid">
+        <!-- P1 -->
+        <div class="cell">
+          <div class="stack">
+            <div class="diamond-wrap" id="s-p1-kyb-wrap">
+              <div class="diamond-tag">KYB · 4/4?</div>
+              <div class="diamond"><div class="dlabel">PAN · GST<br/>CIN · Bank</div></div>
+            </div>
+            <div class="node exclude" id="s-p1-fail"><div class="nt">If FAIL</div><div class="nb">Block submission</div><div class="nd">Maker rework · no docs accepted</div></div>
+          </div>
+        </div>
+        <!-- P2 -->
+        <div class="cell">
+          <div class="stack">
+            <div class="node proc system" id="s-p2-1"><div class="nt">Step 01 · Trigger</div><div class="nb">POST /companies</div><div class="nd">Fynd API · on Checker approve</div></div>
+            <div class="node proc system" id="s-p2-2"><div class="nt">Step 02</div><div class="nb">POST /brands &amp; /locations</div><div class="nd">scoped to company</div></div>
+            <div class="node proc system" id="s-p2-3"><div class="nt">Step 03 · Persist</div><div class="nb">UPSERT mapping table</div><div class="nd">fynd_company / brand / location IDs · state_gstin</div></div>
+            <div class="node exclude" id="s-p2-fail"><div class="nt">If FAIL</div><div class="nb">Sync error → retry queue</div><div class="nd">3× exponential backoff · then alert Maker</div></div>
+          </div>
+        </div>
+        <!-- P3 -->
+        <div class="cell">
+          <div class="stack tight">
+            <div class="node proc system" id="s-p3-1"><div class="nt">Webhook in</div><div class="nb">Capture order_id + bag_id</div><div class="nd">PGW pre-confirm event from Fynd</div></div>
+            <div class="node proc system" id="s-p3-2"><div class="nt">Ingest</div><div class="nb">77 OMS states · per bag_id</div><div class="nd">Fynd webhooks · audit log</div></div>
+            <div class="node lock" id="s-p3-3"><div class="nt">★ bag_invoiced</div><div class="nb">TCS + TDS accrual</div><div class="nd">+ auto-invoice email to customer</div></div>
+            <div class="node lock" id="s-p3-4"><div class="nt">★ delivery_done</div><div class="nb">Return-window timer starts</div><div class="nd">brand.return_window_days</div></div>
+            <div class="node lock" id="s-p3-5"><div class="nt">★ return_initiated</div><div class="nb">Settlement HOLD applied</div><div class="nd">routes to Phase 4 HOLD branch</div></div>
+          </div>
+        </div>
+        <!-- P4 -->
+        <div class="cell">
+          <div class="stack">
+            <div class="diamond-wrap" id="s-p4-wrap">
+              <div class="diamond-tag">At cut-off</div>
+              <div class="diamond"><div class="dlabel">Active return<br/>during window?</div></div>
+            </div>
+            <div class="branch-row">
+              <div class="node proc system" id="s-p4-elig"><div class="nt">No → eligible</div><div class="nb">Added to cycle pool</div><div class="nd">SETTLED guard checked</div></div>
+              <div class="node exclude" id="s-p4-hold"><div class="nt">Yes → HOLD</div><div class="nb">Excluded this cycle</div><div class="nd">↓ See exceptions</div></div>
+            </div>
+          </div>
+        </div>
+        <!-- P5 -->
+        <div class="cell">
+          <div class="stack tight">
+            <div class="node proc system" id="s-p5-1"><div class="nt">Cycle close</div><div class="nb">Collect &amp; group by company</div><div class="nd">bi-monthly · 1–15 / 16–end</div></div>
+            <div class="node proc system" id="s-p5-2"><div class="nt">Compute · ↻ per company</div><div class="nb">Deduction waterfall</div><div class="nd">GMV − promo − comm − GST − TCS − TDS − MDR</div></div>
+            <div class="node doc" id="s-p5-3"><div class="nt">Output · ↻ per company</div><div class="nb">Commission Invoice + SoC</div><div class="nd">draft · digital signature</div></div>
+            <div class="node exclude" id="s-p5-recalc"><div class="nt">On Finance reject</div><div class="nb">Recalculate · re-issue draft</div><div class="nd">other companies in cycle unaffected</div></div>
+          </div>
+        </div>
+        <!-- P6 -->
+        <div class="cell">
+          <div class="stack tight">
+            <div class="node proc system" id="s-p6-1"><div class="nt">Step 01</div><div class="nb">Generate bank file</div><div class="nd">NEFT / RTGS · company A/C</div></div>
+            <div class="node proc system" id="s-p6-2"><div class="nt">Step 02</div><div class="nb">Initiate transfer</div><div class="nd">submit to bank · await ack</div></div>
+            <div class="node proc system" id="s-p6-3"><div class="nt">Step 03</div><div class="nb">Capture UTR</div><div class="nd">bank acknowledgement</div></div>
+            <div class="node end" id="s-p6-4"><div class="nt">Step 04 · Terminal</div><div class="nb">Lock SETTLED · per bag</div><div class="nd">duplicate-payment guard</div></div>
+            <div class="node doc" id="s-p6-5"><div class="nt">Step 05 · Email</div><div class="nb">SoC + Invoice + Payout Report</div><div class="nd">to brand SPOC</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- LANE: FINANCE -->
+  <div class="lane lane-finance" style="--lane-c:var(--green)">
+    <div class="lane-label">
+      <div class="ln">Finance</div>
+      <div class="lr">Settlement &amp; Payout</div>
+      <div class="lhint">Per-company approval · pays TCS/TDS at portal.</div>
+    </div>
+    <div class="lane-body">
+      <div class="lane-grid">
+        <div class="cell"></div>
+        <div class="cell"></div>
+        <div class="cell"></div>
+        <div class="cell"></div>
+        <!-- P5 -->
+        <div class="cell">
+          <div class="stack">
+            <div class="node proc finance" id="f-p5-1"><div class="nt">Review · ↻ per company</div><div class="nb">Per-company statement</div><div class="nd">anomaly flags · drilldown to bag</div></div>
+            <div class="diamond-wrap" id="f-p5-wrap">
+              <div class="diamond-tag">Decision</div>
+              <div class="diamond"><div class="dlabel">Approve<br/>per company?</div></div>
+            </div>
+            <div class="branch-row">
+              <div class="node end" id="f-p5-approve"><div class="nt">Approve</div><div class="nb">Releases to Phase 06</div><div class="nd">others independent</div></div>
+              <div class="node exclude" id="f-p5-reject"><div class="nt">Reject + comments</div><div class="nb">To System recalc</div><div class="nd">cycle holds for company</div></div>
+            </div>
+          </div>
+        </div>
+        <!-- P6 -->
+        <div class="cell">
+          <div class="stack">
+            <div class="node proc finance" id="f-p6-1"><div class="nt">Calendar</div><div class="nb">Pay TCS by 7th · TDS by 10th</div><div class="nd">manual portal payment · monthly</div></div>
+            <div class="node doc" id="f-p6-2"><div class="nt">Quarterly</div><div class="nb">File 27EQ · 26Q · Form 16A</div><div class="nd">Finance CA</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- LANE: BRAND SPOC -->
+  <div class="lane lane-brand" style="--lane-c:var(--teal)">
+    <div class="lane-label">
+      <div class="ln">Brand SPOC</div>
+      <div class="lr">External recipient</div>
+      <div class="lhint">Receives draft for review, then final invoice + UTR by email.</div>
+    </div>
+    <div class="lane-body">
+      <div class="lane-grid">
+        <div class="cell"></div>
+        <div class="cell"></div>
+        <div class="cell"></div>
+        <div class="cell"></div>
+        <!-- P5 -->
+        <div class="cell">
+          <div class="stack">
+            <div class="node doc" id="b-p5-1"><div class="nt">Pre-approval</div><div class="nb">Receive draft SoC for review</div><div class="nd">optional · raise queries before Finance approve</div></div>
+          </div>
+        </div>
+        <!-- P6 -->
+        <div class="cell">
+          <div class="stack">
+            <div class="node end" id="b-p6-1"><div class="nt">Receives</div><div class="nb">Funds + reports</div><div class="nd">payout to company A/C · Form 16A quarterly</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ARROW LAYER -->
+  <svg class="arrow-layer" id="arrows"></svg>
+
+</div>
+
+<!-- EXCEPTION ROW -->
+<div class="exception-row">
+  <h3>Exception &amp; reversal paths</h3>
+  <div class="ex-dek">Branches off the happy path that the canvas above doesn't draw inline. Each one fires from a state in Phase 03 / 04 and routes back into the ledger.</div>
+  <div class="ex-grid">
+    <div class="ex-card"><div class="ex-trigger">★ return_bag_delivered</div><div class="ex-name">Return accepted</div><div class="ex-action">Bag PERMANENTLY excluded. Commission + TCS + TDS reversed in current month's ledger. Never re-eligible in any future cycle.</div></div>
+    <div class="ex-card"><div class="ex-trigger">return_request_cancelled</div><div class="ex-name">Hold lifted</div><div class="ex-action">Settlement HOLD removed. Bag returns to eligible pool for the next cycle. No ledger change.</div></div>
+    <div class="ex-card"><div class="ex-trigger">cancelled_* (post-invoice)</div><div class="ex-name">Cancellation reversal</div><div class="ex-action">Bag excluded. If cancellation arrived after bag_invoiced, TCS + TDS are reversed before next month's 7th / 10th deadline.</div></div>
+    <div class="ex-card"><div class="ex-trigger">rto_bag_delivered</div><div class="ex-name">RTO loss</div><div class="ex-action">Bag excluded. TCS + TDS reversed. Tagged as RTO loss for the warehouse state's TCS filing in that month.</div></div>
+    <div class="ex-card amber"><div class="ex-trigger">partially_delivered</div><div class="ex-name">Split eligibility</div><div class="ex-action">Only delivered qty enters cycle. TCS + TDS are recomputed on delivered qty. Returned qty follows the return path independently.</div></div>
+    <div class="ex-card amber"><div class="ex-trigger">cycle spans months</div><div class="ex-name">Cross-month reversal</div><div class="ex-action">Pre-deadline → reversal nets against same-month liability. Post-payment → next compliance cycle adjustment.</div></div>
+    <div class="ex-card blue"><div class="ex-trigger">post-settlement return</div><div class="ex-name">Credit note</div><div class="ex-action">No reverse bank transfer. System raises a credit note against the original Commission Invoice; netted off the brand's next settlement.</div></div>
+    <div class="ex-card blue"><div class="ex-trigger">Finance reject</div><div class="ex-name">Cycle recalc</div><div class="ex-action">Statement returned with comments. Cycle does not progress to Phase 06 for that company until re-approved. Other companies in the cycle are independent.</div></div>
+  </div>
+</div>
+
+<footer class="foot">
+  <span>Swasthera · Settlement · UFD v1.1 · User Flow Diagram</span>
+  <span>Pairs with UFD.html + Prototype</span>
+  <span>May 2026 · Confidential</span>
+</footer>
+
+</div>
+
+<script>
+// ============================================================
+// ARROW DRAWING
+// Draws SVG paths between node anchors after layout settles.
+// ============================================================
+function drawArrows(){
+  const svg = document.getElementById('arrows');
+  const canvas = document.querySelector('.canvas');
+  const cR = canvas.getBoundingClientRect();
+  svg.setAttribute('width', cR.width);
+  svg.setAttribute('height', cR.height);
+  svg.setAttribute('viewBox', `0 0 ${cR.width} ${cR.height}`);
+  svg.innerHTML = `
+    <defs>
+      <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+        <path d="M0,0 L10,5 L0,10 Z" fill="#6b6b6b"/>
+      </marker>
+      <marker id="ah-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+        <path d="M0,0 L10,5 L0,10 Z" fill="#b45309"/>
+      </marker>
+      <marker id="ah-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+        <path d="M0,0 L10,5 L0,10 Z" fill="#15803d"/>
+      </marker>
+      <marker id="ah-coral" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+        <path d="M0,0 L10,5 L0,10 Z" fill="#dc2626"/>
+      </marker>
+      <marker id="ah-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+        <path d="M0,0 L10,5 L0,10 Z" fill="#1d4ed8"/>
+      </marker>
+    </defs>
+  `;
+
+  // anchor returns a point on the OUTSIDE edge of an element with margin
+  // so arrow heads don't visually collide with node borders.
+  function pt(id, side='center', pad=4){
+    const el = document.getElementById(id);
+    if(!el) return null;
+    const r = el.getBoundingClientRect();
+    let x = r.left + r.width/2;
+    let y = r.top + r.height/2;
+    if(side==='left'){ x = r.left - pad; }
+    else if(side==='right'){ x = r.right + pad; }
+    else if(side==='top'){ y = r.top - pad; }
+    else if(side==='bottom'){ y = r.bottom + pad; }
+    return {x: x - cR.left, y: y - cR.top};
+  }
+
+  function drawLabel(text, x, y, color){
+    // background pill so label is readable against grid + nodes
+    const padX = 5, padY = 2;
+    const t = document.createElementNS('http://www.w3.org/2000/svg','text');
+    t.setAttribute('x', x);
+    t.setAttribute('y', y);
+    t.setAttribute('text-anchor', 'middle');
+    t.setAttribute('dominant-baseline', 'middle');
+    if(color) t.setAttribute('class', color);
+    t.textContent = text;
+    // measure-after-append by appending to svg and getting bbox
+    svg.appendChild(t);
+    const bb = t.getBBox();
+    const rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
+    rect.setAttribute('x', bb.x - padX);
+    rect.setAttribute('y', bb.y - padY);
+    rect.setAttribute('width', bb.width + padX*2);
+    rect.setAttribute('height', bb.height + padY*2);
+    rect.setAttribute('fill', '#fdfdfa');
+    rect.setAttribute('stroke', '#e4e4dc');
+    rect.setAttribute('rx', '3');
+    svg.insertBefore(rect, t);
+  }
+
+  function arrow(fromId, toId, opts={}){
+    const fromSide = opts.fromSide || 'bottom';
+    const toSide = opts.toSide || 'top';
+    const a = pt(fromId, fromSide, 2);
+    const b = pt(toId, toSide, 6); // larger pad on target so head sits clear of border
+    if(!a || !b) return;
+    const color = opts.color || '';
+    const marker = color ? `url(#ah-${color})` : 'url(#ah)';
+    const cls = color || '';
+    const dashed = (opts.dashed && !color) ? ' dim' : '';
+    let d, midX, midY;
+    if(opts.curve === 'h'){
+      midX = (a.x+b.x)/2;
+      d = `M${a.x},${a.y} C${midX},${a.y} ${midX},${b.y} ${b.x},${b.y}`;
+    } else if(opts.curve === 'orth'){
+      midY = (a.y+b.y)/2;
+      d = `M${a.x},${a.y} L${a.x},${midY} L${b.x},${midY} L${b.x},${b.y}`;
+    } else {
+      midY = (a.y+b.y)/2;
+      d = `M${a.x},${a.y} C${a.x},${midY} ${b.x},${midY} ${b.x},${b.y}`;
+    }
+    const p = document.createElementNS('http://www.w3.org/2000/svg','path');
+    p.setAttribute('d', d);
+    p.setAttribute('class', `${cls}${dashed}`);
+    if(opts.dashed){
+      p.setAttribute('stroke-dasharray', '5 4');
+    }
+    p.setAttribute('marker-end', marker);
+    svg.appendChild(p);
+
+    if(opts.label){
+      let lx, ly;
+      const pos = opts.labelPos; // 'near-source', 'near-target', or default mid
+      if(pos === 'near-source'){
+        // For diamond branches: place label vertically at midpoint, horizontally
+        // offset toward target so the two branch labels don't overlap.
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        // 50% along vertical, but biased horizontally toward target
+        lx = a.x + dx * 0.55;
+        ly = a.y + dy * 0.5;
+        // if branch is mostly vertical (small dx), nudge sideways
+        if(Math.abs(dx) < 30){
+          lx += dx >= 0 ? 28 : -28;
+        }
+      } else if(pos === 'near-target'){
+        const t = 0.78;
+        lx = a.x + (b.x - a.x) * t;
+        ly = a.y + (b.y - a.y) * t;
+      } else if(opts.curve === 'h'){
+        // horizontal curve: label on the vertical mid x, sits between two columns
+        lx = (a.x + b.x) / 2;
+        ly = (a.y + b.y) / 2;
+      } else if(opts.curve === 'orth'){
+        // place label on the horizontal mid-segment, pushed BEYOND target
+        // outside the source-target span so it lands in grid whitespace.
+        const dir = b.x > a.x ? -1 : 1;
+        lx = b.x + dir * 50;
+        ly = midY;
+      } else {
+        // vertical curve: place label well clear of both endpoints.
+        // Offset SIDEWAYS from spine so it doesn't sit on either node.
+        const dy = b.y - a.y;
+        const dx = b.x - a.x;
+        lx = (a.x + b.x) / 2 + (Math.abs(dx) < 30 ? 38 : 0);
+        ly = a.y + dy * 0.28;
+        if(Math.abs(dy) < 80) ly = a.y + Math.sign(dy) * 22;
+      }
+      drawLabel(opts.label, lx, ly, color);
+    }
+  }
+
+  // === MAKER chain (P1) — BRD order: form → submit → KYB → docs → submit-to-Checker ===
+  arrow('m-p1-1','m-p1-2');
+  arrow('m-p1-2','m-p1-3');
+
+  // Maker submit → System KYB diamond (cross-lane; gate strip documents trigger)
+  arrow('m-p1-3','s-p1-kyb-wrap',{color:'blue', curve:'h'});
+
+  // KYB pass → Maker proceeds to docs (cross-lane return; color green = pass)
+  arrow('s-p1-kyb-wrap','m-p1-4',{color:'green', curve:'orth'});
+
+  // KYB fail → block node, then loop back to Maker rework
+  arrow('s-p1-kyb-wrap','s-p1-fail',{label:'fail', color:'coral', labelPos:'near-source'});
+  arrow('s-p1-fail','m-p1-rework',{color:'coral', curve:'orth'});
+  arrow('m-p1-rework','m-p1-2',{color:'coral', dashed:true, curve:'orth'});
+
+  // Maker docs → submit for Checker
+  arrow('m-p1-4','m-p1-5');
+  arrow('m-p1-5','c-p1-1',{curve:'h'});
+
+  // Checker chain
+  arrow('c-p1-1','c-p1-2-wrap');
+
+  // Checker decision → side-by-side approve / reject (labels near source diamond)
+  arrow('c-p1-2-wrap','c-p1-3',{label:'approve', color:'green', labelPos:'near-source'});
+  arrow('c-p1-2-wrap','c-p1-reject',{label:'reject', color:'coral', labelPos:'near-source'});
+  arrow('c-p1-reject','m-p1-rework',{color:'coral', dashed:true, curve:'orth'});
+
+  // Checker activated → System Phase 2 trigger
+  arrow('c-p1-3','s-p2-1',{color:'blue', curve:'h'});
+
+  // === System Phase 2 ===
+  arrow('s-p2-1','s-p2-2');
+  arrow('s-p2-2','s-p2-3');
+  arrow('s-p2-3','s-p2-fail',{label:'on error', color:'coral', dashed:true, labelPos:'near-target'});
+
+  // P2 → P3 (across phase boundary)
+  arrow('s-p2-3','s-p3-1',{color:'blue', curve:'h'});
+
+  // P3 chain
+  arrow('s-p3-1','s-p3-2');
+  arrow('s-p3-2','s-p3-3');
+  arrow('s-p3-3','s-p3-4');
+  arrow('s-p3-4','s-p3-5');
+
+  // P3 → P4 gate (timer expiry path via delivery_done)
+  arrow('s-p3-4','s-p4-wrap',{color:'amber', curve:'h'});
+
+  // P3 return_initiated → P4 HOLD branch
+  arrow('s-p3-5','s-p4-hold',{color:'coral', dashed:true, curve:'h'});
+
+  // P4 decision branches (side-by-side now)
+  arrow('s-p4-wrap','s-p4-elig',{label:'no', color:'green', labelPos:'near-source'});
+  arrow('s-p4-wrap','s-p4-hold',{label:'yes', color:'coral', labelPos:'near-source'});
+
+  // P4 → P5 — color codes the eligible flow
+  arrow('s-p4-elig','s-p5-1',{color:'blue', curve:'h'});
+
+  // P5 chain
+  arrow('s-p5-1','s-p5-2');
+  arrow('s-p5-2','s-p5-3');
+
+  // P5 system → Brand SPOC draft preview (optional pre-approval review)
+  arrow('s-p5-3','b-p5-1',{label:'draft', color:'blue', dashed:true, curve:'orth', labelPos:'near-target'});
+
+  // P5 system → finance review
+  arrow('s-p5-3','f-p5-1',{color:'green', curve:'orth'});
+
+  // Finance review → decision
+  arrow('f-p5-1','f-p5-wrap');
+
+  // Finance decision: approve OR reject (side-by-side; labels near source)
+  arrow('f-p5-wrap','f-p5-approve',{label:'approve', color:'green', labelPos:'near-source'});
+  arrow('f-p5-wrap','f-p5-reject',{label:'reject', color:'coral', labelPos:'near-source'});
+
+  // Reject → System recalc loopback
+  arrow('f-p5-reject','s-p5-recalc',{color:'coral', dashed:true, curve:'orth'});
+  arrow('s-p5-recalc','s-p5-2',{color:'coral', dashed:true});
+
+  // Approve → Phase 6 trigger
+  arrow('f-p5-approve','s-p6-1',{color:'green', curve:'h'});
+
+  // P6 system chain (5 steps now)
+  arrow('s-p6-1','s-p6-2');
+  arrow('s-p6-2','s-p6-3');
+  arrow('s-p6-3','s-p6-4');
+  arrow('s-p6-4','s-p6-5');
+
+  // P6 system → finance compliance
+  arrow('s-p6-3','f-p6-1',{label:'monthly', color:'amber', curve:'orth', labelPos:'near-target'});
+  arrow('f-p6-1','f-p6-2');
+
+  // P6 → Brand SPOC
+  arrow('s-p6-5','b-p6-1',{color:'green', curve:'orth'});
+}
+
+// run after fonts/layout settle
+window.addEventListener('load', () => {
+  setTimeout(drawArrows, 80);
+  setTimeout(drawArrows, 600);
+});
+window.addEventListener('resize', () => {
+  clearTimeout(window.__rt);
+  window.__rt = setTimeout(drawArrows, 120);
+});
+</script>
+
+<!-- ============================================================
+     TWEAKS PANEL — vanilla JS, host protocol-compliant
+     ============================================================ -->
+<style>
+.tweaks-fab{position:fixed;bottom:20px;right:20px;z-index:9998;width:44px;height:44px;border-radius:50%;background:#1a1a1a;color:#fff;border:0;cursor:pointer;font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.06em;box-shadow:0 6px 18px rgba(0,0,0,.18);display:none;align-items:center;justify-content:center}
+.tweaks-fab.visible{display:flex}
+.tweaks-panel{position:fixed;bottom:20px;right:20px;z-index:9999;width:300px;background:#fff;border:1px solid #d4d4cc;border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.16);font-family:'Inter Tight',system-ui,sans-serif;font-size:12px;color:#1a1a1a;display:none;overflow:hidden}
+.tweaks-panel.open{display:block}
+.tweaks-panel .tp-hd{display:flex;justify-content:space-between;align-items:center;padding:12px 14px;border-bottom:1px solid #ececea;background:#fafaf7}
+.tweaks-panel .tp-hd h4{margin:0;font-family:'Fraunces',serif;font-weight:500;font-size:15px;letter-spacing:-.01em}
+.tweaks-panel .tp-hd button{background:transparent;border:0;color:#6b6b6b;cursor:pointer;font-size:16px;line-height:1;padding:2px 6px;border-radius:4px}
+.tweaks-panel .tp-hd button:hover{background:#ececea}
+.tweaks-panel .tp-body{padding:8px 14px 14px;max-height:70vh;overflow:auto}
+.tweaks-panel .tp-sec{margin-top:10px}
+.tweaks-panel .tp-sec-h{font-family:'JetBrains Mono',monospace;font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:#9a9a92;margin:6px 0 6px;padding-top:6px;border-top:1px dashed #ececea}
+.tweaks-panel .tp-sec-h:first-child{border-top:0;padding-top:0}
+.tweaks-panel .tp-row{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:8px 0}
+.tweaks-panel .tp-row label{flex:1;font-size:12px;color:#3a3a36}
+.tweaks-panel .tp-row .tp-val{font-family:'JetBrains Mono',monospace;font-size:10px;color:#6b6b6b;min-width:36px;text-align:right}
+.tweaks-panel input[type=range]{flex:1.4;accent-color:#b45309}
+.tweaks-panel .tp-toggle{position:relative;width:32px;height:18px;background:#d4d4cc;border-radius:10px;cursor:pointer;transition:background .15s}
+.tweaks-panel .tp-toggle.on{background:#b45309}
+.tweaks-panel .tp-toggle::after{content:'';position:absolute;top:2px;left:2px;width:14px;height:14px;background:#fff;border-radius:50%;transition:left .15s}
+.tweaks-panel .tp-toggle.on::after{left:16px}
+.tweaks-panel .tp-help{font-size:11px;color:#9a9a92;line-height:1.45;margin-top:4px}
+.tweaks-panel .tp-reset{margin-top:14px;width:100%;padding:8px;background:#fafaf7;border:1px solid #ececea;border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:#6b6b6b;cursor:pointer}
+.tweaks-panel .tp-reset:hover{background:#f0f0eb}
+</style>
+
+<button class="tweaks-fab" id="tweaks-fab" title="Open Tweaks">⚙</button>
+<div class="tweaks-panel" id="tweaks-panel" role="dialog" aria-label="Tweaks">
+  <div class="tp-hd">
+    <h4>Tweaks</h4>
+    <button id="tp-close" aria-label="Close">×</button>
+  </div>
+  <div class="tp-body" id="tp-body"></div>
+</div>
+
+<script>
+(function(){
+  const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+    "stackGap": 16,
+    "diamondWrapH": 130,
+    "diamondMargin": 4,
+    "cellPadY": 14,
+    "cellPadX": 14,
+    "cellMinH": 140,
+    "laneSystemH": 460,
+    "showArrowLabels": true
+  }/*EDITMODE-END*/;
+
+  let state = Object.assign({}, TWEAK_DEFAULTS);
+  const root = document.documentElement;
+  const body = document.body;
+
+  function apply(){
+    root.style.setProperty('--stack-gap', state.stackGap + 'px');
+    root.style.setProperty('--diamond-h', state.diamondWrapH + 'px');
+    root.style.setProperty('--diamond-mar', state.diamondMargin + 'px');
+    root.style.setProperty('--cell-pad-y', state.cellPadY + 'px');
+    root.style.setProperty('--cell-pad-x', state.cellPadX + 'px');
+    root.style.setProperty('--cell-min-h', state.cellMinH + 'px');
+    root.style.setProperty('--lane-system-h', state.laneSystemH + 'px');
+    body.classList.toggle('no-arrow-labels', !state.showArrowLabels);
+    if (typeof drawArrows === 'function') {
+      clearTimeout(window.__tw_at);
+      window.__tw_at = setTimeout(drawArrows, 60);
+    }
+  }
+
+  function persist(partial){
+    try{
+      window.parent.postMessage({type:'__edit_mode_set_keys', edits: partial}, '*');
+    }catch(e){}
+  }
+
+  function setVal(key, val){
+    state[key] = val;
+    apply();
+    persist({[key]: val});
+    render();
+  }
+
+  const SCHEMA = [
+    { sec: 'Phase 4 spacing (overlap fix)' },
+    { kind:'slider', key:'diamondWrapH', label:'Diamond wrap height', min:120, max:240, step:2, unit:'px',
+      help:'The decision diamond is rotated; bump this if it overlaps nodes below.' },
+    { kind:'slider', key:'diamondMargin', label:'Diamond top/bottom margin', min:0, max:40, step:1, unit:'px' },
+    { kind:'slider', key:'stackGap', label:'Stack gap (siblings)', min:8, max:60, step:1, unit:'px' },
+
+    { sec: 'Lanes & cells' },
+    { kind:'slider', key:'laneSystemH', label:'System lane height', min:380, max:760, step:10, unit:'px' },
+    { kind:'slider', key:'cellMinH', label:'Cell min-height', min:120, max:280, step:2, unit:'px' },
+    { kind:'slider', key:'cellPadY', label:'Cell padding (y)', min:6, max:48, step:1, unit:'px' },
+    { kind:'slider', key:'cellPadX', label:'Cell padding (x)', min:6, max:40, step:1, unit:'px' },
+
+    { sec: 'Arrows' },
+    { kind:'toggle', key:'showArrowLabels', label:'Show arrow labels',
+      help:'Hide labels when you only need the colored connectors.' },
+  ];
+
+  function render(){
+    const host = document.getElementById('tp-body');
+    let html = '';
+    SCHEMA.forEach(item => {
+      if(item.sec){
+        html += '<div class="tp-sec-h">'+item.sec+'</div>';
+        return;
+      }
+      if(item.kind === 'slider'){
+        html += '<div class="tp-sec"><div class="tp-row"><label for="tp-'+item.key+'">'+item.label+'</label>'
+              + '<input type="range" id="tp-'+item.key+'" data-key="'+item.key+'" min="'+item.min+'" max="'+item.max+'" step="'+item.step+'" value="'+state[item.key]+'" />'
+              + '<span class="tp-val">'+state[item.key]+(item.unit||'')+'</span></div>'
+              + (item.help?'<div class="tp-help">'+item.help+'</div>':'')
+              + '</div>';
+      } else if(item.kind === 'toggle'){
+        html += '<div class="tp-sec"><div class="tp-row"><label>'+item.label+'</label>'
+              + '<div class="tp-toggle '+(state[item.key]?'on':'')+'" data-toggle="'+item.key+'" role="switch" aria-checked="'+state[item.key]+'"></div></div>'
+              + (item.help?'<div class="tp-help">'+item.help+'</div>':'')
+              + '</div>';
+      }
+    });
+    html += '<button class="tp-reset" id="tp-reset">Reset to defaults</button>';
+    host.innerHTML = html;
+
+    host.querySelectorAll('input[type=range]').forEach(el=>{
+      el.addEventListener('input', e => {
+        const key = e.target.dataset.key;
+        const v = parseFloat(e.target.value);
+        state[key] = v;
+        apply();
+        const valEl = e.target.parentElement.querySelector('.tp-val');
+        const item = SCHEMA.find(s=>s.key===key);
+        if(valEl) valEl.textContent = v + (item.unit||'');
+      });
+      el.addEventListener('change', e => {
+        const key = e.target.dataset.key;
+        persist({[key]: state[key]});
+      });
+    });
+    host.querySelectorAll('[data-toggle]').forEach(el=>{
+      el.addEventListener('click', e => {
+        const key = el.dataset.toggle;
+        setVal(key, !state[key]);
+      });
+    });
+    document.getElementById('tp-reset').addEventListener('click', ()=>{
+      state = Object.assign({}, TWEAK_DEFAULTS);
+      apply();
+      persist(TWEAK_DEFAULTS);
+      render();
+    });
+  }
+
+  // Host protocol
+  const fab = document.getElementById('tweaks-fab');
+  const panel = document.getElementById('tweaks-panel');
+  function open(){ panel.classList.add('open'); fab.classList.remove('visible'); }
+  function close(){
+    panel.classList.remove('open');
+    try{ window.parent.postMessage({type:'__edit_mode_dismissed'}, '*'); }catch(e){}
+  }
+
+  window.addEventListener('message', (e)=>{
+    const d = e.data || {};
+    if(d.type === '__activate_edit_mode'){ open(); }
+    if(d.type === '__deactivate_edit_mode'){ panel.classList.remove('open'); }
+  });
+
+  document.getElementById('tp-close').addEventListener('click', close);
+
+  // Initial paint + announce availability
+  apply();
+  render();
+  try{ window.parent.postMessage({type:'__edit_mode_available'}, '*'); }catch(e){}
+})();
+</script>
+
+</body>
+</html>

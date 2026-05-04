@@ -104,6 +104,9 @@ router.post("/settlements/:id/approve", async (req, res) => {
     const checker = approvedBy || "Rajesh Kumar";
     const [existing] = await db.select().from(settlementsTable).where(eq(settlementsTable.id, parseInt(req.params.id)));
     if (!existing) return res.status(404).json({ error: "Not found" });
+    if (existing.status === "APPROVED" || existing.status === "PAID") {
+      return res.status(409).json({ error: `Settlement is already ${existing.status}. A payout has already been created.` });
+    }
 
     const [row] = await db.update(settlementsTable)
       .set({ status: "APPROVED", financeNotes, approvedBy: checker, approvedAt: new Date() })
@@ -121,12 +124,12 @@ router.post("/settlements/:id/approve", async (req, res) => {
       amount: row.netPayable,
       transferMode: "NEFT",
       paymentRef: `PAY-${row.id}-${Date.now()}`,
-      status: "INITIATED",
+      status: "PENDING_APPROVAL",
       bagCount: row.eligibleBags,
       bagIds: row.bagIds,
     });
 
-    await db.insert(activityTable).values({ user: checker, action: `Approved settlement #${row.id} for ${row.brandName} — payout initiated`, entityType: "settlement", entityRef: String(row.id), level: "success" });
+    await db.insert(activityTable).values({ user: checker, action: `Approved settlement #${row.id} for ${row.brandName} — payout queued for Maker initiation`, entityType: "settlement", entityRef: String(row.id), level: "success" });
 
     res.json(mapSettlement(row));
   } catch (err) {

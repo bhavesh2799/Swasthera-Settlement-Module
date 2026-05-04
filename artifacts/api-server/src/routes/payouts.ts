@@ -5,11 +5,22 @@ import { eq } from "drizzle-orm";
 
 const router = Router();
 
+// Generates a realistic-looking NEFT UTR
+function generateUtr(transferMode: string): string {
+  const prefix = transferMode === "RTGS" ? "RTGS" : "NEFT";
+  const bankCode = "HDFC";
+  const date = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+  const seq = Math.floor(100000000 + Math.random() * 900000000);
+  return `${prefix}${bankCode}${date}${seq}`;
+}
+
 router.get("/payouts", async (req, res) => {
   try {
     const { status } = req.query as { status?: string };
     const rows = status
-      ? await db.select().from(payoutsTable).where(eq(payoutsTable.status, status as "INITIATED" | "UTR_RECORDED" | "SETTLED")).orderBy(payoutsTable.initiatedAt)
+      ? await db.select().from(payoutsTable)
+          .where(eq(payoutsTable.status, status as "PENDING_APPROVAL" | "INITIATED" | "UTR_RECORDED" | "SETTLED"))
+          .orderBy(payoutsTable.initiatedAt)
       : await db.select().from(payoutsTable).orderBy(payoutsTable.initiatedAt);
 
     res.json(rows.map(mapPayout));
@@ -19,26 +30,87 @@ router.get("/payouts", async (req, res) => {
   }
 });
 
-router.post("/payouts/:id/record-utr", async (req, res) => {
+// Maker action: submit payout for Checker approval (PENDING_APPROVAL → INITIATED)
+router.post("/payouts/:id/initiate", async (req, res) => {
   try {
-    const { utr, bankAckAt, amountCredited } = req.body as { utr: string; bankAckAt: string; amountCredited: number };
+    const { initiatedBy } = req.body as { initiatedBy?: string };
+    const maker = initiatedBy || "Anjali Patel";
+    const payoutId = parseInt(req.params.id);
+
+    const [existing] = await db.select().from(payoutsTable).where(eq(payoutsTable.id, payoutId));
+    if (!existing) return res.status(404).json({ error: "Payout not found" });
+    if (existing.status !== "PENDING_APPROVAL") {
+      return res.status(400).json({ error: `Cannot initiate a payout with status '${existing.status}'. Only PENDING_APPROVAL payouts can be initiated.` });
+    }
+
     const [row] = await db.update(payoutsTable)
-      .set({ utr, bankAckAt: new Date(bankAckAt), status: "UTR_RECORDED", settledAt: new Date() })
-      .where(eq(payoutsTable.id, parseInt(req.params.id)))
+      .set({ status: "INITIATED", initiatedBy: maker })
+      .where(eq(payoutsTable.id, payoutId))
       .returning();
 
-    if (!row) return res.status(404).json({ error: "Not found" });
+    await db.insert(activityTable).values({
+      user: maker,
+      action: `Payout initiated for ${row.brandName} — ${row.cycle} (₹${parseFloat(row.amount).toLocaleString("en-IN")}) — awaiting Checker approval`,
+      entityType: "payout",
+      entityRef: String(row.id),
+      level: "info",
+    });
 
-    await db.update(payoutsTable).set({ status: "SETTLED" }).where(eq(payoutsTable.id, row.id));
-    const [settled] = await db.select().from(payoutsTable).where(eq(payoutsTable.id, row.id));
-
-    await db.insert(activityTable).values({ user: "Anjali Patel", action: `UTR recorded for ${row.brandName} — ${utr} (₹${amountCredited.toLocaleString()})`, entityType: "payout", entityRef: String(row.id), level: "success" });
-
-    res.json(mapPayout(settled));
+    res.json(mapPayout(row));
   } catch (err) {
-    req.log.error({ err }, "record utr error");
+    req.log.error({ err }, "initiate payout error");
     res.status(500).json({ error: "Internal server error" });
   }
+});
+
+// Checker action: approve payout → auto-generate UTR → SETTLED
+router.post("/payouts/:id/approve", async (req, res) => {
+  try {
+    const { approvedBy, payoutNotes } = req.body as { approvedBy?: string; payoutNotes?: string };
+    const checker = approvedBy || "Rajesh Kumar";
+    const payoutId = parseInt(req.params.id);
+
+    const [existing] = await db.select().from(payoutsTable).where(eq(payoutsTable.id, payoutId));
+    if (!existing) return res.status(404).json({ error: "Payout not found" });
+    if (existing.status !== "INITIATED") {
+      return res.status(400).json({ error: `Cannot approve a payout with status '${existing.status}'. Only INITIATED payouts can be approved.` });
+    }
+
+    // Auto-generate UTR (simulated bank transfer)
+    const utr = generateUtr(existing.transferMode);
+    const now = new Date();
+
+    const [row] = await db.update(payoutsTable)
+      .set({
+        status: "SETTLED",
+        utr,
+        bankAckAt: now,
+        settledAt: now,
+        payoutApprovedBy: checker,
+        payoutApprovedAt: now,
+        payoutNotes: payoutNotes ?? null,
+      })
+      .where(eq(payoutsTable.id, payoutId))
+      .returning();
+
+    await db.insert(activityTable).values({
+      user: checker,
+      action: `Payout approved for ${row.brandName} — UTR ${utr} auto-generated · ₹${parseFloat(row.amount).toLocaleString("en-IN")} settled`,
+      entityType: "payout",
+      entityRef: String(row.id),
+      level: "success",
+    });
+
+    res.json(mapPayout(row));
+  } catch (err) {
+    req.log.error({ err }, "approve payout error");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Legacy endpoint kept for backwards compatibility with seeded SETTLED payouts
+router.post("/payouts/:id/record-utr", async (req, res) => {
+  return res.status(410).json({ error: "Manual UTR recording is no longer supported. Payouts are approved by a Checker and UTR is auto-generated by the backend." });
 });
 
 function mapPayout(p: typeof payoutsTable.$inferSelect) {
@@ -57,7 +129,11 @@ function mapPayout(p: typeof payoutsTable.$inferSelect) {
     utr: p.utr,
     bankAckAt: p.bankAckAt?.toISOString(),
     status: p.status,
+    initiatedBy: p.initiatedBy,
     initiatedAt: p.initiatedAt.toISOString(),
+    payoutApprovedBy: p.payoutApprovedBy,
+    payoutApprovedAt: p.payoutApprovedAt?.toISOString(),
+    payoutNotes: p.payoutNotes,
     settledAt: p.settledAt?.toISOString(),
     bagCount: p.bagCount,
     bagIds: JSON.parse(p.bagIds) as string[],

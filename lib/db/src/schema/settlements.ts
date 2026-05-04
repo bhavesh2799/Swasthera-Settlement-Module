@@ -3,7 +3,7 @@ import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
 export const settlementStatusEnum = pgEnum("settlement_status", ["COMPUTED", "PENDING_APPROVAL", "APPROVED", "PAID"]);
-export const payoutStatusEnum = pgEnum("payout_status", ["INITIATED", "UTR_RECORDED", "SETTLED"]);
+export const payoutStatusEnum = pgEnum("payout_status", ["PENDING_APPROVAL", "INITIATED", "UTR_RECORDED", "SETTLED"]);
 
 export const settlementsTable = pgTable("settlements", {
   id: serial("id").primaryKey(),
@@ -51,8 +51,13 @@ export const payoutsTable = pgTable("payouts", {
   paymentRef: text("payment_ref").notNull(),
   utr: text("utr"),
   bankAckAt: timestamp("bank_ack_at"),
-  status: payoutStatusEnum("status").notNull().default("INITIATED"),
+  status: payoutStatusEnum("status").notNull().default("PENDING_APPROVAL"),
+  // Payout-level approval audit
+  initiatedBy: text("initiated_by"),
   initiatedAt: timestamp("initiated_at").notNull().defaultNow(),
+  payoutApprovedBy: text("payout_approved_by"),
+  payoutApprovedAt: timestamp("payout_approved_at"),
+  payoutNotes: text("payout_notes"),
   settledAt: timestamp("settled_at"),
   bagCount: integer("bag_count").notNull(),
   bagIds: text("bag_ids").notNull().default("[]"),

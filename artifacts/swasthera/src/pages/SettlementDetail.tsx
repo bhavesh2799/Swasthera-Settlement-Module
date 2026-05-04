@@ -46,7 +46,7 @@ export function SettlementDetail() {
   const handleApprove = () => {
     approveMutation.mutate({ id, data: { financeNotes } }, {
       onSuccess: () => {
-        toast({ title: "Settlement Approved", description: "Commission Invoice & SoC will be sent to brand SPOC. Payout initiated." });
+        toast({ title: "Settlement Approved", description: "Payout queued — Maker must initiate, then Checker approves to auto-generate UTR." });
         queryClient.invalidateQueries({ queryKey: getGetSettlementQueryKey(id) });
         setShowApproveDialog(false);
       },
@@ -99,7 +99,7 @@ export function SettlementDetail() {
           )}
           {settlement.status === "APPROVED" && (
             <Button asChild variant="outline">
-              <a href="/payouts">View in Payouts</a>
+              <a href="/payouts">View in Payouts →</a>
             </Button>
           )}
         </div>

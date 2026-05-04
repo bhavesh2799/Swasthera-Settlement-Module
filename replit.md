@@ -33,7 +33,7 @@ A full-stack, deployable React web application for a finance team to manage a 6-
 3. **Fynd Sync** — After approval, brand is synced to Fynd platform (Company Code, Brand ID, Location ID)
 4. **Order Tracking** — Bag register with OMS state, return window eligibility, TCS/TDS accrual per bag
 5. **Settlement Computation** — Deduction waterfall: GMV → brand promotions (not marketplace) → commission → GST on commission → TCS → TDS → MDR → penalty → net payable
-6. **Payout with UTR** — NEFT/RTGS payout initiation and UTR bank acknowledgment recording
+6. **Payout with UTR** — Maker-Checker approval workflow: Maker reviews & initiates, Checker approves, backend auto-generates UTR → Settled
 
 ## Database Schema
 
@@ -77,8 +77,9 @@ All routes under `/api/`:
 - `GET /settlements/:id` — Settlement with waterfall detail
 - `GET /settlements/:id/soc` — Download SoC as CSV (27 BRD fields per bag: Order ID, ESP, discounts, commission, TCS, TDS, UTR...)
 - `POST /settlements/:id/approve` — Checker finance sign-off (triggers payout creation)
-- `GET /payouts` — Payout list
-- `POST /payouts/:id/record-utr` — Record UTR and mark settled
+- `GET /payouts` — Payout list (filterable by status)
+- `POST /payouts/:id/initiate` — Maker action: submit payout for Checker approval (PENDING_APPROVAL → INITIATED)
+- `POST /payouts/:id/approve` — Checker action: approve payout → backend auto-generates NEFT UTR → SETTLED immediately
 
 ## Frontend Pages
 

@@ -1,22 +1,26 @@
 openapi: 3.1.0
 info:
-  # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: Swasthera Settlement Module API
 servers:
   - url: /api
-    description: Base API path
 tags:
   - name: health
-    description: Health operations
+  - name: dashboard
+  - name: onboarding
+  - name: orders
+  - name: compliance
+  - name: settlements
+  - name: payouts
+  - name: activity
+
 paths:
   /healthz:
     get:
       operationId: healthCheck
       tags: [health]
       summary: Health check
-      description: Returns server health status
       responses:
         "200":
           description: Healthy
@@ -24,6 +28,484 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /dashboard/summary:
+    get:
+      operationId: getDashboardSummary
+      tags: [dashboard]
+      summary: Dashboard KPI summary for current cycle
+      responses:
+        "200":
+          description: Summary stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardSummary"
+
+  /dashboard/brand-settlements:
+    get:
+      operationId: getBrandSettlements
+      tags: [dashboard]
+      summary: List brand settlements for active cycle
+      responses:
+        "200":
+          description: Brand settlement rows
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/BrandSettlementRow"
+
+  /activity:
+    get:
+      operationId: getActivity
+      tags: [activity]
+      summary: Recent activity log
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: Activity list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ActivityItem"
+
+  /onboardings:
+    get:
+      operationId: listOnboardings
+      tags: [onboarding]
+      summary: List all onboarding submissions
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [DRAFT, SUBMITTED, APPROVED, REJECTED, ACTIVE]
+        - name: search
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Onboarding list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/OnboardingSummary"
+    post:
+      operationId: createOnboarding
+      tags: [onboarding]
+      summary: Create new onboarding draft
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateOnboardingBody"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Onboarding"
+
+  /onboardings/{id}:
+    get:
+      operationId: getOnboarding
+      tags: [onboarding]
+      summary: Get onboarding by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Onboarding detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Onboarding"
+    put:
+      operationId: updateOnboarding
+      tags: [onboarding]
+      summary: Update onboarding draft
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateOnboardingBody"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Onboarding"
+
+  /onboardings/{id}/submit:
+    post:
+      operationId: submitOnboarding
+      tags: [onboarding]
+      summary: Maker submits onboarding for Checker review
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Submitted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Onboarding"
+
+  /onboardings/{id}/approve:
+    post:
+      operationId: approveOnboarding
+      tags: [onboarding]
+      summary: Checker approves onboarding
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CheckerDecisionBody"
+      responses:
+        "200":
+          description: Approved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Onboarding"
+
+  /onboardings/{id}/reject:
+    post:
+      operationId: rejectOnboarding
+      tags: [onboarding]
+      summary: Checker rejects onboarding
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CheckerDecisionBody"
+      responses:
+        "200":
+          description: Rejected
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Onboarding"
+
+  /orders:
+    get:
+      operationId: listOrders
+      tags: [orders]
+      summary: List bags/orders with OMS state and TCS/TDS
+      parameters:
+        - name: brand_id
+          in: query
+          schema:
+            type: integer
+        - name: oms_state
+          in: query
+          schema:
+            type: string
+        - name: eligibility
+          in: query
+          schema:
+            type: string
+            enum: [eligible, in_window, on_hold, settled, all]
+        - name: cycle
+          in: query
+          schema:
+            type: string
+        - name: search
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Bag list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bags:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Bag"
+                  totals:
+                    $ref: "#/components/schemas/BagTotals"
+                required: [bags, totals]
+
+  /orders/{id}:
+    get:
+      operationId: getOrder
+      tags: [orders]
+      summary: Get bag detail
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Bag detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BagDetail"
+
+  /compliance/tcs-tds:
+    get:
+      operationId: getTcsTdsSummary
+      tags: [compliance]
+      summary: TCS/TDS register summary
+      parameters:
+        - name: month
+          in: query
+          schema:
+            type: string
+        - name: year
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: TCS/TDS summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TcsTdsSummary"
+
+  /compliance/tcs-records:
+    get:
+      operationId: listTcsRecords
+      tags: [compliance]
+      summary: TCS records by warehouse state GSTIN
+      parameters:
+        - name: month
+          in: query
+          schema:
+            type: string
+        - name: year
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: TCS records
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TcsRecord"
+
+  /compliance/tds-records:
+    get:
+      operationId: listTdsRecords
+      tags: [compliance]
+      summary: TDS records by company TAN
+      parameters:
+        - name: month
+          in: query
+          schema:
+            type: string
+        - name: year
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: TDS records
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TdsRecord"
+
+  /compliance/calendar:
+    get:
+      operationId: getComplianceCalendar
+      tags: [compliance]
+      summary: Upcoming TCS/TDS compliance deadlines
+      responses:
+        "200":
+          description: Calendar items
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ComplianceEvent"
+
+  /settlements:
+    get:
+      operationId: listSettlements
+      tags: [settlements]
+      summary: List settlement cycles
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [COMPUTED, PENDING_APPROVAL, APPROVED, PAID]
+      responses:
+        "200":
+          description: Settlement list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SettlementSummary"
+    post:
+      operationId: createSettlement
+      tags: [settlements]
+      summary: Compute a new settlement for a company+cycle
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSettlementBody"
+      responses:
+        "201":
+          description: Settlement computed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Settlement"
+
+  /settlements/{id}:
+    get:
+      operationId: getSettlement
+      tags: [settlements]
+      summary: Get settlement with deduction waterfall
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Settlement detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Settlement"
+
+  /settlements/{id}/approve:
+    post:
+      operationId: approveSettlement
+      tags: [settlements]
+      summary: Finance signs off on settlement
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FinanceApprovalBody"
+      responses:
+        "200":
+          description: Approved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Settlement"
+
+  /payouts:
+    get:
+      operationId: listPayouts
+      tags: [payouts]
+      summary: List payouts
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [INITIATED, UTR_RECORDED, SETTLED]
+      responses:
+        "200":
+          description: Payout list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Payout"
+
+  /payouts/{id}/record-utr:
+    post:
+      operationId: recordUtr
+      tags: [payouts]
+      summary: Record UTR and finalize payout
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecordUtrBody"
+      responses:
+        "200":
+          description: UTR recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Payout"
+
 components:
   schemas:
     HealthStatus:
@@ -31,6 +513,652 @@ components:
       properties:
         status:
           type: string
-      required:
-        - status
+      required: [status]
 
+    DashboardSummary:
+      type: object
+      properties:
+        cycle:
+          type: string
+        cycleLabel:
+          type: string
+        grossGmv:
+          type: number
+        netPayable:
+          type: number
+        commissionEarned:
+          type: number
+        tcsAccrued:
+          type: number
+        tdsDeducted:
+          type: number
+        pendingPayouts:
+          type: number
+        pendingApprovals:
+          type: integer
+        activeBrands:
+          type: integer
+      required: [cycle, cycleLabel, grossGmv, netPayable, commissionEarned, tcsAccrued, tdsDeducted, pendingPayouts, pendingApprovals, activeBrands]
+
+    BrandSettlementRow:
+      type: object
+      properties:
+        id:
+          type: integer
+        companyName:
+          type: string
+        brandName:
+          type: string
+        eligibleBags:
+          type: integer
+        gmv:
+          type: number
+        commission:
+          type: number
+        tcs:
+          type: number
+        tds:
+          type: number
+        netPayable:
+          type: number
+        status:
+          type: string
+          enum: [PENDING_APPROVAL, APPROVED, PAYOUT_INITIATED, ON_HOLD, SETTLED]
+      required: [id, companyName, brandName, eligibleBags, gmv, commission, tcs, tds, netPayable, status]
+
+    ActivityItem:
+      type: object
+      properties:
+        id:
+          type: integer
+        timestamp:
+          type: string
+          format: date-time
+        user:
+          type: string
+        action:
+          type: string
+        entityType:
+          type: string
+        entityRef:
+          type: string
+        level:
+          type: string
+          enum: [info, success, warning, system]
+      required: [id, timestamp, user, action, entityType, level]
+
+    OnboardingSummary:
+      type: object
+      properties:
+        id:
+          type: integer
+        ref:
+          type: string
+        companyName:
+          type: string
+        brandName:
+          type: string
+        companyType:
+          type: string
+        submittedBy:
+          type: string
+        submittedAt:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [DRAFT, SUBMITTED, APPROVED, REJECTED, ACTIVE]
+        kybStatus:
+          type: string
+          enum: [NOT_STARTED, PENDING, PASSED, FAILED]
+        docsUploaded:
+          type: integer
+        docsRequired:
+          type: integer
+        urgency:
+          type: string
+          enum: [Normal, Overdue, High]
+      required: [id, ref, companyName, brandName, companyType, status, kybStatus, docsUploaded, docsRequired, urgency]
+
+    Onboarding:
+      type: object
+      properties:
+        id:
+          type: integer
+        ref:
+          type: string
+        status:
+          type: string
+          enum: [DRAFT, SUBMITTED, APPROVED, REJECTED, ACTIVE]
+        kybStatus:
+          type: string
+          enum: [NOT_STARTED, PENDING, PASSED, FAILED]
+        companyName:
+          type: string
+        companyType:
+          type: string
+        pan:
+          type: string
+        cin:
+          type: string
+        masterGstin:
+          type: string
+        tan:
+          type: string
+        bankAccount:
+          type: string
+        bankIfsc:
+          type: string
+        bankName:
+          type: string
+        spocName:
+          type: string
+        spocEmail:
+          type: string
+        spocMobile:
+          type: string
+        brandName:
+          type: string
+        brandCategory:
+          type: string
+        brandType:
+          type: string
+        warehouseName:
+          type: string
+        warehouseState:
+          type: string
+        warehouseGstin:
+          type: string
+        warehouseAddress:
+          type: string
+        commissionRate:
+          type: number
+        commissionType:
+          type: string
+        returnWindowDays:
+          type: integer
+        tcsRate:
+          type: number
+        tdsRate:
+          type: number
+        docsUploaded:
+          type: integer
+        docsRequired:
+          type: integer
+        submittedBy:
+          type: string
+        submittedAt:
+          type: string
+          format: date-time
+        checkerName:
+          type: string
+        checkerNotes:
+          type: string
+        reviewedAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        fyndCompanyCode:
+          type: string
+        fyndBrandId:
+          type: string
+        fyndLocationId:
+          type: string
+      required: [id, ref, status, kybStatus, companyName, companyType, pan, masterGstin, bankAccount, bankIfsc, bankName, brandName, brandCategory, brandType, warehouseName, warehouseState, warehouseGstin, warehouseAddress, commissionRate, commissionType, returnWindowDays, tcsRate, tdsRate, docsUploaded, docsRequired, createdAt, updatedAt]
+
+    CreateOnboardingBody:
+      type: object
+      properties:
+        companyName:
+          type: string
+        companyType:
+          type: string
+        pan:
+          type: string
+        cin:
+          type: string
+        masterGstin:
+          type: string
+        tan:
+          type: string
+        bankAccount:
+          type: string
+        bankIfsc:
+          type: string
+        bankName:
+          type: string
+        spocName:
+          type: string
+        spocEmail:
+          type: string
+        spocMobile:
+          type: string
+        brandName:
+          type: string
+        brandCategory:
+          type: string
+        brandType:
+          type: string
+        warehouseName:
+          type: string
+        warehouseState:
+          type: string
+        warehouseGstin:
+          type: string
+        warehouseAddress:
+          type: string
+        commissionRate:
+          type: number
+        commissionType:
+          type: string
+        returnWindowDays:
+          type: integer
+        tcsRate:
+          type: number
+        tdsRate:
+          type: number
+      required: [companyName, companyType, pan, masterGstin, bankAccount, bankIfsc, bankName, brandName, brandCategory, brandType, warehouseName, warehouseState, warehouseGstin, warehouseAddress, commissionRate, commissionType, returnWindowDays, tcsRate, tdsRate]
+
+    UpdateOnboardingBody:
+      type: object
+      properties:
+        companyName:
+          type: string
+        companyType:
+          type: string
+        pan:
+          type: string
+        cin:
+          type: string
+        masterGstin:
+          type: string
+        tan:
+          type: string
+        bankAccount:
+          type: string
+        bankIfsc:
+          type: string
+        bankName:
+          type: string
+        spocName:
+          type: string
+        spocEmail:
+          type: string
+        spocMobile:
+          type: string
+        brandName:
+          type: string
+        brandCategory:
+          type: string
+        brandType:
+          type: string
+        warehouseName:
+          type: string
+        warehouseState:
+          type: string
+        warehouseGstin:
+          type: string
+        warehouseAddress:
+          type: string
+        commissionRate:
+          type: number
+        commissionType:
+          type: string
+        returnWindowDays:
+          type: integer
+        tcsRate:
+          type: number
+        tdsRate:
+          type: number
+
+    CheckerDecisionBody:
+      type: object
+      properties:
+        notes:
+          type: string
+        rejectionReason:
+          type: string
+      required: []
+
+    Bag:
+      type: object
+      properties:
+        id:
+          type: integer
+        bagId:
+          type: string
+        orderId:
+          type: string
+        brandName:
+          type: string
+        brandId:
+          type: integer
+        sku:
+          type: string
+        esp:
+          type: number
+        qty:
+          type: integer
+        omsState:
+          type: string
+        invoiceDate:
+          type: string
+        deliveryDate:
+          type: string
+        windowExpiryDate:
+          type: string
+        tcsAmount:
+          type: number
+        tdsAmount:
+          type: number
+        eligibility:
+          type: string
+          enum: [eligible, in_window, on_hold, settled, awaiting_delivery]
+        cycle:
+          type: string
+        stateCode:
+          type: string
+        stateGstin:
+          type: string
+      required: [id, bagId, orderId, brandName, brandId, sku, esp, qty, omsState, tcsAmount, tdsAmount, eligibility, cycle, stateCode, stateGstin]
+
+    BagTotals:
+      type: object
+      properties:
+        totalBags:
+          type: integer
+        totalEsp:
+          type: number
+        totalQty:
+          type: integer
+        totalTcs:
+          type: number
+        totalTds:
+          type: number
+        eligibleCount:
+          type: integer
+        inWindowCount:
+          type: integer
+        onHoldCount:
+          type: integer
+      required: [totalBags, totalEsp, totalQty, totalTcs, totalTds, eligibleCount, inWindowCount, onHoldCount]
+
+    BagDetail:
+      allOf:
+        - $ref: "#/components/schemas/Bag"
+        - type: object
+          properties:
+            omsTimeline:
+              type: array
+              items:
+                type: object
+                properties:
+                  state:
+                    type: string
+                  timestamp:
+                    type: string
+                  critical:
+                    type: boolean
+                required: [state, critical]
+            commissionRate:
+              type: number
+            commissionRateLockDate:
+              type: string
+            invoicedAt:
+              type: string
+            tcsAccruedAt:
+              type: string
+          required: [omsTimeline]
+
+    TcsTdsSummary:
+      type: object
+      properties:
+        month:
+          type: string
+        year:
+          type: integer
+        tcsAccrued:
+          type: number
+        tcsPaid:
+          type: number
+        tdsDeducted:
+          type: number
+        gstr8Status:
+          type: string
+          enum: [Pending, Filed, Overdue]
+        gstr8DueDate:
+          type: string
+        tcsPaymentDue:
+          type: string
+        tdsDepositDue:
+          type: string
+      required: [month, year, tcsAccrued, tcsPaid, tdsDeducted, gstr8Status, gstr8DueDate, tcsPaymentDue, tdsDepositDue]
+
+    TcsRecord:
+      type: object
+      properties:
+        id:
+          type: integer
+        stateGstin:
+          type: string
+        stateCode:
+          type: string
+        stateName:
+          type: string
+        brandName:
+          type: string
+        taxableSupply:
+          type: number
+        tcsRate:
+          type: number
+        tcsAmount:
+          type: number
+        status:
+          type: string
+          enum: [Accrued, Paid, Filed]
+        paymentDueDate:
+          type: string
+      required: [id, stateGstin, stateCode, stateName, brandName, taxableSupply, tcsRate, tcsAmount, status, paymentDueDate]
+
+    TdsRecord:
+      type: object
+      properties:
+        id:
+          type: integer
+        companyName:
+          type: string
+        tan:
+          type: string
+        grossPayment:
+          type: number
+        tdsRate:
+          type: number
+        tdsAmount:
+          type: number
+        netPaid:
+          type: number
+        status:
+          type: string
+          enum: [Pending, Deposited, Filed]
+      required: [id, companyName, tan, grossPayment, tdsRate, tdsAmount, netPaid, status]
+
+    ComplianceEvent:
+      type: object
+      properties:
+        id:
+          type: integer
+        obligation:
+          type: string
+        section:
+          type: string
+        dueDate:
+          type: string
+        status:
+          type: string
+          enum: [Upcoming, Filed, Future, Overdue]
+      required: [id, obligation, section, dueDate, status]
+
+    SettlementSummary:
+      type: object
+      properties:
+        id:
+          type: integer
+        cycle:
+          type: string
+        companyName:
+          type: string
+        brandName:
+          type: string
+        eligibleBags:
+          type: integer
+        grossGmv:
+          type: number
+        netPayable:
+          type: number
+        status:
+          type: string
+          enum: [COMPUTED, PENDING_APPROVAL, APPROVED, PAID]
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, cycle, companyName, brandName, eligibleBags, grossGmv, netPayable, status, createdAt]
+
+    Settlement:
+      type: object
+      properties:
+        id:
+          type: integer
+        cycle:
+          type: string
+        companyName:
+          type: string
+        brandName:
+          type: string
+        bankAccount:
+          type: string
+        bankIfsc:
+          type: string
+        bankName:
+          type: string
+        eligibleBags:
+          type: integer
+        bagIds:
+          type: array
+          items:
+            type: string
+        grossGmv:
+          type: number
+        brandPromotions:
+          type: number
+        netBeforeCommission:
+          type: number
+        commission:
+          type: number
+        commissionRate:
+          type: number
+        gstOnCommission:
+          type: number
+        tcsAmount:
+          type: number
+        tdsAmount:
+          type: number
+        mdrCharges:
+          type: number
+        penalty:
+          type: number
+        netPayable:
+          type: number
+        status:
+          type: string
+          enum: [COMPUTED, PENDING_APPROVAL, APPROVED, PAID]
+        financeNotes:
+          type: string
+        approvedBy:
+          type: string
+        approvedAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, cycle, companyName, brandName, bankAccount, bankIfsc, bankName, eligibleBags, bagIds, grossGmv, brandPromotions, netBeforeCommission, commission, commissionRate, gstOnCommission, tcsAmount, tdsAmount, mdrCharges, penalty, netPayable, status, createdAt]
+
+    CreateSettlementBody:
+      type: object
+      properties:
+        onboardingId:
+          type: integer
+        cycle:
+          type: string
+      required: [onboardingId, cycle]
+
+    FinanceApprovalBody:
+      type: object
+      properties:
+        financeNotes:
+          type: string
+      required: []
+
+    Payout:
+      type: object
+      properties:
+        id:
+          type: integer
+        settlementId:
+          type: integer
+        cycle:
+          type: string
+        companyName:
+          type: string
+        brandName:
+          type: string
+        bankAccount:
+          type: string
+        bankIfsc:
+          type: string
+        bankName:
+          type: string
+        amount:
+          type: number
+        transferMode:
+          type: string
+        paymentRef:
+          type: string
+        utr:
+          type: string
+        bankAckAt:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [INITIATED, UTR_RECORDED, SETTLED]
+        initiatedAt:
+          type: string
+          format: date-time
+        settledAt:
+          type: string
+          format: date-time
+        bagCount:
+          type: integer
+        bagIds:
+          type: array
+          items:
+            type: string
+      required: [id, settlementId, cycle, companyName, brandName, bankAccount, bankIfsc, bankName, amount, transferMode, paymentRef, status, initiatedAt, bagCount, bagIds]
+
+    RecordUtrBody:
+      type: object
+      properties:
+        utr:
+          type: string
+        bankAckAt:
+          type: string
+          format: date-time
+        amountCredited:
+          type: number
+      required: [utr, bankAckAt, amountCredited]

@@ -43,6 +43,7 @@ interface ActiveBrand {
   stateCode: string | null;
   returnWindowDays: number;
   status: string;
+  brandCode?: string;
 }
 
 interface BagRow {
@@ -87,9 +88,11 @@ const currentCycle = () => {
 };
 
 const CSV_TEMPLATE_HEADERS = ["brandId", "cycle", "sku", "esp", "qty", "omsState", "deliveryDate"];
-const CSV_TEMPLATE_EXAMPLE = ["1", currentCycle(), "DRESS-RED-M", "2499", "1", "delivery_done", new Date().toISOString().split("T")[0]];
 
-function downloadCsvTemplate() {
+function downloadCsvTemplate(brands?: ActiveBrand[]) {
+  const exampleBrand = brands?.[0];
+  const exampleBrandId = exampleBrand?.brandCode ?? exampleBrand?.id ?? "BR-00001";
+  const CSV_TEMPLATE_EXAMPLE = [String(exampleBrandId), currentCycle(), "DRESS-RED-M", "2499", "1", "delivery_done", new Date().toISOString().split("T")[0]];
   const rows = [CSV_TEMPLATE_HEADERS, CSV_TEMPLATE_EXAMPLE];
   const csv = rows.map((r) => r.join(",")).join("\n");
   const blob = new Blob([csv], { type: "text/csv" });
@@ -146,12 +149,17 @@ export function OrdersList() {
     eligibility: eligibilityParam,
   });
 
-  // Fetch APPROVED + ACTIVE brands for the simulator
+  // Fetch APPROVED + ACTIVE brands for the simulator, enriched with brand codes from brands table
   const { data: brands } = useQuery<ActiveBrand[]>({
     queryKey: ["active-brands-simulator"],
     queryFn: async () => {
-      const r = await fetch("/api/onboardings");
-      const rows = await r.json();
+      const [onboardingsRes, brandsRes] = await Promise.all([
+        fetch("/api/onboardings"),
+        fetch("/api/brands"),
+      ]);
+      const rows = await onboardingsRes.json();
+      const brandRows: Array<{ onboardingId: number; brandCode: string }> = await brandsRes.json();
+      const brandCodeByOnboardingId = new Map(brandRows.map((b) => [b.onboardingId, b.brandCode]));
       return rows
         .filter((ob: { status: string }) => ob.status === "APPROVED" || ob.status === "ACTIVE")
         .map((ob: { id: number; brandName: string; commissionRate: number; tcsRate: number; tdsRate: number; stateCode: string | null; returnWindowDays: number; status: string }) => ({
@@ -163,6 +171,7 @@ export function OrdersList() {
           stateCode: ob.stateCode,
           returnWindowDays: ob.returnWindowDays ?? 7,
           status: ob.status,
+          brandCode: brandCodeByOnboardingId.get(ob.id),
         }));
     },
     enabled: isBackend,
@@ -725,7 +734,11 @@ function BulkUploadDialog({ open, onOpenChange, brands, onSubmit, isPending }: B
   const [parseError, setParseError] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const brandMap = new Map(brands.map((b) => [String(b.id), b]));
+  // Dual-key map: supports both numeric onboarding ID ("3") and brand code ("BR-00003")
+  const brandMap = new Map<string, ActiveBrand>([
+    ...brands.map((b): [string, ActiveBrand] => [String(b.id), b]),
+    ...brands.filter((b) => b.brandCode).map((b): [string, ActiveBrand] => [b.brandCode!, b]),
+  ]);
 
   const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -746,17 +759,18 @@ function BulkUploadDialog({ open, onOpenChange, brands, onSubmit, isPending }: B
 
   const handleSubmit = () => {
     const allMapped = parsedRows.map((row, i) => {
-      const brand = brandMap.get(row.brandId);
-      const brandId = parseInt(row.brandId);
+      const brand = brandMap.get(row.brandId.trim());
+      // Support both numeric onboarding ID and BR-XXXXX brand code
+      const brandId = brand?.id ?? (row.brandId.startsWith("BR-") ? undefined : parseInt(row.brandId));
       const esp = parseFloat(row.esp) || 0;
       const issues: string[] = [];
-      if (!brand) issues.push(`row ${i + 2}: brandId "${row.brandId}" not found in approved brands`);
+      if (!brand) issues.push(`row ${i + 2}: brandId "${row.brandId}" not found — use a numeric ID or BR-XXXXX code from the list below`);
       if (!row.sku) issues.push(`row ${i + 2}: sku is empty`);
       if (esp <= 0) issues.push(`row ${i + 2}: esp must be > 0`);
       return {
         bag: {
-          brandId,
-          brandName: brand?.brandName ?? `Brand-${brandId}`,
+          brandId: brandId ?? row.brandId,
+          brandName: brand?.brandName ?? `Brand-${row.brandId}`,
           cycle: row.cycle || currentCycle(),
           sku: row.sku,
           esp,
@@ -807,21 +821,22 @@ function BulkUploadDialog({ open, onOpenChange, brands, onSubmit, isPending }: B
           <div className="rounded-md border border-blue-100 bg-blue-50 p-3 text-xs text-blue-700 space-y-1">
             <p className="font-semibold">Required CSV columns:</p>
             <p className="font-mono">{CSV_TEMPLATE_HEADERS.join(", ")}</p>
-            <p className="text-blue-500">brandId must match an APPROVED brand ID shown in the simulator</p>
+            <p className="text-blue-500">brandId accepts numeric onboarding ID <strong>or</strong> BR-XXXXX brand code (see table below)</p>
           </div>
 
-          <Button variant="outline" size="sm" onClick={downloadCsvTemplate} className="w-full border-blue-200 text-blue-700 hover:bg-blue-50">
+          <Button variant="outline" size="sm" onClick={() => downloadCsvTemplate(brands)} className="w-full border-blue-200 text-blue-700 hover:bg-blue-50">
             <Download className="h-4 w-4 mr-2" /> Download CSV Template
           </Button>
 
           {brands.length > 0 && (
             <div className="rounded-md bg-slate-50 border border-slate-100 p-2 text-xs text-slate-600">
-              <p className="font-medium mb-1">Available brand IDs:</p>
+              <p className="font-medium mb-1">Available brands (use either ID or Brand Code):</p>
               <div className="space-y-0.5">
                 {brands.map((b) => (
-                  <div key={b.id} className="flex justify-between">
-                    <span className="font-mono font-semibold">{b.id}</span>
-                    <span>{b.brandName} ({b.returnWindowDays}d window)</span>
+                  <div key={b.id} className="flex justify-between gap-2">
+                    <span className="font-mono font-semibold shrink-0">{b.brandCode ?? b.id}</span>
+                    <span className="text-slate-400 font-mono shrink-0">({b.id})</span>
+                    <span className="truncate">{b.brandName} — {b.returnWindowDays}d window</span>
                   </div>
                 ))}
               </div>

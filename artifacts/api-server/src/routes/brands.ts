@@ -60,6 +60,17 @@ function mapWarehouse(w: typeof warehousesTable.$inferSelect) {
 
 // ── Brands ───────────────────────────────────────────────────────────────────
 
+// List ALL brands across all onboardings (used by bulk upload for brand code lookup)
+router.get("/brands", async (req, res) => {
+  try {
+    const brands = await db.select().from(brandsTable).orderBy(brandsTable.createdAt);
+    res.json(brands.map(mapBrand));
+  } catch (err) {
+    req.log.error({ err }, "list all brands error");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 // List all brands for an onboarding (auto-populates from onboarding data if table is empty for this record)
 router.get("/onboardings/:id/brands", async (req, res) => {
   try {

@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
 import { bagsTable, onboardingsTable, brandsTable, warehousesTable } from "@workspace/db";
-import { eq, and, like, lt, SQL } from "drizzle-orm";
+import { eq, and, like, lt, inArray, SQL } from "drizzle-orm";
 import { sql } from "drizzle-orm";
 
 const router = Router();
@@ -13,7 +13,16 @@ router.get("/orders", async (req, res) => {
     if (brand_id) conditions.push(eq(bagsTable.brandId, parseInt(brand_id)));
     if (oms_state) conditions.push(eq(bagsTable.omsState, oms_state));
     if (eligibility && eligibility !== "all") {
-      conditions.push(eq(bagsTable.eligibility, eligibility as "eligible" | "in_window" | "on_hold" | "settled" | "awaiting_delivery"));
+      const today = new Date().toISOString().split("T")[0];
+      if (eligibility === "eligible") {
+        // Bag is truly eligible when its return window has expired — mirrors display logic
+        conditions.push(sql`(${bagsTable.eligibility} IN ('eligible', 'in_window') AND (${bagsTable.windowExpiryDate} IS NULL OR ${bagsTable.windowExpiryDate} < ${today}))`);
+      } else if (eligibility === "in_window") {
+        // Bag is in-window when the return window is still open — mirrors display logic
+        conditions.push(sql`(${bagsTable.eligibility} IN ('eligible', 'in_window') AND ${bagsTable.windowExpiryDate} IS NOT NULL AND ${bagsTable.windowExpiryDate} >= ${today})`);
+      } else {
+        conditions.push(eq(bagsTable.eligibility, eligibility as "on_hold" | "settled" | "awaiting_delivery"));
+      }
     }
     if (cycle) conditions.push(eq(bagsTable.cycle, cycle));
     if (search) conditions.push(like(bagsTable.bagId, `%${search}%`));
@@ -22,6 +31,7 @@ router.get("/orders", async (req, res) => {
       ? await db.select().from(bagsTable).where(and(...conditions)).orderBy(bagsTable.createdAt).limit(200)
       : await db.select().from(bagsTable).orderBy(bagsTable.createdAt).limit(200);
 
+    const statToday = new Date().toISOString().split("T")[0];
     const [totals] = await db
       .select({
         totalBags: sql<string>`count(*)`,
@@ -29,8 +39,8 @@ router.get("/orders", async (req, res) => {
         totalQty: sql<string>`coalesce(sum(${bagsTable.qty}), 0)`,
         totalTcs: sql<string>`coalesce(sum(${bagsTable.tcsAmount}), 0)`,
         totalTds: sql<string>`coalesce(sum(${bagsTable.tdsAmount}), 0)`,
-        eligibleCount: sql<string>`count(*) filter (where ${bagsTable.eligibility} = 'eligible')`,
-        inWindowCount: sql<string>`count(*) filter (where ${bagsTable.eligibility} = 'in_window')`,
+        eligibleCount: sql<string>`count(*) filter (where ${bagsTable.eligibility} IN ('eligible', 'in_window') AND (${bagsTable.windowExpiryDate} IS NULL OR ${bagsTable.windowExpiryDate} < ${statToday}))`,
+        inWindowCount: sql<string>`count(*) filter (where ${bagsTable.eligibility} IN ('eligible', 'in_window') AND ${bagsTable.windowExpiryDate} IS NOT NULL AND ${bagsTable.windowExpiryDate} >= ${statToday})`,
         onHoldCount: sql<string>`count(*) filter (where ${bagsTable.eligibility} = 'on_hold')`,
       })
       .from(bagsTable);
@@ -194,17 +204,42 @@ router.post("/bags/bulk", async (req, res) => {
       return res.status(400).json({ error: "Maximum 500 bags per bulk upload" });
     }
 
-    // Prefetch all unique brand IDs
-    const brandIds = [...new Set(bags.map((b) => b.brandId))];
-    const brands = await db.select().from(onboardingsTable)
-      .where(sql`${onboardingsTable.id} = ANY(ARRAY[${sql.join(brandIds.map(id => sql`${id}`), sql`, `)}])`);
+    // Resolve BR-XXXXX brand codes to onboarding IDs
+    const rawBrandIds = [...new Set(bags.map((b) => b.brandId))];
+    const brandCodeIds = rawBrandIds.filter((id) => typeof id === "string" && String(id).startsWith("BR-"));
+    const resolvedCodeMap = new Map<string, number>(); // BR-XXXXX → onboarding_id
+    if (brandCodeIds.length > 0) {
+      const brandRows = await db.select().from(brandsTable)
+        .where(sql`${brandsTable.brandCode} = ANY(ARRAY[${sql.join(brandCodeIds.map((c) => sql`${String(c)}`), sql`, `)}])`);
+      for (const br of brandRows) {
+        resolvedCodeMap.set(br.brandCode, br.onboardingId);
+      }
+    }
+    // Normalise all bag entries to use numeric onboarding IDs
+    const normalisedBags = bags.map((b) => ({
+      ...b,
+      brandId: typeof b.brandId === "string" && String(b.brandId).startsWith("BR-")
+        ? (resolvedCodeMap.get(String(b.brandId)) ?? b.brandId)
+        : b.brandId,
+    }));
+
+    // Prefetch all unique (numeric) brand onboarding records
+    const brandIds = [...new Set(
+      normalisedBags
+        .map((b) => b.brandId)
+        .filter((id): id is number => typeof id === "number" || (!isNaN(Number(id)) && id !== ""))
+        .map(Number)
+    )];
+    const brands = brandIds.length > 0
+      ? await db.select().from(onboardingsTable).where(inArray(onboardingsTable.id, brandIds))
+      : [];
     const brandMap = new Map(brands.map((b) => [b.id, b]));
 
     const today = new Date().toISOString().split("T")[0];
     const ts = Date.now();
 
-    const inserted = await Promise.all(bags.map(async (b, i) => {
-      const brand = brandMap.get(b.brandId);
+    const inserted = await Promise.all(normalisedBags.map(async (b, i) => {
+      const brand = brandMap.get(Number(b.brandId));
       const returnWindowDays = brand?.returnWindowDays ?? 7;
       const deliveryDate = b.deliveryDate ?? today;
       const deliveryDt = new Date(deliveryDate);
@@ -216,7 +251,7 @@ router.post("/bags/bulk", async (req, res) => {
       const [row] = await db.insert(bagsTable).values({
         bagId: `BAG${ts}${rand.toString().padStart(4, "0")}`,
         orderId: `ORD${ts}${rand.toString().padStart(3, "0")}`,
-        brandId: b.brandId,
+        brandId: Number(b.brandId),
         brandName: b.brandName,
         sku: b.sku,
         esp: String(b.esp),

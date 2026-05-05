@@ -1,12 +1,13 @@
 import { createContext, useContext, useState, type ReactNode } from "react";
 
-type Role = "maker" | "checker";
+type Role = "maker" | "checker" | "backend";
 
 interface RoleContextType {
   role: Role;
   setRole: (role: Role) => void;
   isMaker: boolean;
   isChecker: boolean;
+  isBackend: boolean;
 }
 
 const RoleContext = createContext<RoleContextType | null>(null);
@@ -22,7 +23,13 @@ export function RoleProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <RoleContext.Provider value={{ role, setRole, isMaker: role === "maker", isChecker: role === "checker" }}>
+    <RoleContext.Provider value={{
+      role,
+      setRole,
+      isMaker: role === "maker",
+      isChecker: role === "checker",
+      isBackend: role === "backend",
+    }}>
       {children}
     </RoleContext.Provider>
   );

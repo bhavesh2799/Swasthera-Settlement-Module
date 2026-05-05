@@ -8,6 +8,7 @@ import {
   Banknote,
   ChevronRight,
   Users2,
+  Database,
 } from "lucide-react";
 import { useRole } from "@/contexts/RoleContext";
 
@@ -16,9 +17,10 @@ interface SidebarItemProps {
   label: string;
   href: string;
   active: boolean;
+  badge?: string;
 }
 
-function SidebarItem({ icon: Icon, label, href, active }: SidebarItemProps) {
+function SidebarItem({ icon: Icon, label, href, active, badge }: SidebarItemProps) {
   return (
     <Link href={href}>
       <div
@@ -32,7 +34,12 @@ function SidebarItem({ icon: Icon, label, href, active }: SidebarItemProps) {
           <Icon className="h-4 w-4" />
           <span className="text-sm">{label}</span>
         </div>
-        {active && <ChevronRight className="h-4 w-4 opacity-50" />}
+        <div className="flex items-center gap-1">
+          {badge && (
+            <span className="text-[10px] bg-amber-500 text-white rounded px-1 py-0.5 font-medium leading-none">{badge}</span>
+          )}
+          {active && <ChevronRight className="h-4 w-4 opacity-50" />}
+        </div>
       </div>
     </Link>
   );
@@ -40,16 +47,22 @@ function SidebarItem({ icon: Icon, label, href, active }: SidebarItemProps) {
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
-  const { role, setRole } = useRole();
+  const { role, setRole, isBackend } = useRole();
 
   const navigation = [
     { label: "Dashboard", href: "/", icon: LayoutDashboard },
     { label: "Onboarding", href: "/onboarding", icon: UserPlus, prefix: "/onboarding" },
-    { label: "Orders", href: "/orders", icon: PackageSearch },
+    { label: "Orders", href: "/orders", icon: PackageSearch, badge: isBackend ? "SIM" : undefined },
     { label: "Compliance", href: "/compliance", icon: ShieldCheck },
     { label: "Settlements", href: "/settlements", icon: Calculator, prefix: "/settlements" },
     { label: "Payouts", href: "/payouts", icon: Banknote },
   ];
+
+  const roleDescriptions: Record<string, string> = {
+    maker: "Create & submit onboardings, initiate payouts",
+    checker: "Approve/reject onboardings & payouts",
+    backend: "Simulate Fynd data feeds & manage orders",
+  };
 
   return (
     <div className="min-h-screen bg-background flex text-foreground">
@@ -67,6 +80,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
               icon={item.icon}
               label={item.label}
               href={item.href}
+              badge={item.badge}
               active={
                 location === item.href || 
                 (item.prefix && location !== "/" && location.startsWith(item.prefix)) || false
@@ -75,11 +89,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
           ))}
         </nav>
 
-        {/* Role switcher — BRD §3.1 Maker-Checker separation */}
+        {/* Role switcher */}
         <div className="p-4 border-t border-border/50 space-y-3">
           <div className="space-y-1.5">
             <div className="flex items-center gap-1.5 text-xs font-medium text-foreground">
-              <Users2 className="h-3.5 w-3.5" />
+              {isBackend ? <Database className="h-3.5 w-3.5 text-amber-600" /> : <Users2 className="h-3.5 w-3.5" />}
               Active Role
             </div>
             <div className="flex rounded-md overflow-hidden border border-border text-xs">
@@ -103,9 +117,19 @@ export function Layout({ children }: { children: React.ReactNode }) {
               >
                 Checker
               </button>
+              <button
+                onClick={() => setRole("backend")}
+                className={`flex-1 px-2 py-1.5 font-medium transition-colors ${
+                  role === "backend" 
+                    ? "bg-amber-600 text-white" 
+                    : "bg-card text-muted-foreground hover:bg-secondary"
+                }`}
+              >
+                Backend
+              </button>
             </div>
-            <p className="text-[10px] text-muted-foreground">
-              {role === "maker" ? "Maker: create & submit onboardings" : "Checker: approve or reject submissions"}
+            <p className="text-[10px] text-muted-foreground leading-snug">
+              {roleDescriptions[role]}
             </p>
           </div>
           <p className="text-xs text-muted-foreground">Swasthera Finance Ops v1.1</p>

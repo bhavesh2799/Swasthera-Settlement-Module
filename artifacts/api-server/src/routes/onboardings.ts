@@ -210,7 +210,7 @@ router.post("/onboardings/:id/kyb-check", async (req, res) => {
 
 router.post("/onboardings/:id/submit", async (req, res) => {
   try {
-    const { submittedBy } = req.body as { submittedBy?: string };
+    const submittedBy = (req.body as { submittedBy?: string } | undefined)?.submittedBy;
     const [ob] = await db.select().from(onboardingsTable).where(eq(onboardingsTable.id, parseInt(req.params.id)));
     if (!ob) return res.status(404).json({ error: "Not found" });
 

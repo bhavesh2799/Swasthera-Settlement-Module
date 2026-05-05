@@ -87,6 +87,17 @@ const currentCycle = () => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 };
 
+/** Accepts YYYY-MM-DD or DD-MM-YYYY (or DD/MM/YYYY) and always returns YYYY-MM-DD. */
+function normaliseCsvDate(dateStr?: string): string {
+  const fallback = new Date().toISOString().split("T")[0];
+  if (!dateStr) return fallback;
+  const ddmmyyyy = /^(\d{2})-(\d{2})-(\d{4})$/.exec(dateStr);
+  if (ddmmyyyy) return `${ddmmyyyy[3]}-${ddmmyyyy[2]}-${ddmmyyyy[1]}`;
+  const ddmmyyyySlash = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(dateStr);
+  if (ddmmyyyySlash) return `${ddmmyyyySlash[3]}-${ddmmyyyySlash[2]}-${ddmmyyyySlash[1]}`;
+  return dateStr;
+}
+
 const CSV_TEMPLATE_HEADERS = ["brandId", "cycle", "sku", "esp", "qty", "omsState", "deliveryDate"];
 
 function downloadCsvTemplate(brands?: ActiveBrand[]) {
@@ -776,7 +787,7 @@ function BulkUploadDialog({ open, onOpenChange, brands, onSubmit, isPending }: B
           esp,
           qty: parseInt(row.qty) || 1,
           omsState: row.omsState || "delivery_done",
-          deliveryDate: row.deliveryDate || new Date().toISOString().split("T")[0],
+          deliveryDate: normaliseCsvDate(row.deliveryDate),
         },
         issues,
         valid: brand !== undefined && !!row.sku && esp > 0,

@@ -180,6 +180,17 @@ router.post("/bags", async (req, res) => {
   }
 });
 
+/** Accepts YYYY-MM-DD or DD-MM-YYYY and always returns YYYY-MM-DD. */
+function normaliseDate(dateStr: string | undefined, fallback: string): string {
+  if (!dateStr) return fallback;
+  const ddmmyyyy = /^(\d{2})-(\d{2})-(\d{4})$/.exec(dateStr);
+  if (ddmmyyyy) return `${ddmmyyyy[3]}-${ddmmyyyy[2]}-${ddmmyyyy[1]}`;
+  // DD/MM/YYYY
+  const ddmmyyyySlash = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(dateStr);
+  if (ddmmyyyySlash) return `${ddmmyyyySlash[3]}-${ddmmyyyySlash[2]}-${ddmmyyyySlash[1]}`;
+  return dateStr;
+}
+
 // Fynd simulator: bulk create bags from CSV upload
 router.post("/bags/bulk", async (req, res) => {
   try {
@@ -241,7 +252,7 @@ router.post("/bags/bulk", async (req, res) => {
     const inserted = await Promise.all(normalisedBags.map(async (b, i) => {
       const brand = brandMap.get(Number(b.brandId));
       const returnWindowDays = brand?.returnWindowDays ?? 7;
-      const deliveryDate = b.deliveryDate ?? today;
+      const deliveryDate = normaliseDate(b.deliveryDate, today);
       const deliveryDt = new Date(deliveryDate);
       const windowExpiryDate = new Date(deliveryDt.getTime() + returnWindowDays * 24 * 3600 * 1000).toISOString().split("T")[0];
       const invoiceDate = new Date(deliveryDt.getTime() - 2 * 24 * 3600 * 1000).toISOString().split("T")[0];

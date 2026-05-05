@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
 import { bagsTable, onboardingsTable } from "@workspace/db";
-import { eq, and, like, SQL } from "drizzle-orm";
+import { eq, and, like, lt, SQL } from "drizzle-orm";
 import { sql } from "drizzle-orm";
 
 const router = Router();
@@ -101,7 +101,6 @@ router.post("/bags", async (req, res) => {
       return res.status(400).json({ error: "Missing required fields: brandId, brandName, cycle, sku, esp" });
     }
 
-    // Auto-generate IDs that look like Fynd bag/order refs
     const ts = Date.now();
     const rand = Math.floor(Math.random() * 9000) + 1000;
     const bagId = `BAG${ts}${rand}`;
@@ -111,21 +110,24 @@ router.post("/bags", async (req, res) => {
     const esp = body.esp;
     const deliveryDate = body.deliveryDate ?? new Date().toISOString().split("T")[0];
 
-    // Fetch brand for stateCode/GSTIN if not provided
+    // Fetch brand for stateCode, GSTIN, and returnWindowDays
     let stateCode = body.stateCode ?? "27";
     let stateGstin = body.stateGstin ?? "";
-    if (!body.stateCode) {
-      const [ob] = await db.select().from(onboardingsTable).where(eq(onboardingsTable.id, body.brandId));
-      if (ob) {
-        stateCode = ob.stateCode ?? ob.masterGstin?.substring(0, 2) ?? "27";
-        stateGstin = ob.warehouseGstin ?? ob.masterGstin ?? "";
-      }
+    let returnWindowDays = 7;
+    const [ob] = await db.select().from(onboardingsTable).where(eq(onboardingsTable.id, body.brandId));
+    if (ob) {
+      stateCode = body.stateCode ?? ob.stateCode ?? ob.masterGstin?.substring(0, 2) ?? "27";
+      stateGstin = body.stateGstin ?? ob.warehouseGstin ?? ob.masterGstin ?? "";
+      returnWindowDays = ob.returnWindowDays ?? 7;
     }
 
-    const windowDays = 7;
     const deliveryDt = new Date(deliveryDate);
-    const windowExpiryDate = new Date(deliveryDt.getTime() + windowDays * 24 * 3600 * 1000).toISOString().split("T")[0];
+    const windowExpiryDate = new Date(deliveryDt.getTime() + returnWindowDays * 24 * 3600 * 1000).toISOString().split("T")[0];
     const invoiceDate = new Date(deliveryDt.getTime() - 2 * 24 * 3600 * 1000).toISOString().split("T")[0];
+    const today = new Date().toISOString().split("T")[0];
+
+    // Auto-calculate eligibility based on return window unless explicitly provided
+    let eligibility = body.eligibility ?? (windowExpiryDate < today ? "eligible" : "in_window");
 
     const [row] = await db.insert(bagsTable).values({
       bagId,
@@ -141,7 +143,7 @@ router.post("/bags", async (req, res) => {
       windowExpiryDate,
       tcsAmount: String(body.tcsAmount ?? 0),
       tdsAmount: String(body.tdsAmount ?? 0),
-      eligibility: (body.eligibility ?? "eligible") as "eligible" | "in_window" | "on_hold" | "settled" | "awaiting_delivery",
+      eligibility: eligibility as "eligible" | "in_window" | "on_hold" | "settled" | "awaiting_delivery",
       cycle: body.cycle,
       stateCode,
       stateGstin,
@@ -154,21 +156,106 @@ router.post("/bags", async (req, res) => {
   }
 });
 
-// Fynd simulator: update a bag's eligibility or fields
+// Fynd simulator: bulk create bags from CSV upload
+router.post("/bags/bulk", async (req, res) => {
+  try {
+    const { bags } = req.body as { bags: Array<{
+      brandId: number;
+      brandName: string;
+      cycle: string;
+      sku: string;
+      esp: number;
+      qty?: number;
+      omsState?: string;
+      deliveryDate?: string;
+      tcsAmount?: number;
+      tdsAmount?: number;
+      eligibility?: string;
+    }> };
+
+    if (!Array.isArray(bags) || bags.length === 0) {
+      return res.status(400).json({ error: "bags array is required and must not be empty" });
+    }
+    if (bags.length > 500) {
+      return res.status(400).json({ error: "Maximum 500 bags per bulk upload" });
+    }
+
+    // Prefetch all unique brand IDs
+    const brandIds = [...new Set(bags.map((b) => b.brandId))];
+    const brands = await db.select().from(onboardingsTable)
+      .where(sql`${onboardingsTable.id} = ANY(ARRAY[${sql.join(brandIds.map(id => sql`${id}`), sql`, `)}])`);
+    const brandMap = new Map(brands.map((b) => [b.id, b]));
+
+    const today = new Date().toISOString().split("T")[0];
+    const ts = Date.now();
+
+    const inserted = await Promise.all(bags.map(async (b, i) => {
+      const brand = brandMap.get(b.brandId);
+      const returnWindowDays = brand?.returnWindowDays ?? 7;
+      const deliveryDate = b.deliveryDate ?? today;
+      const deliveryDt = new Date(deliveryDate);
+      const windowExpiryDate = new Date(deliveryDt.getTime() + returnWindowDays * 24 * 3600 * 1000).toISOString().split("T")[0];
+      const invoiceDate = new Date(deliveryDt.getTime() - 2 * 24 * 3600 * 1000).toISOString().split("T")[0];
+      const eligibility = b.eligibility ?? (windowExpiryDate < today ? "eligible" : "in_window");
+      const rand = i * 100 + Math.floor(Math.random() * 99);
+
+      const [row] = await db.insert(bagsTable).values({
+        bagId: `BAG${ts}${rand.toString().padStart(4, "0")}`,
+        orderId: `ORD${ts}${rand.toString().padStart(3, "0")}`,
+        brandId: b.brandId,
+        brandName: b.brandName,
+        sku: b.sku,
+        esp: String(b.esp),
+        qty: b.qty ?? 1,
+        omsState: b.omsState ?? "delivery_done",
+        invoiceDate,
+        deliveryDate,
+        windowExpiryDate,
+        tcsAmount: String(b.tcsAmount ?? 0),
+        tdsAmount: String(b.tdsAmount ?? 0),
+        eligibility: eligibility as "eligible" | "in_window" | "on_hold" | "settled" | "awaiting_delivery",
+        cycle: b.cycle,
+        stateCode: brand?.stateCode ?? brand?.masterGstin?.substring(0, 2) ?? "27",
+        stateGstin: brand?.warehouseGstin ?? brand?.masterGstin ?? "",
+      }).returning();
+      return row;
+    }));
+
+    res.status(201).json({ created: inserted.length, bags: inserted.map(mapBag) });
+  } catch (err) {
+    req.log.error({ err }, "bulk create bags error");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Fynd simulator: recalculate eligibility — move in_window bags to eligible where window has expired
+router.post("/bags/recalculate-eligibility", async (req, res) => {
+  try {
+    const today = new Date().toISOString().split("T")[0];
+    const updated = await db.update(bagsTable)
+      .set({ eligibility: "eligible" })
+      .where(and(
+        eq(bagsTable.eligibility, "in_window"),
+        lt(bagsTable.windowExpiryDate, today),
+      ))
+      .returning();
+
+    res.json({ updated: updated.length, message: `${updated.length} bag(s) moved from In-Window to Eligible` });
+  } catch (err) {
+    req.log.error({ err }, "recalculate eligibility error");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Fynd simulator: update a bag's eligibility
 router.put("/bags/:id", async (req, res) => {
   try {
     const body = req.body as { eligibility?: string };
     const updates: Partial<typeof bagsTable.$inferInsert> = {};
-
     if (body.eligibility) {
       updates.eligibility = body.eligibility as "eligible" | "in_window" | "on_hold" | "settled" | "awaiting_delivery";
     }
-
-    const [row] = await db.update(bagsTable)
-      .set(updates)
-      .where(eq(bagsTable.id, parseInt(req.params.id)))
-      .returning();
-
+    const [row] = await db.update(bagsTable).set(updates).where(eq(bagsTable.id, parseInt(req.params.id))).returning();
     if (!row) return res.status(404).json({ error: "Not found" });
     res.json(mapBag(row));
   } catch (err) {
@@ -180,9 +267,7 @@ router.put("/bags/:id", async (req, res) => {
 // Fynd simulator: delete a bag
 router.delete("/bags/:id", async (req, res) => {
   try {
-    const [row] = await db.delete(bagsTable)
-      .where(eq(bagsTable.id, parseInt(req.params.id)))
-      .returning();
+    const [row] = await db.delete(bagsTable).where(eq(bagsTable.id, parseInt(req.params.id))).returning();
     if (!row) return res.status(404).json({ error: "Not found" });
     res.json({ deleted: true, id: row.id });
   } catch (err) {

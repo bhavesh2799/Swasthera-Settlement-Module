@@ -18,7 +18,8 @@ export const tcsRecordsTable = pgTable("tcs_records", {
   tcsAmount: numeric("tcs_amount", { precision: 14, scale: 2 }).notNull(),
   status: tcsStatusEnum("status").notNull().default("Accrued"),
   paymentDueDate: text("payment_due_date").notNull(),
-  // Reversal tracking (BRD §5.4)
+  paymentRef: text("payment_ref"),
+  paymentDate: text("payment_date"),
   isReversal: boolean("is_reversal").notNull().default(false),
   reversalReason: text("reversal_reason"),
   originalBagId: text("original_bag_id"),
@@ -35,7 +36,8 @@ export const tdsRecordsTable = pgTable("tds_records", {
   tdsAmount: numeric("tds_amount", { precision: 14, scale: 2 }).notNull(),
   netPaid: numeric("net_paid", { precision: 14, scale: 2 }).notNull(),
   status: tdsStatusEnum("status").notNull().default("Pending"),
-  // Reversal tracking (BRD §5.4)
+  depositRef: text("deposit_ref"),
+  depositDate: text("deposit_date"),
   isReversal: boolean("is_reversal").notNull().default(false),
   reversalReason: text("reversal_reason"),
   originalBagId: text("original_bag_id"),

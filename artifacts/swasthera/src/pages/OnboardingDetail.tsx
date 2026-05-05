@@ -245,8 +245,8 @@ export function OnboardingDetail() {
             <p className="text-sm text-slate-600">
               KYB verifies <strong>PAN, GST registration, CIN, and Bank account</strong> via the KYB API. This must pass before document upload or Checker submission.
             </p>
-            {onboarding.kybVerifiedAt && (
-              <p className="text-xs text-slate-500">Last checked: {new Date(onboarding.kybVerifiedAt).toLocaleString()} · Attempts: {onboarding.kybAttempts}</p>
+            {!!(onboarding as unknown as Record<string, unknown>).kybVerifiedAt && (
+              <p className="text-xs text-slate-500">Last checked: {new Date((onboarding as unknown as Record<string, unknown>).kybVerifiedAt as string).toLocaleString()} · Attempts: {(onboarding as unknown as Record<string, unknown>).kybAttempts as number}</p>
             )}
             {kybResult && (
               <p className={`text-sm font-medium mt-1 ${kybResult.kybStatus === "PASSED" ? "text-green-700" : "text-red-700"}`}>
@@ -280,17 +280,17 @@ export function OnboardingDetail() {
               ["Master GSTIN", onboarding.masterGstin],
               ["TAN", onboarding.tan || "—"],
               ["CIN", onboarding.cin || "—"],
-              ["State Code", onboarding.stateCode || onboarding.masterGstin?.substring(0, 2) || "—"],
+              ["State Code", (onboarding as unknown as Record<string, unknown>).stateCode as string || onboarding.masterGstin?.substring(0, 2) || "—"],
             ].map(([label, value]) => (
               <div key={label}>
                 <p className="text-xs text-slate-500 font-medium uppercase tracking-wider mb-1">{label}</p>
                 <p className="font-mono text-sm text-slate-900">{value}</p>
               </div>
             ))}
-            {onboarding.registeredAddress && (
+            {!!(onboarding as unknown as Record<string, unknown>).registeredAddress && (
               <div className="col-span-2">
                 <p className="text-xs text-slate-500 font-medium uppercase tracking-wider mb-1">Registered Address</p>
-                <p className="text-sm text-slate-900">{onboarding.registeredAddress}</p>
+                <p className="text-sm text-slate-900">{(onboarding as unknown as Record<string, unknown>).registeredAddress as string}</p>
               </div>
             )}
           </CardContent>
@@ -387,8 +387,8 @@ export function OnboardingDetail() {
         <CardContent className="p-0">
           <div className="divide-y divide-slate-100">
             {DOC_FIELDS.map(({ key, label, required, hint }) => {
-              const uploaded = !!(onboarding as Record<string, unknown>)[key];
-              const url = (onboarding as Record<string, unknown>)[key] as string | undefined;
+              const uploaded = !!(onboarding as unknown as Record<string, unknown>)[key];
+              const url = (onboarding as unknown as Record<string, unknown>)[key] as string | undefined;
               return (
                 <div key={key} className="flex items-center justify-between px-6 py-3.5 hover:bg-slate-50/50">
                   <div className="flex items-center gap-3">

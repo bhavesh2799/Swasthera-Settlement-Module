@@ -1,13 +1,14 @@
 import { useState } from "react";
 import { Link } from "wouter";
 import { useListSettlements, useCreateSettlement } from "@workspace/api-client-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useQuery } from "@tanstack/react-query";
+import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { Calculator, Plus, Loader2, ArrowUpRight } from "lucide-react";
+import { Calculator, Loader2, ArrowUpRight } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
 
 function formatCurrency(amount: number) {
@@ -29,27 +30,62 @@ function StatusBadge({ status }: { status: string }) {
   }
 }
 
+interface ActiveBrand {
+  id: number;
+  brandName: string;
+  companyName: string;
+  status: string;
+}
+
+function generateCycleOptions() {
+  const options: { value: string; label: string }[] = [];
+  const now = new Date();
+  for (let i = 2; i >= -1; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const val = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    const label = d.toLocaleString("default", { month: "long", year: "numeric" });
+    options.push({ value: val, label });
+  }
+  return options;
+}
+
 export function SettlementList() {
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const { toast } = useToast();
-  
-  const statusParam = statusFilter === "all" ? undefined : (statusFilter as any);
+
+  const cycleOptions = generateCycleOptions();
+  const defaultCycle = cycleOptions.find((_o, i) => i === 1)?.value ?? cycleOptions[0]?.value ?? "";
+
+  const statusParam = statusFilter === "all" ? undefined : (statusFilter as never);
   const { data: settlements, isLoading, refetch } = useListSettlements({ status: statusParam });
   const createMutation = useCreateSettlement();
 
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
-  const [newCycle, setNewCycle] = useState("2023-10-W1");
-  const [onboardingId, setOnboardingId] = useState("1"); // Mock selection
+  const [newCycle, setNewCycle] = useState(defaultCycle);
+  const [onboardingId, setOnboardingId] = useState("");
+
+  // Fetch approved brands dynamically
+  const { data: brands } = useQuery<ActiveBrand[]>({
+    queryKey: ["settlement-brands"],
+    queryFn: async () => {
+      const r = await fetch("/api/onboardings");
+      const rows = await r.json();
+      return rows.filter((ob: { status: string }) => ob.status === "APPROVED" || ob.status === "ACTIVE");
+    },
+    enabled: createDialogOpen,
+  });
 
   const handleCreate = () => {
+    if (!onboardingId) { toast({ title: "Select a brand first", variant: "destructive" }); return; }
     createMutation.mutate({ data: { cycle: newCycle, onboardingId: parseInt(onboardingId) } }, {
       onSuccess: () => {
-        toast({ title: "Settlement Computed" });
+        toast({ title: "Settlement Computed", description: `Cycle ${newCycle} ready for review` });
         setCreateDialogOpen(false);
         refetch();
       },
-      onError: () => {
-        toast({ title: "Computation Failed", variant: "destructive" });
+      onError: (err) => {
+        const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? "Computation failed";
+        toast({ title: "Computation Failed", description: msg, variant: "destructive" });
       }
     });
   };
@@ -92,26 +128,38 @@ export function SettlementList() {
                   <Select value={newCycle} onValueChange={setNewCycle}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="2023-10-W1">Oct 2023 - Week 1</SelectItem>
-                      <SelectItem value="2023-10-W2">Oct 2023 - Week 2</SelectItem>
+                      {cycleOptions.map((o) => (
+                        <SelectItem key={o.value} value={o.value}>{o.label} ({o.value})</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-slate-500">Only bags with matching cycle and "Eligible" status will be included.</p>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-slate-700">Brand</label>
+                  <Select value={onboardingId} onValueChange={setOnboardingId}>
+                    <SelectTrigger><SelectValue placeholder="Select an approved brand…" /></SelectTrigger>
+                    <SelectContent>
+                      {!brands && <SelectItem value="__loading" disabled>Loading brands…</SelectItem>}
+                      {brands?.length === 0 && <SelectItem value="__none" disabled>No approved brands found</SelectItem>}
+                      {brands?.map((b) => (
+                        <SelectItem key={b.id} value={String(b.id)}>
+                          {b.brandName} — {b.companyName}
+                          <span className="ml-1 text-xs text-slate-400">({b.status})</span>
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-slate-700">Brand (Onboarding ID)</label>
-                  <Select value={onboardingId} onValueChange={setOnboardingId}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="1">Acme Corp (Brand A)</SelectItem>
-                      <SelectItem value="2">Beta Ltd (Brand B)</SelectItem>
-                    </SelectContent>
-                  </Select>
+                <div className="rounded-md bg-blue-50 border border-blue-100 p-3 text-xs text-blue-700">
+                  The engine will pick up all bags for this brand and cycle with eligibility = <strong>Eligible</strong>.
+                  Bags still in their return window (In Window) are excluded.
                 </div>
               </div>
               <DialogFooter>
                 <Button variant="outline" onClick={() => setCreateDialogOpen(false)}>Cancel</Button>
-                <Button onClick={handleCreate} disabled={createMutation.isPending}>
-                  {createMutation.isPending ? "Computing..." : "Run Engine"}
+                <Button onClick={handleCreate} disabled={createMutation.isPending || !onboardingId}>
+                  {createMutation.isPending ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Computing…</> : "Run Engine"}
                 </Button>
               </DialogFooter>
             </DialogContent>

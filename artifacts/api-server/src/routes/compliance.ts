@@ -25,11 +25,11 @@ router.get("/compliance/tcs-tds", async (req, res) => {
         tdsDeducted: sql<string>`coalesce(sum(case when not ${tdsRecordsTable.isReversal} then ${tdsRecordsTable.tdsAmount} else 0 end), 0)`,
         tdsReversed: sql<string>`coalesce(sum(case when ${tdsRecordsTable.isReversal} then abs(${tdsRecordsTable.tdsAmount}) else 0 end), 0)`,
         tdsNet: sql<string>`coalesce(sum(${tdsRecordsTable.tdsAmount}), 0)`,
+        tdsDeposited: sql<string>`coalesce(sum(${tdsRecordsTable.tdsAmount}) filter (where ${tdsRecordsTable.status} = 'Deposited'), 0)`,
       })
       .from(tdsRecordsTable)
       .where(and(eq(tdsRecordsTable.month, month), eq(tdsRecordsTable.year, year)));
 
-    // Compute next due dates based on month/year
     const monthIndex = ["January","February","March","April","May","June","July","August","September","October","November","December"].indexOf(month);
     const dueYear = monthIndex === 11 ? year + 1 : year;
     const dueMonth = (monthIndex + 2).toString().padStart(2, "0");
@@ -44,6 +44,7 @@ router.get("/compliance/tcs-tds", async (req, res) => {
       tdsDeducted: parseFloat(tdsTotals?.tdsDeducted ?? "0"),
       tdsReversed: parseFloat(tdsTotals?.tdsReversed ?? "0"),
       tdsNet: parseFloat(tdsTotals?.tdsNet ?? "0"),
+      tdsDeposited: parseFloat(tdsTotals?.tdsDeposited ?? "0"),
       gstr8Status: "Pending",
       gstr8DueDate: `${dueYear}-${dueMonth}-10`,
       tcsPaymentDue: `${dueYear}-${dueMonth}-07`,
@@ -72,6 +73,8 @@ router.get("/compliance/tcs-records", async (req, res) => {
       tcsAmount: parseFloat(r.tcsAmount),
       status: r.status,
       paymentDueDate: r.paymentDueDate,
+      paymentRef: r.paymentRef,
+      paymentDate: r.paymentDate,
       isReversal: r.isReversal,
       reversalReason: r.reversalReason,
       originalBagId: r.originalBagId,
@@ -97,6 +100,8 @@ router.get("/compliance/tds-records", async (req, res) => {
       tdsAmount: parseFloat(r.tdsAmount),
       netPaid: parseFloat(r.netPaid),
       status: r.status,
+      depositRef: r.depositRef,
+      depositDate: r.depositDate,
       isReversal: r.isReversal,
       reversalReason: r.reversalReason,
       originalBagId: r.originalBagId,
@@ -107,21 +112,114 @@ router.get("/compliance/tds-records", async (req, res) => {
   }
 });
 
-// TCS/TDS reversal — BRD §5.4: triggered by return_bag_delivered, RTO, or post-invoice cancellation
+// Update TCS record status — mark as Paid/Filed
+router.put("/compliance/tcs-records/:id", async (req, res) => {
+  try {
+    const { status, paymentRef, paymentDate } = req.body as { status?: string; paymentRef?: string; paymentDate?: string };
+    const updates: Partial<typeof tcsRecordsTable.$inferInsert> = {};
+    if (status) updates.status = status as "Accrued" | "Paid" | "Filed";
+    if (paymentRef) updates.paymentRef = paymentRef;
+    if (paymentDate) updates.paymentDate = paymentDate;
+
+    const [row] = await db.update(tcsRecordsTable).set(updates)
+      .where(eq(tcsRecordsTable.id, parseInt(req.params.id)))
+      .returning();
+    if (!row) return res.status(404).json({ error: "Not found" });
+
+    await db.insert(activityTable).values({
+      user: "Finance Team",
+      action: `TCS record #${row.id} marked as ${status ?? "updated"} — ${paymentRef ? `Ref: ${paymentRef}` : ""}`,
+      entityType: "compliance",
+      entityRef: String(row.id),
+      level: "success",
+    });
+
+    res.json({ id: row.id, status: row.status, paymentRef: row.paymentRef, paymentDate: row.paymentDate });
+  } catch (err) {
+    req.log.error({ err }, "update tcs record error");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Update TDS record status — mark as Deposited/Filed
+router.put("/compliance/tds-records/:id", async (req, res) => {
+  try {
+    const { status, depositRef, depositDate } = req.body as { status?: string; depositRef?: string; depositDate?: string };
+    const updates: Partial<typeof tdsRecordsTable.$inferInsert> = {};
+    if (status) updates.status = status as "Pending" | "Deposited" | "Filed";
+    if (depositRef) updates.depositRef = depositRef;
+    if (depositDate) updates.depositDate = depositDate;
+
+    const [row] = await db.update(tdsRecordsTable).set(updates)
+      .where(eq(tdsRecordsTable.id, parseInt(req.params.id)))
+      .returning();
+    if (!row) return res.status(404).json({ error: "Not found" });
+
+    await db.insert(activityTable).values({
+      user: "Finance Team",
+      action: `TDS record #${row.id} marked as ${status ?? "updated"} — ${depositRef ? `Ref: ${depositRef}` : ""}`,
+      entityType: "compliance",
+      entityRef: String(row.id),
+      level: "success",
+    });
+
+    res.json({ id: row.id, status: row.status, depositRef: row.depositRef, depositDate: row.depositDate });
+  } catch (err) {
+    req.log.error({ err }, "update tds record error");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Order-level TCS/TDS breakdown — per bag for a given month/year
+router.get("/compliance/order-breakdown", async (req, res) => {
+  try {
+    const month = (req.query.month as string) || "May";
+    const year = parseInt((req.query.year as string) || "2026");
+
+    // Map month name to month number
+    const monthNames = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+    const monthNum = (monthNames.indexOf(month) + 1).toString().padStart(2, "0");
+    const yearStr = String(year);
+
+    // Fetch bags where deliveryDate is in this month/year
+    const allBags = await db.select().from(bagsTable);
+    const filteredBags = allBags.filter((b) => {
+      const d = b.deliveryDate ?? b.invoiceDate ?? "";
+      return d.startsWith(`${yearStr}-${monthNum}`);
+    });
+
+    const result = filteredBags.map((b) => ({
+      bagId: b.bagId,
+      orderId: b.orderId,
+      brandId: b.brandId,
+      brandName: b.brandName,
+      sku: b.sku,
+      esp: parseFloat(b.esp) * b.qty,
+      deliveryDate: b.deliveryDate ?? "",
+      windowExpiryDate: b.windowExpiryDate ?? "",
+      tcsAmount: parseFloat(b.tcsAmount),
+      tdsAmount: parseFloat(b.tdsAmount),
+      eligibility: b.eligibility,
+      omsState: b.omsState,
+      isReturned: b.eligibility === "on_hold" || b.omsState?.includes("return"),
+      cycle: b.cycle,
+    }));
+
+    res.json(result);
+  } catch (err) {
+    req.log.error({ err }, "order breakdown error");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// TCS/TDS reversal — BRD §5.4
 router.post("/compliance/reversal", async (req, res) => {
   try {
-    const { bagId, reason, month, year } = req.body as {
-      bagId: string;
-      reason: string;
-      month: string;
-      year: number;
-    };
-
+    const { bagId, reason, month, year } = req.body as { bagId: string; reason: string; month: string; year: number };
     if (!bagId || !reason || !month || !year) {
       return res.status(400).json({ error: "bagId, reason, month, and year are required" });
     }
 
-    // Fetch the bag
     const [bag] = await db.select().from(bagsTable).where(eq(bagsTable.bagId, bagId));
     if (!bag) return res.status(404).json({ error: "Bag not found" });
 
@@ -136,15 +234,12 @@ router.post("/compliance/reversal", async (req, res) => {
       return `${dueYear}-${dueMonth}-07`;
     })();
 
-    // Find a TCS record for this month to reference state details
     const [origTcs] = await db.select().from(tcsRecordsTable)
       .where(and(eq(tcsRecordsTable.month, month), eq(tcsRecordsTable.year, year), eq(tcsRecordsTable.brandName, bag.brandName)));
 
-    // Insert reversal TCS entry (negative amount)
     if (origTcs || parseFloat(bag.tcsAmount) > 0) {
       await db.insert(tcsRecordsTable).values({
-        month,
-        year,
+        month, year,
         stateGstin: origTcs?.stateGstin ?? bag.stateGstin,
         stateCode: origTcs?.stateCode ?? bag.stateCode,
         stateName: origTcs?.stateName ?? bag.stateCode,
@@ -160,21 +255,18 @@ router.post("/compliance/reversal", async (req, res) => {
       });
     }
 
-    // Find TDS record
     const [origTds] = await db.select().from(tdsRecordsTable)
       .where(and(eq(tdsRecordsTable.month, month), eq(tdsRecordsTable.year, year)));
 
-    // Insert reversal TDS entry
     if (origTds || parseFloat(bag.tdsAmount) > 0) {
       await db.insert(tdsRecordsTable).values({
-        month,
-        year,
+        month, year,
         companyName: origTds?.companyName ?? bag.brandName,
         tan: origTds?.tan ?? "DELN00000A",
         grossPayment: String(-parseFloat(bag.esp)),
         tdsRate: "1.00",
         tdsAmount: String(-parseFloat(bag.tdsAmount)),
-        netPaid: String(parseFloat(bag.tdsAmount)), // amount refunded
+        netPaid: String(parseFloat(bag.tdsAmount)),
         status: "Pending",
         isReversal: true,
         reversalReason: reason,
@@ -182,7 +274,6 @@ router.post("/compliance/reversal", async (req, res) => {
       });
     }
 
-    // Update bag to on_hold / excluded
     await db.update(bagsTable)
       .set({ eligibility: "on_hold", omsState: "return_bag_delivered" })
       .where(eq(bagsTable.bagId, bagId));

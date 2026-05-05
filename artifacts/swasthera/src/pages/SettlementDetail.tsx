@@ -4,17 +4,18 @@ import {
   useApproveSettlement,
   getGetSettlementQueryKey
 } from "@workspace/api-client-react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, CheckCircle, Calculator, Download, Info } from "lucide-react";
+import { ArrowLeft, CheckCircle, Calculator, Download, Info, BanknoteIcon, Send, Clock, ExternalLink, FileText } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { Separator } from "@/components/ui/separator";
 import { useRole } from "@/contexts/RoleContext";
 import { useState } from "react";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
+import { Link } from "wouter";
 
 function formatCurrency(amount: number) {
   return new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR" }).format(amount);
@@ -22,6 +23,40 @@ function formatCurrency(amount: number) {
 
 function formatPercentage(amount: number) {
   return `${amount.toFixed(2)}%`;
+}
+
+type PayoutStatus = "PENDING_APPROVAL" | "INITIATED" | "UTR_RECORDED" | "SETTLED";
+
+interface LinkedPayout {
+  id: number;
+  settlementId: number;
+  status: PayoutStatus;
+  amount: number;
+  paymentRef: string;
+  transferMode: string;
+  utr: string | null;
+  bankName: string;
+  bankAccount: string;
+  initiatedBy: string | null;
+  initiatedAt: string;
+  payoutApprovedBy: string | null;
+  payoutApprovedAt: string | null;
+  settledAt: string | null;
+  payoutNotes: string | null;
+}
+
+function PayoutStatusBadge({ status }: { status: PayoutStatus }) {
+  switch (status) {
+    case "PENDING_APPROVAL":
+      return <Badge className="bg-slate-100 text-slate-700 border-transparent"><Clock className="mr-1 h-3 w-3" />Awaiting Maker</Badge>;
+    case "INITIATED":
+      return <Badge className="bg-amber-100 text-amber-800 border-transparent"><Send className="mr-1 h-3 w-3" />Submitted to Checker</Badge>;
+    case "UTR_RECORDED":
+    case "SETTLED":
+      return <Badge className="bg-green-100 text-green-800 border-transparent"><BanknoteIcon className="mr-1 h-3 w-3" />Settled</Badge>;
+    default:
+      return <Badge variant="outline">{status}</Badge>;
+  }
 }
 
 export function SettlementDetail() {
@@ -36,9 +71,38 @@ export function SettlementDetail() {
     query: { enabled: !!id, queryKey: getGetSettlementQueryKey(id) }
   });
 
+  const { data: linkedPayout } = useQuery<LinkedPayout>({
+    queryKey: [`/api/settlements/${id}/payout`],
+    queryFn: async () => {
+      const r = await fetch(`/api/settlements/${id}/payout`);
+      if (!r.ok) return null;
+      return r.json();
+    },
+    enabled: !!id && (settlement?.status === "APPROVED" || settlement?.status === "PAID"),
+    retry: false,
+  });
+
   const approveMutation = useApproveSettlement();
   const [showApproveDialog, setShowApproveDialog] = useState(false);
+  const [showInvoiceDialog, setShowInvoiceDialog] = useState(false);
   const [financeNotes, setFinanceNotes] = useState("");
+
+  const [invoiceData, setInvoiceData] = useState<{
+    invoiceNo: string; invoiceDate: string; cycle: string;
+    brand: { name: string; companyName: string; pan: string; gstin: string; bankAccount: string; bankName: string };
+    platform: { name: string; gstin: string; address: string };
+    waterfall: { grossGmv: number; commission: number; commissionRate: number; gstOnCommission: number; tcsAmount: number; tdsAmount: number; netPayable: number };
+    payout: { utr: string | null; transferMode: string; settledAt: string | null } | null;
+    eligibleBags: number;
+  } | null>(null);
+
+  const openInvoice = async () => {
+    const r = await fetch(`/api/settlements/${id}/invoice`);
+    if (r.ok) {
+      setInvoiceData(await r.json());
+      setShowInvoiceDialog(true);
+    }
+  };
 
   if (isLoading) return <div className="p-8 text-center text-slate-500">Loading waterfall...</div>;
   if (!settlement) return <div className="p-8 text-center text-slate-500">Settlement not found</div>;
@@ -48,6 +112,7 @@ export function SettlementDetail() {
       onSuccess: () => {
         toast({ title: "Settlement Approved", description: "Payout queued — Maker must initiate, then Checker approves to auto-generate UTR." });
         queryClient.invalidateQueries({ queryKey: getGetSettlementQueryKey(id) });
+        queryClient.invalidateQueries({ queryKey: [`/api/settlements/${id}/payout`] });
         setShowApproveDialog(false);
       },
       onError: () => {
@@ -59,7 +124,6 @@ export function SettlementDetail() {
   const socUrl = `/api/settlements/${id}/soc`;
   const canApprove = isChecker && (settlement.status === "COMPUTED" || settlement.status === "PENDING_APPROVAL");
 
-  // marketplacePromotions may not be present in older seeded settlements
   const marketplacePromotions = (settlement as { marketplacePromotions?: number }).marketplacePromotions ?? 0;
 
   return (
@@ -79,14 +143,18 @@ export function SettlementDetail() {
         </div>
 
         <div className="flex gap-2 flex-wrap">
-          {/* SoC download — BRD §7.1 (27 fields per bag) */}
           <a href={socUrl} download>
             <Button variant="outline">
               <Download className="mr-2 h-4 w-4" /> Download SoC
             </Button>
           </a>
 
-          {/* BRD §9.1: Only Checker (Finance) can approve settlement */}
+          {(settlement.status === "APPROVED" || settlement.status === "PAID") && (
+            <Button variant="outline" onClick={openInvoice}>
+              <FileText className="mr-2 h-4 w-4" /> Commission Invoice
+            </Button>
+          )}
+
           {canApprove && (
             <Button onClick={() => setShowApproveDialog(true)} className="bg-green-600 hover:bg-green-700">
               <CheckCircle className="mr-2 h-4 w-4" /> Approve Settlement
@@ -96,11 +164,6 @@ export function SettlementDetail() {
             <Badge variant="outline" className="px-3 py-1.5 text-amber-700 border-amber-200 bg-amber-50 text-sm">
               Awaiting Finance Checker approval
             </Badge>
-          )}
-          {settlement.status === "APPROVED" && (
-            <Button asChild variant="outline">
-              <a href="/payouts">View in Payouts →</a>
-            </Button>
           )}
         </div>
       </div>
@@ -115,7 +178,6 @@ export function SettlementDetail() {
             </CardHeader>
             <CardContent className="p-0">
               <div className="flex flex-col">
-
                 <div className="flex justify-between items-center p-4 hover:bg-slate-50/50">
                   <div className="font-semibold text-slate-900">1. Gross Merchandise Value (GMV)</div>
                   <div className="font-semibold text-slate-900">{formatCurrency(settlement.grossGmv)}</div>
@@ -208,6 +270,47 @@ export function SettlementDetail() {
 
         {/* Right column */}
         <div className="space-y-6">
+          {/* Linked Payout Status — only shown after approval */}
+          {linkedPayout && (
+            <Card className="shadow-sm border-slate-200/60 bg-white">
+              <CardHeader className="border-b border-slate-100 bg-slate-50/50 py-4 flex flex-row items-center justify-between">
+                <CardTitle className="text-base font-semibold text-slate-800">Payout Status</CardTitle>
+                <PayoutStatusBadge status={linkedPayout.status} />
+              </CardHeader>
+              <CardContent className="p-5 space-y-3">
+                <div>
+                  <p className="text-xs text-slate-500 font-medium uppercase tracking-wider mb-1">Payment Ref</p>
+                  <p className="font-mono text-sm text-slate-900">{linkedPayout.paymentRef}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-slate-500 font-medium uppercase tracking-wider mb-1">Amount</p>
+                  <p className="font-bold text-green-700">{formatCurrency(linkedPayout.amount)}</p>
+                </div>
+                {linkedPayout.utr && (
+                  <div>
+                    <p className="text-xs text-slate-500 font-medium uppercase tracking-wider mb-1">UTR</p>
+                    <p className="font-mono text-sm text-green-700">{linkedPayout.utr}</p>
+                  </div>
+                )}
+                {linkedPayout.initiatedBy && (
+                  <div className="text-xs text-slate-500">Initiated by <span className="font-medium text-slate-700">{linkedPayout.initiatedBy}</span></div>
+                )}
+                {linkedPayout.payoutApprovedBy && (
+                  <div className="text-xs text-slate-500">Approved by <span className="font-medium text-slate-700">{linkedPayout.payoutApprovedBy}</span></div>
+                )}
+                {linkedPayout.settledAt && (
+                  <div className="text-xs text-slate-500">Settled: <span className="font-medium text-slate-700">{new Date(linkedPayout.settledAt).toLocaleDateString()}</span></div>
+                )}
+                <Button asChild variant="outline" size="sm" className="w-full mt-2">
+                  <Link href="/payouts">
+                    <ExternalLink className="h-3.5 w-3.5 mr-2" /> View in Payouts
+                  </Link>
+                </Button>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Beneficiary */}
           <Card className="shadow-sm border-slate-200/60 bg-white">
             <CardHeader className="border-b border-slate-100 bg-slate-50/50 py-4">
               <CardTitle className="text-base font-semibold text-slate-800">Beneficiary Details</CardTitle>
@@ -227,6 +330,7 @@ export function SettlementDetail() {
             </CardContent>
           </Card>
 
+          {/* Audit Trail */}
           <Card className="shadow-sm border-slate-200/60 bg-white">
             <CardHeader className="border-b border-slate-100 bg-slate-50/50 py-4">
               <CardTitle className="text-base font-semibold text-slate-800">Audit Trail</CardTitle>
@@ -257,7 +361,7 @@ export function SettlementDetail() {
             </CardContent>
           </Card>
 
-          {/* SoC quick info */}
+          {/* SoC */}
           <Card className="shadow-sm border-slate-200/60 bg-white">
             <CardHeader className="border-b border-slate-100 bg-slate-50/50 py-4">
               <CardTitle className="text-base font-semibold text-slate-800">Statement of Claim</CardTitle>
@@ -299,6 +403,71 @@ export function SettlementDetail() {
               <CheckCircle className="mr-2 h-4 w-4" />
               {approveMutation.isPending ? "Approving..." : "Confirm Approval"}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Commission Invoice Dialog */}
+      <Dialog open={showInvoiceDialog} onOpenChange={setShowInvoiceDialog}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Commission Invoice</DialogTitle>
+            <DialogDescription>{invoiceData?.invoiceNo} · {invoiceData?.invoiceDate}</DialogDescription>
+          </DialogHeader>
+          {invoiceData && (
+            <div className="space-y-4 py-2 max-h-[70vh] overflow-y-auto">
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div className="space-y-1">
+                  <p className="text-xs text-slate-500 font-medium uppercase tracking-wider">Platform</p>
+                  <p className="font-medium">{invoiceData.platform.name}</p>
+                  <p className="text-xs text-slate-500 font-mono">{invoiceData.platform.gstin}</p>
+                  <p className="text-xs text-slate-500">{invoiceData.platform.address}</p>
+                </div>
+                <div className="space-y-1">
+                  <p className="text-xs text-slate-500 font-medium uppercase tracking-wider">Brand</p>
+                  <p className="font-medium">{invoiceData.brand.name}</p>
+                  <p className="text-xs text-slate-500">{invoiceData.brand.companyName}</p>
+                  <p className="text-xs font-mono text-slate-500">{invoiceData.brand.gstin}</p>
+                </div>
+              </div>
+              <Separator />
+              <div className="space-y-2 text-sm">
+                <p className="font-medium text-slate-700">Settlement Summary — {invoiceData.cycle}</p>
+                {[
+                  ["Gross GMV", formatCurrency(invoiceData.waterfall.grossGmv), false],
+                  [`Commission (${invoiceData.waterfall.commissionRate}%)`, formatCurrency(invoiceData.waterfall.commission), true],
+                  ["GST on Commission (18%)", formatCurrency(invoiceData.waterfall.gstOnCommission), true],
+                  ["TCS Deducted (Sec 52)", formatCurrency(invoiceData.waterfall.tcsAmount), true],
+                  ["TDS Deducted (Sec 194-O)", formatCurrency(invoiceData.waterfall.tdsAmount), true],
+                ].map(([label, val, isDeduction]) => (
+                  <div key={String(label)} className="flex justify-between">
+                    <span className="text-slate-600">{label}</span>
+                    <span className={isDeduction ? "text-red-700" : "font-medium"}>{isDeduction ? `− ${val}` : val}</span>
+                  </div>
+                ))}
+                <Separator />
+                <div className="flex justify-between font-bold text-base">
+                  <span>Net Payable to Brand</span>
+                  <span className="text-green-700">{formatCurrency(invoiceData.waterfall.netPayable)}</span>
+                </div>
+              </div>
+              {invoiceData.payout?.utr && (
+                <div className="rounded-md bg-green-50 border border-green-100 p-3 text-sm">
+                  <p className="font-semibold text-green-800">Payment Settled</p>
+                  <p className="text-xs text-green-700 mt-1">UTR: <span className="font-mono">{invoiceData.payout.utr}</span></p>
+                  {invoiceData.payout.settledAt && (
+                    <p className="text-xs text-green-700">Date: {new Date(invoiceData.payout.settledAt).toLocaleDateString()}</p>
+                  )}
+                </div>
+              )}
+              <p className="text-xs text-slate-400">{invoiceData.eligibleBags} bags · Beneficiary: {invoiceData.brand.bankName} {invoiceData.brand.bankAccount}</p>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowInvoiceDialog(false)}>Close</Button>
+            <a href={socUrl} download>
+              <Button variant="outline"><Download className="h-4 w-4 mr-2" />Download SoC</Button>
+            </a>
           </DialogFooter>
         </DialogContent>
       </Dialog>

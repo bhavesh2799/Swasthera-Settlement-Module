@@ -39,11 +39,14 @@ router.post("/settlements", async (req, res) => {
     const eligibleBags = await db.select().from(bagsTable)
       .where(and(eq(bagsTable.brandId, ob.id), eq(bagsTable.cycle, cycle), eq(bagsTable.eligibility, "eligible")));
 
+    if (eligibleBags.length === 0) {
+      return res.status(400).json({ error: `No eligible bags found for ${ob.brandName} in cycle ${cycle}. Ensure bags are marked as 'eligible' in the Orders register.` });
+    }
+
     const grossGmv = eligibleBags.reduce((s, b) => s + parseFloat(b.esp) * b.qty, 0);
-    // BRD §7 waterfall: brand-funded promotions reduce brand payout; marketplace-funded do NOT
     const brandPromotions = 0;
     const marketplacePromotions = 0;
-    const netBeforeCommission = grossGmv - brandPromotions; // marketplace NOT deducted (BRD §7 note)
+    const netBeforeCommission = grossGmv - brandPromotions;
     const commissionRate = parseFloat(ob.commissionRate);
     const commission = netBeforeCommission * commissionRate / 100;
     const gstOnCommission = commission * 0.18;
@@ -78,7 +81,7 @@ router.post("/settlements", async (req, res) => {
       status: "PENDING_APPROVAL",
     }).returning();
 
-    await db.insert(activityTable).values({ user: "Anjali Patel", action: `Computed settlement for ${ob.brandName} — ${cycle}`, entityType: "settlement", entityRef: String(row.id), level: "info" });
+    await db.insert(activityTable).values({ user: "Anjali Patel", action: `Computed settlement for ${ob.brandName} — ${cycle} (${eligibleBags.length} bags, GMV ₹${grossGmv.toFixed(0)})`, entityType: "settlement", entityRef: String(row.id), level: "info" });
 
     res.status(201).json(mapSettlement(row));
   } catch (err) {
@@ -94,6 +97,96 @@ router.get("/settlements/:id", async (req, res) => {
     res.json(mapSettlement(row));
   } catch (err) {
     req.log.error({ err }, "get settlement error");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Get the payout linked to this settlement
+router.get("/settlements/:id/payout", async (req, res) => {
+  try {
+    const settlementId = parseInt(req.params.id);
+    const [payout] = await db.select().from(payoutsTable).where(eq(payoutsTable.settlementId, settlementId));
+    if (!payout) return res.status(404).json({ error: "No payout created yet for this settlement" });
+    res.json({
+      id: payout.id,
+      settlementId: payout.settlementId,
+      status: payout.status,
+      amount: parseFloat(payout.amount),
+      paymentRef: payout.paymentRef,
+      transferMode: payout.transferMode,
+      utr: payout.utr,
+      bankName: payout.bankName,
+      bankAccount: payout.bankAccount,
+      initiatedBy: payout.initiatedBy,
+      initiatedAt: payout.initiatedAt.toISOString(),
+      payoutApprovedBy: payout.payoutApprovedBy,
+      payoutApprovedAt: payout.payoutApprovedAt?.toISOString(),
+      settledAt: payout.settledAt?.toISOString(),
+      payoutNotes: payout.payoutNotes,
+    });
+  } catch (err) {
+    req.log.error({ err }, "get settlement payout error");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Generate commission invoice JSON for a settled payout
+router.get("/settlements/:id/invoice", async (req, res) => {
+  try {
+    const settlementId = parseInt(req.params.id);
+    const [settlement] = await db.select().from(settlementsTable).where(eq(settlementsTable.id, settlementId));
+    if (!settlement) return res.status(404).json({ error: "Not found" });
+
+    const [ob] = await db.select().from(onboardingsTable).where(eq(onboardingsTable.id, settlement.onboardingId));
+    const [payout] = await db.select().from(payoutsTable).where(eq(payoutsTable.settlementId, settlementId));
+
+    const invoiceNo = `INV-SWAS-${settlement.cycle.replace(/[^A-Z0-9]/gi, "")}-${String(settlementId).padStart(4, "0")}`;
+
+    res.json({
+      invoiceNo,
+      invoiceDate: payout?.settledAt?.toISOString().split("T")[0] ?? settlement.createdAt.toISOString().split("T")[0],
+      cycle: settlement.cycle,
+      brand: {
+        name: settlement.brandName,
+        companyName: settlement.companyName,
+        pan: ob?.pan ?? "",
+        gstin: ob?.masterGstin ?? "",
+        spocEmail: ob?.spocEmail ?? "",
+        bankAccount: settlement.bankAccount,
+        bankIfsc: settlement.bankIfsc,
+        bankName: settlement.bankName,
+      },
+      platform: {
+        name: "Swasthera Marketplace Pvt. Ltd.",
+        gstin: "27AABCS1234A1Z5",
+        address: "Unit 4B, Bandra-Kurla Complex, Mumbai 400051",
+        pan: "AABCS1234A",
+      },
+      waterfall: {
+        grossGmv: parseFloat(settlement.grossGmv),
+        brandPromotions: parseFloat(settlement.brandPromotions),
+        netBeforeCommission: parseFloat(settlement.netBeforeCommission),
+        commissionRate: parseFloat(settlement.commissionRate),
+        commission: parseFloat(settlement.commission),
+        gstOnCommission: parseFloat(settlement.gstOnCommission),
+        tcsAmount: parseFloat(settlement.tcsAmount),
+        tdsAmount: parseFloat(settlement.tdsAmount),
+        mdrCharges: parseFloat(settlement.mdrCharges),
+        penalty: parseFloat(settlement.penalty),
+        netPayable: parseFloat(settlement.netPayable),
+      },
+      payout: payout ? {
+        status: payout.status,
+        utr: payout.utr,
+        transferMode: payout.transferMode,
+        settledAt: payout.settledAt?.toISOString(),
+        approvedBy: payout.payoutApprovedBy,
+      } : null,
+      eligibleBags: settlement.eligibleBags,
+      socUrl: `/api/settlements/${settlementId}/soc`,
+    });
+  } catch (err) {
+    req.log.error({ err }, "get invoice error");
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -150,7 +243,6 @@ router.get("/settlements/:id/soc", async (req, res) => {
       ? await db.select().from(bagsTable).where(inArray(bagsTable.bagId, bagIdList))
       : [];
 
-    // Fetch payout for UTR
     const [payout] = await db.select().from(payoutsTable).where(eq(payoutsTable.settlementId, settlement.id));
 
     const commRate = parseFloat(settlement.commissionRate);
@@ -178,37 +270,16 @@ router.get("/settlements/:id/soc", async (req, res) => {
       const tds = parseFloat(b.tdsAmount);
       const mdr = 0;
       const net = netEsp - commission - gstOnCommission - tcs - tds - mdr;
-      const returnStatus = b.eligibility === "on_hold" ? "INITIATED" : b.eligibility === "settled" ? "NONE" : "NONE";
+      const returnStatus = b.eligibility === "on_hold" ? "INITIATED" : "NONE";
       const mrp = (parseFloat(b.esp) * 1.15 * b.qty).toFixed(2);
 
       return [
-        settlement.cycle,
-        b.orderId,
-        b.bagId,
-        b.invoiceDate ?? "",
-        b.invoiceDate ?? "",
-        b.deliveryDate ?? "",
-        b.windowExpiryDate ?? "",
-        b.sku,
-        b.sku,
-        b.qty,
-        mrp,
-        esp.toFixed(2),
-        brandDiscount.toFixed(2),
-        marketplaceDiscount.toFixed(2),
-        netEsp.toFixed(2),
-        commRate.toFixed(2),
-        commission.toFixed(2),
-        gstOnCommission.toFixed(2),
-        tcs.toFixed(2),
-        tds.toFixed(2),
-        mdr.toFixed(2),
-        net.toFixed(2),
-        b.eligibility.toUpperCase(),
-        b.omsState,
-        returnStatus,
-        utr,
-        settlementDate,
+        settlement.cycle, b.orderId, b.bagId, b.invoiceDate ?? "", b.invoiceDate ?? "",
+        b.deliveryDate ?? "", b.windowExpiryDate ?? "", b.sku, b.sku, b.qty,
+        mrp, esp.toFixed(2), brandDiscount.toFixed(2), marketplaceDiscount.toFixed(2),
+        netEsp.toFixed(2), commRate.toFixed(2), commission.toFixed(2), gstOnCommission.toFixed(2),
+        tcs.toFixed(2), tds.toFixed(2), mdr.toFixed(2), net.toFixed(2),
+        b.eligibility.toUpperCase(), b.omsState, returnStatus, utr, settlementDate,
       ];
     });
 

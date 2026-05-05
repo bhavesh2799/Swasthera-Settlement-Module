@@ -7,10 +7,12 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, Send, CheckCircle2, CircleDot, Clock, BanknoteIcon, Info } from "lucide-react";
+import { Loader2, Send, CheckCircle2, CircleDot, Clock, BanknoteIcon, Info, ExternalLink, Download, FileText } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { useQueryClient } from "@tanstack/react-query";
 import { useRole } from "@/contexts/RoleContext";
+import { Link } from "wouter";
+import { Separator } from "@/components/ui/separator";
 
 function formatCurrency(amount: number) {
   return new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR" }).format(amount);
@@ -35,6 +37,7 @@ function StatusBadge({ status }: { status: string }) {
 
 type PayoutRow = {
   id: number;
+  settlementId?: number | null;
   brandName: string;
   companyName: string;
   cycle: string;
@@ -54,13 +57,25 @@ type PayoutRow = {
   settledAt?: string | null;
 };
 
+type InvoiceData = {
+  invoiceNo: string;
+  invoiceDate: string;
+  cycle: string;
+  brand: { name: string; companyName: string; pan: string; gstin: string; bankAccount: string; bankName: string };
+  platform: { name: string; gstin: string; address: string };
+  waterfall: { grossGmv: number; commission: number; commissionRate: number; gstOnCommission: number; tcsAmount: number; tdsAmount: number; netPayable: number };
+  payout: { utr: string | null; transferMode: string; settledAt: string | null } | null;
+  eligibleBags: number;
+  socUrl: string;
+};
+
 export function PayoutList() {
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const { isMaker, isChecker } = useRole();
 
-  const statusParam = statusFilter === "all" ? undefined : (statusFilter as PayoutStatus);
+  const statusParam = statusFilter === "all" ? undefined : (statusFilter as never);
   const { data: payouts, isLoading, refetch } = useListPayouts({ status: statusParam });
 
   const [actionPayoutId, setActionPayoutId] = useState<number | null>(null);
@@ -68,7 +83,12 @@ export function PayoutList() {
   const [actionNotes, setActionNotes] = useState("");
   const [actionLoading, setActionLoading] = useState(false);
 
+  const [invoiceDialogPayoutId, setInvoiceDialogPayoutId] = useState<number | null>(null);
+  const [invoiceData, setInvoiceData] = useState<InvoiceData | null>(null);
+  const [invoiceLoading, setInvoiceLoading] = useState(false);
+
   const activePayoutRow = (payouts as PayoutRow[] | undefined)?.find((p) => p.id === actionPayoutId);
+  const invoicePayoutRow = (payouts as PayoutRow[] | undefined)?.find((p) => p.id === invoiceDialogPayoutId);
 
   const openDialog = (id: number, type: "initiate" | "approve") => {
     setActionPayoutId(id);
@@ -120,6 +140,18 @@ export function PayoutList() {
     }
   };
 
+  const openInvoice = async (row: PayoutRow) => {
+    if (!row.settlementId) return;
+    setInvoiceDialogPayoutId(row.id);
+    setInvoiceLoading(true);
+    try {
+      const r = await fetch(`/api/settlements/${row.settlementId}/invoice`);
+      if (r.ok) setInvoiceData(await r.json());
+    } finally {
+      setInvoiceLoading(false);
+    }
+  };
+
   const rows = payouts as PayoutRow[] | undefined;
 
   return (
@@ -144,7 +176,7 @@ export function PayoutList() {
         </Select>
       </div>
 
-      {/* Flow info banner */}
+      {/* Flow banner */}
       <div className="flex items-start gap-3 rounded-lg border border-blue-100 bg-blue-50/60 p-4 text-sm text-blue-700">
         <Info className="h-4 w-4 mt-0.5 shrink-0" />
         <div>
@@ -170,13 +202,14 @@ export function PayoutList() {
                 <TableHead className="font-medium text-slate-500 h-10 text-right">Amount</TableHead>
                 <TableHead className="font-medium text-slate-500 h-10 text-center">Status</TableHead>
                 <TableHead className="font-medium text-slate-500 h-10">UTR / Action</TableHead>
+                <TableHead className="font-medium text-slate-500 h-10 text-right px-4">Links</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {isLoading ? (
-                <TableRow><TableCell colSpan={6} className="h-32 text-center"><Loader2 className="h-6 w-6 animate-spin mx-auto text-slate-400" /></TableCell></TableRow>
+                <TableRow><TableCell colSpan={7} className="h-32 text-center"><Loader2 className="h-6 w-6 animate-spin mx-auto text-slate-400" /></TableCell></TableRow>
               ) : rows?.length === 0 ? (
-                <TableRow><TableCell colSpan={6} className="h-32 text-center text-slate-500">No payouts found.</TableCell></TableRow>
+                <TableRow><TableCell colSpan={7} className="h-32 text-center text-slate-500">No payouts found.</TableCell></TableRow>
               ) : rows?.map((row) => (
                 <TableRow key={row.id} className="border-slate-100/50">
                   <TableCell className="px-6">
@@ -193,7 +226,7 @@ export function PayoutList() {
                   </TableCell>
                   <TableCell className="text-right font-medium text-slate-900">{formatCurrency(row.amount)}</TableCell>
                   <TableCell className="text-center"><StatusBadge status={row.status} /></TableCell>
-                  <TableCell className="px-6">
+                  <TableCell className="px-4">
                     {row.status === "PENDING_APPROVAL" && isMaker && (
                       <Button
                         size="sm"
@@ -233,6 +266,34 @@ export function PayoutList() {
                         )}
                       </div>
                     )}
+                  </TableCell>
+                  <TableCell className="text-right px-4">
+                    <div className="flex flex-col gap-1 items-end">
+                      {row.settlementId && (
+                        <Button asChild variant="ghost" size="sm" className="h-7 text-[11px] text-slate-500 hover:text-slate-900 px-2">
+                          <Link href={`/settlements/${row.settlementId}`}>
+                            <ExternalLink className="h-3 w-3 mr-1" /> Settlement
+                          </Link>
+                        </Button>
+                      )}
+                      {row.status === "SETTLED" && row.settlementId && (
+                        <>
+                          <a href={`/api/settlements/${row.settlementId}/soc`} download>
+                            <Button variant="ghost" size="sm" className="h-7 text-[11px] text-blue-600 hover:text-blue-800 px-2">
+                              <Download className="h-3 w-3 mr-1" /> SoC CSV
+                            </Button>
+                          </a>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 text-[11px] text-purple-600 hover:text-purple-800 px-2"
+                            onClick={() => openInvoice(row)}
+                          >
+                            <FileText className="h-3 w-3 mr-1" /> Invoice
+                          </Button>
+                        </>
+                      )}
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}
@@ -303,7 +364,7 @@ export function PayoutList() {
                     <li>Backend auto-generates a NEFT UTR reference</li>
                     <li>Payout status immediately transitions to <strong>Settled</strong></li>
                     <li>UTR is recorded in the payout audit trail</li>
-                    <li>Brand bags are marked as settled in the OMS</li>
+                    <li>SoC + Commission Invoice become available for download</li>
                   </ul>
                 </div>
               )}
@@ -328,6 +389,81 @@ export function PayoutList() {
               >
                 {actionLoading ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Processing...</> : <><CheckCircle2 className="mr-2 h-4 w-4" />Approve & Release Funds</>}
               </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Commission Invoice Dialog */}
+      <Dialog open={invoiceDialogPayoutId !== null} onOpenChange={(o) => { if (!o) { setInvoiceDialogPayoutId(null); setInvoiceData(null); } }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Commission Invoice</DialogTitle>
+            <DialogDescription>
+              {invoicePayoutRow?.brandName} · {invoicePayoutRow?.cycle}
+            </DialogDescription>
+          </DialogHeader>
+          {invoiceLoading ? (
+            <div className="py-8 flex justify-center"><Loader2 className="h-6 w-6 animate-spin text-slate-400" /></div>
+          ) : invoiceData ? (
+            <div className="space-y-4 py-2 max-h-[70vh] overflow-y-auto">
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div className="space-y-1">
+                  <p className="text-xs text-slate-500 font-medium uppercase tracking-wider">Platform</p>
+                  <p className="font-medium">{invoiceData.platform.name}</p>
+                  <p className="text-xs text-slate-500 font-mono">{invoiceData.platform.gstin}</p>
+                  <p className="text-xs text-slate-500">{invoiceData.platform.address}</p>
+                </div>
+                <div className="space-y-1">
+                  <p className="text-xs text-slate-500 font-medium uppercase tracking-wider">Brand</p>
+                  <p className="font-medium">{invoiceData.brand.name}</p>
+                  <p className="text-xs text-slate-500">{invoiceData.brand.companyName}</p>
+                  <p className="text-xs font-mono text-slate-500">{invoiceData.brand.gstin || invoiceData.brand.pan}</p>
+                </div>
+              </div>
+              <div className="text-xs font-mono text-slate-400 flex justify-between">
+                <span>Invoice: {invoiceData.invoiceNo}</span>
+                <span>Date: {invoiceData.invoiceDate}</span>
+              </div>
+              <Separator />
+              <div className="space-y-2 text-sm">
+                <p className="font-medium text-slate-700">Settlement Summary — {invoiceData.cycle}</p>
+                {[
+                  ["Gross GMV", formatCurrency(invoiceData.waterfall.grossGmv), false],
+                  [`Commission (${invoiceData.waterfall.commissionRate}%)`, formatCurrency(invoiceData.waterfall.commission), true],
+                  ["GST on Commission (18%)", formatCurrency(invoiceData.waterfall.gstOnCommission), true],
+                  ["TCS Deducted (Section 52)", formatCurrency(invoiceData.waterfall.tcsAmount), true],
+                  ["TDS Deducted (Section 194-O)", formatCurrency(invoiceData.waterfall.tdsAmount), true],
+                ].map(([label, val, isDeduction]) => (
+                  <div key={String(label)} className="flex justify-between">
+                    <span className="text-slate-600">{label}</span>
+                    <span className={isDeduction ? "text-red-700" : "font-medium"}>{isDeduction ? `− ${val}` : val}</span>
+                  </div>
+                ))}
+                <Separator />
+                <div className="flex justify-between font-bold text-base">
+                  <span>Net Payable to Brand</span>
+                  <span className="text-green-700">{formatCurrency(invoiceData.waterfall.netPayable)}</span>
+                </div>
+              </div>
+              {invoiceData.payout?.utr && (
+                <div className="rounded-md bg-green-50 border border-green-100 p-3 text-sm">
+                  <p className="font-semibold text-green-800">Payment Settled</p>
+                  <p className="text-xs text-green-700 mt-1">UTR: <span className="font-mono">{invoiceData.payout.utr}</span></p>
+                  {invoiceData.payout.settledAt && (
+                    <p className="text-xs text-green-700">Date: {new Date(invoiceData.payout.settledAt).toLocaleDateString()}</p>
+                  )}
+                </div>
+              )}
+              <p className="text-xs text-slate-400">{invoiceData.eligibleBags} bags · {invoiceData.brand.bankName} {invoiceData.brand.bankAccount}</p>
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setInvoiceDialogPayoutId(null); setInvoiceData(null); }}>Close</Button>
+            {invoiceData && (
+              <a href={invoiceData.socUrl} download>
+                <Button variant="outline"><Download className="h-4 w-4 mr-2" />Download SoC</Button>
+              </a>
             )}
           </DialogFooter>
         </DialogContent>

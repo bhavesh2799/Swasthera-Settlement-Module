@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "qQyOJ6deAaJrEdY84AD4Z"
+uri = "file://swasthera-source.tar.gz"
+type = "unspecified"
+title = "Swasthera Settlement Module — Source Code"

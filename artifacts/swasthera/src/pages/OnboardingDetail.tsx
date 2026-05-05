@@ -10,14 +10,49 @@ import { useQueryClient, useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, CheckCircle, XCircle, Send, Shield, ShieldCheck, ShieldAlert, FileText, Upload, Plus, RefreshCw, Building2, ExternalLink } from "lucide-react";
+import { ArrowLeft, CheckCircle, XCircle, Send, Shield, ShieldCheck, ShieldAlert, FileText, Upload, Plus, RefreshCw, Building2, ExternalLink, Warehouse, Store, MapPin, Tag, ChevronDown, ChevronRight, Percent } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { useState, useRef } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { useRole } from "@/contexts/RoleContext";
 import { Separator } from "@/components/ui/separator";
+
+interface BrandItem {
+  id: number;
+  brandCode: string;
+  companyId: string;
+  onboardingId: number;
+  brandName: string;
+  brandLegalName: string | null;
+  brandCategory: string;
+  brandType: string;
+  status: string;
+  commissionRate: number;
+  commissionType: string;
+  tierConfig: Array<{ minGmv: number; maxGmv: number | null; rate: number }> | null;
+  returnWindowDays: number;
+  tcsRate: number;
+  tdsRate: number;
+  tcsApplicable: boolean;
+  fyndBrandId: string | null;
+}
+
+interface WarehouseItem {
+  id: number;
+  warehouseCode: string;
+  brandId: number;
+  warehouseName: string;
+  warehouseState: string;
+  warehouseGstin: string;
+  warehouseAddress: string;
+  isPrimary: boolean;
+  isActive: boolean;
+  stateCode: string | null;
+  fyndLocationId: string | null;
+}
 
 interface CommissionVersion {
   id: number;
@@ -84,6 +119,104 @@ export function OnboardingDetail() {
   const [newCommission, setNewCommission] = useState({ commissionPercent: "", effectiveFromDate: new Date().toISOString().split("T")[0], notes: "" });
   const [updatingDoc, setUpdatingDoc] = useState<DocKey | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Brands & Warehouses
+  const { data: brands, refetch: refetchBrands } = useQuery<BrandItem[]>({
+    queryKey: ["brands", id],
+    queryFn: async () => {
+      const r = await fetch(`/api/onboardings/${id}/brands`);
+      if (!r.ok) throw new Error("Failed to load brands");
+      return r.json();
+    },
+    enabled: !!id,
+  });
+
+  const [expandedBrands, setExpandedBrands] = useState<Set<number>>(new Set());
+  const toggleBrand = (brandId: number) =>
+    setExpandedBrands((prev) => {
+      const next = new Set(prev);
+      next.has(brandId) ? next.delete(brandId) : next.add(brandId);
+      return next;
+    });
+
+  const [showAddBrand, setShowAddBrand] = useState(false);
+  const [addBrandForm, setAddBrandForm] = useState({
+    brandName: "", brandLegalName: "", brandCategory: "", brandType: "RETAILER",
+    commissionType: "FLAT_PERCENT", commissionRate: "", returnWindowDays: "15",
+    tcsRate: "1", tdsRate: "1",
+  });
+  const [addBrandLoading, setAddBrandLoading] = useState(false);
+
+  const [showAddWarehouse, setShowAddWarehouse] = useState(false);
+  const [addWarehouseBrandId, setAddWarehouseBrandId] = useState<number | null>(null);
+  const [addWarehouseForm, setAddWarehouseForm] = useState({
+    warehouseName: "", warehouseState: "", warehouseGstin: "", warehouseAddress: "", isPrimary: false,
+  });
+  const [addWarehouseLoading, setAddWarehouseLoading] = useState(false);
+
+  const [warehousesByBrand, setWarehousesByBrand] = useState<Record<number, WarehouseItem[]>>({});
+
+  const loadWarehouses = async (brandId: number) => {
+    const r = await fetch(`/api/brands/${brandId}/warehouses`);
+    if (!r.ok) return;
+    const data: WarehouseItem[] = await r.json();
+    setWarehousesByBrand((prev) => ({ ...prev, [brandId]: data }));
+  };
+
+  const handleExpandBrand = (brandId: number) => {
+    toggleBrand(brandId);
+    if (!expandedBrands.has(brandId)) {
+      loadWarehouses(brandId);
+    }
+  };
+
+  const handleAddBrand = async () => {
+    if (!addBrandForm.brandName || !addBrandForm.brandCategory || !addBrandForm.brandType) return;
+    setAddBrandLoading(true);
+    try {
+      const r = await fetch(`/api/onboardings/${id}/brands`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...addBrandForm,
+          commissionRate: parseFloat(addBrandForm.commissionRate) || 0,
+          returnWindowDays: parseInt(addBrandForm.returnWindowDays) || 15,
+          tcsRate: parseFloat(addBrandForm.tcsRate) || 1,
+          tdsRate: parseFloat(addBrandForm.tdsRate) || 1,
+        }),
+      });
+      if (!r.ok) throw new Error("Failed");
+      toast({ title: "Brand added successfully" });
+      setShowAddBrand(false);
+      setAddBrandForm({ brandName: "", brandLegalName: "", brandCategory: "", brandType: "RETAILER", commissionType: "FLAT_PERCENT", commissionRate: "", returnWindowDays: "15", tcsRate: "1", tdsRate: "1" });
+      refetchBrands();
+    } catch {
+      toast({ title: "Failed to add brand", variant: "destructive" });
+    } finally {
+      setAddBrandLoading(false);
+    }
+  };
+
+  const handleAddWarehouse = async () => {
+    if (!addWarehouseBrandId || !addWarehouseForm.warehouseName || !addWarehouseForm.warehouseGstin) return;
+    setAddWarehouseLoading(true);
+    try {
+      const r = await fetch(`/api/brands/${addWarehouseBrandId}/warehouses`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(addWarehouseForm),
+      });
+      if (!r.ok) throw new Error("Failed");
+      toast({ title: "Warehouse added successfully" });
+      setShowAddWarehouse(false);
+      setAddWarehouseForm({ warehouseName: "", warehouseState: "", warehouseGstin: "", warehouseAddress: "", isPrimary: false });
+      loadWarehouses(addWarehouseBrandId);
+    } catch {
+      toast({ title: "Failed to add warehouse", variant: "destructive" });
+    } finally {
+      setAddWarehouseLoading(false);
+    }
+  };
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: getGetOnboardingQueryKey(id) });
 
@@ -198,7 +331,16 @@ export function OnboardingDetail() {
             <Badge variant="outline" className="font-mono text-xs">{onboarding.ref}</Badge>
             {kybBadge(onboarding.kybStatus ?? "NOT_STARTED")}
           </div>
-          <p className="text-slate-500">{onboarding.companyName}</p>
+          <div className="flex flex-wrap items-center gap-3 mt-1">
+            <p className="text-slate-500">{onboarding.companyName}</p>
+            <span className="text-slate-300">·</span>
+            <span className="font-mono text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded border border-slate-200">
+              CO-{String(id).padStart(5, "0")}
+            </span>
+            {brands && brands.length > 0 && (
+              <span className="text-xs text-slate-500">{brands.length} brand{brands.length !== 1 ? "s" : ""}</span>
+            )}
+          </div>
         </div>
 
         <div className="flex gap-2 flex-wrap">
@@ -457,6 +599,187 @@ export function OnboardingDetail() {
         </CardContent>
       </Card>
 
+      {/* Brands & Warehouses */}
+      <Card className="shadow-sm border-slate-200/60 bg-white">
+        <CardHeader className="border-b border-slate-100 bg-slate-50/50 py-4 flex flex-row items-center justify-between">
+          <CardTitle className="text-base font-semibold flex items-center gap-2">
+            <Store className="h-4 w-4" />
+            Brands & Warehouses
+            <span className="text-xs font-normal text-slate-500 ml-1">({brands?.length ?? 0} brand{(brands?.length ?? 0) !== 1 ? "s" : ""})</span>
+          </CardTitle>
+          {isMaker && onboarding.status !== "SUBMITTED" && (
+            <Button size="sm" variant="outline" onClick={() => setShowAddBrand(true)}>
+              <Plus className="mr-1.5 h-3.5 w-3.5" /> Add Brand
+            </Button>
+          )}
+        </CardHeader>
+        <CardContent className="p-0">
+          {!brands || brands.length === 0 ? (
+            <div className="px-6 py-10 text-center space-y-2">
+              <Store className="h-8 w-8 text-slate-300 mx-auto" />
+              <p className="text-sm text-slate-400">No additional brands registered yet.</p>
+              {isMaker && (
+                <Button size="sm" variant="outline" className="mt-2" onClick={() => setShowAddBrand(true)}>
+                  <Plus className="mr-1.5 h-3.5 w-3.5" /> Add First Brand
+                </Button>
+              )}
+            </div>
+          ) : (
+            <div className="divide-y divide-slate-100">
+              {brands.map((brand) => {
+                const isExpanded = expandedBrands.has(brand.id);
+                const warehouses = warehousesByBrand[brand.id];
+                return (
+                  <div key={brand.id}>
+                    {/* Brand Row */}
+                    <div
+                      className="flex items-center gap-3 px-6 py-4 cursor-pointer hover:bg-slate-50/60 transition-colors"
+                      onClick={() => handleExpandBrand(brand.id)}
+                    >
+                      <div className="shrink-0 text-slate-400">
+                        {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-semibold text-slate-900">{brand.brandName}</span>
+                          <Badge
+                            className={`text-[10px] border-transparent ${
+                              brand.status === "ACTIVE" ? "bg-green-100 text-green-800 hover:bg-green-100" :
+                              brand.status === "INACTIVE" ? "bg-slate-100 text-slate-600 hover:bg-slate-100" :
+                              "bg-amber-100 text-amber-800 hover:bg-amber-100"
+                            }`}
+                          >
+                            {brand.status}
+                          </Badge>
+                          <span className="font-mono text-[10px] bg-blue-50 text-blue-700 border border-blue-100 px-1.5 py-0.5 rounded">
+                            {brand.brandCode}
+                          </span>
+                          <span className="text-xs text-slate-400">{brand.brandCategory} · {brand.brandType}</span>
+                        </div>
+                        {brand.brandLegalName && (
+                          <p className="text-xs text-slate-500 mt-0.5">{brand.brandLegalName}</p>
+                        )}
+                      </div>
+                      <div className="shrink-0 text-right space-y-0.5">
+                        {brand.commissionType === "TIERED" ? (
+                          <div className="flex items-center gap-1 text-xs font-medium text-amber-700">
+                            <Percent className="h-3 w-3" />
+                            Tiered ({brand.tierConfig?.length ?? 0} slabs)
+                          </div>
+                        ) : (
+                          <div className="text-xs font-medium text-slate-700">
+                            {brand.commissionRate}% commission
+                          </div>
+                        )}
+                        <div className="text-[10px] text-slate-400">{brand.returnWindowDays}d return window</div>
+                      </div>
+                    </div>
+
+                    {/* Expanded: Warehouses + commercial detail */}
+                    {isExpanded && (
+                      <div className="bg-slate-50/50 border-t border-slate-100 px-6 py-4 space-y-4">
+                        {/* Brand IDs row */}
+                        <div className="flex flex-wrap gap-4 text-xs">
+                          <div>
+                            <span className="text-slate-400 uppercase tracking-wider font-medium mr-1.5">Brand ID</span>
+                            <span className="font-mono bg-white border border-slate-200 px-1.5 py-0.5 rounded text-slate-700">{brand.brandCode}</span>
+                          </div>
+                          <div>
+                            <span className="text-slate-400 uppercase tracking-wider font-medium mr-1.5">Company ID</span>
+                            <span className="font-mono bg-white border border-slate-200 px-1.5 py-0.5 rounded text-slate-700">{brand.companyId}</span>
+                          </div>
+                          <div>
+                            <span className="text-slate-400 uppercase tracking-wider font-medium mr-1.5">TCS</span>
+                            <span className="text-slate-700">{brand.tcsRate}%</span>
+                          </div>
+                          <div>
+                            <span className="text-slate-400 uppercase tracking-wider font-medium mr-1.5">TDS</span>
+                            <span className="text-slate-700">{brand.tdsRate}%</span>
+                          </div>
+                        </div>
+
+                        {/* Tier slabs if TIERED */}
+                        {brand.commissionType === "TIERED" && brand.tierConfig && brand.tierConfig.length > 0 && (
+                          <div className="rounded border border-amber-200 bg-amber-50/60 p-3">
+                            <p className="text-xs font-semibold text-amber-800 mb-2 flex items-center gap-1.5">
+                              <Percent className="h-3 w-3" /> GMV Tier Slabs
+                            </p>
+                            <div className="grid grid-cols-3 gap-px bg-amber-200/50 rounded overflow-hidden text-xs">
+                              <div className="bg-amber-50 px-2 py-1 font-medium text-amber-700">Min GMV (₹)</div>
+                              <div className="bg-amber-50 px-2 py-1 font-medium text-amber-700">Max GMV (₹)</div>
+                              <div className="bg-amber-50 px-2 py-1 font-medium text-amber-700">Rate (%)</div>
+                              {brand.tierConfig.map((slab, i) => (
+                                <>
+                                  <div key={`min-${i}`} className="bg-white px-2 py-1 font-mono">{slab.minGmv.toLocaleString("en-IN")}</div>
+                                  <div key={`max-${i}`} className="bg-white px-2 py-1 font-mono">{slab.maxGmv != null ? slab.maxGmv.toLocaleString("en-IN") : "Unlimited"}</div>
+                                  <div key={`rate-${i}`} className="bg-white px-2 py-1 font-mono">{slab.rate}%</div>
+                                </>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Warehouses */}
+                        <div>
+                          <div className="flex items-center justify-between mb-2">
+                            <p className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
+                              <Warehouse className="h-3.5 w-3.5" />
+                              Warehouses ({warehouses?.length ?? "..."})
+                            </p>
+                            {isMaker && onboarding.status !== "SUBMITTED" && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-7 text-xs"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setAddWarehouseBrandId(brand.id);
+                                  setShowAddWarehouse(true);
+                                }}
+                              >
+                                <Plus className="mr-1 h-3 w-3" /> Add Warehouse
+                              </Button>
+                            )}
+                          </div>
+                          {!warehouses ? (
+                            <p className="text-xs text-slate-400 pl-1">Loading...</p>
+                          ) : warehouses.length === 0 ? (
+                            <p className="text-xs text-slate-400 pl-1">No warehouses registered for this brand.</p>
+                          ) : (
+                            <div className="space-y-2">
+                              {warehouses.map((wh) => (
+                                <div key={wh.id} className="bg-white rounded border border-slate-200 px-4 py-3 flex items-start gap-3">
+                                  <MapPin className="h-3.5 w-3.5 text-slate-400 mt-0.5 shrink-0" />
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <span className="text-sm font-medium text-slate-900">{wh.warehouseName}</span>
+                                      {wh.isPrimary && (
+                                        <Badge className="text-[10px] bg-blue-100 text-blue-800 border-transparent hover:bg-blue-100">Primary</Badge>
+                                      )}
+                                      <span className="font-mono text-[10px] bg-slate-50 text-slate-600 border border-slate-200 px-1.5 py-0.5 rounded">{wh.warehouseCode}</span>
+                                    </div>
+                                    <div className="flex flex-wrap gap-3 mt-1 text-xs text-slate-500">
+                                      <span>{wh.warehouseState}</span>
+                                      <span className="font-mono">{wh.warehouseGstin}</span>
+                                      {wh.stateCode && <span>State: {wh.stateCode}</span>}
+                                    </div>
+                                    <p className="text-xs text-slate-400 mt-0.5">{wh.warehouseAddress}</p>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
       {/* Fynd Sync IDs — post-approval */}
       {onboarding.fyndCompanyCode && (
         <Card className="shadow-sm border-blue-100 bg-blue-50/30">
@@ -490,6 +813,133 @@ export function OnboardingDetail() {
           </CardContent>
         </Card>
       )}
+
+      {/* Add Brand Dialog */}
+      <Dialog open={showAddBrand} onOpenChange={setShowAddBrand}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Add Brand</DialogTitle>
+            <DialogDescription>Register a new brand under <strong>CO-{String(id).padStart(5, "0")}</strong>. You can add warehouses after.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2 max-h-[60vh] overflow-y-auto pr-1">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label className="text-sm">Brand Display Name <span className="text-red-500">*</span></Label>
+                <Input value={addBrandForm.brandName} onChange={(e) => setAddBrandForm((p) => ({ ...p, brandName: e.target.value }))} placeholder="Zara India" />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-sm">Brand Legal Name</Label>
+                <Input value={addBrandForm.brandLegalName} onChange={(e) => setAddBrandForm((p) => ({ ...p, brandLegalName: e.target.value }))} placeholder="Zara Fashions Pvt Ltd" />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-sm">Category <span className="text-red-500">*</span></Label>
+                <Input value={addBrandForm.brandCategory} onChange={(e) => setAddBrandForm((p) => ({ ...p, brandCategory: e.target.value }))} placeholder="Fashion, Wellness..." />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-sm">Brand Type <span className="text-red-500">*</span></Label>
+                <select
+                  className="w-full h-9 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm"
+                  value={addBrandForm.brandType}
+                  onChange={(e) => setAddBrandForm((p) => ({ ...p, brandType: e.target.value }))}
+                >
+                  <option value="MANUFACTURER">Manufacturer</option>
+                  <option value="RETAILER">Retailer</option>
+                  <option value="TRADER">Trader</option>
+                  <option value="DISTRIBUTOR">Distributor</option>
+                </select>
+              </div>
+            </div>
+            <Separator />
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Commercial Terms</p>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label className="text-sm">Commission Type</Label>
+                <select
+                  className="w-full h-9 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm"
+                  value={addBrandForm.commissionType}
+                  onChange={(e) => setAddBrandForm((p) => ({ ...p, commissionType: e.target.value }))}
+                >
+                  <option value="FLAT_PERCENT">Flat %</option>
+                  <option value="TIERED">Tiered GMV</option>
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-sm">Commission Rate (%)</Label>
+                <Input type="number" step="0.01" min="0" max="100" value={addBrandForm.commissionRate} onChange={(e) => setAddBrandForm((p) => ({ ...p, commissionRate: e.target.value }))} placeholder="12.50" />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-sm">Return Window (days)</Label>
+                <Input type="number" min="0" max="90" value={addBrandForm.returnWindowDays} onChange={(e) => setAddBrandForm((p) => ({ ...p, returnWindowDays: e.target.value }))} />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-sm">TCS Rate (%)</Label>
+                <Input type="number" step="0.01" min="0" value={addBrandForm.tcsRate} onChange={(e) => setAddBrandForm((p) => ({ ...p, tcsRate: e.target.value }))} />
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowAddBrand(false)}>Cancel</Button>
+            <Button onClick={handleAddBrand} disabled={addBrandLoading || !addBrandForm.brandName || !addBrandForm.brandCategory}>
+              {addBrandLoading ? "Adding..." : "Add Brand"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Add Warehouse Dialog */}
+      <Dialog open={showAddWarehouse} onOpenChange={(open) => { setShowAddWarehouse(open); if (!open) setAddWarehouseBrandId(null); }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Add Warehouse</DialogTitle>
+            <DialogDescription>
+              Add a warehouse for{" "}
+              <strong>{brands?.find((b) => b.id === addWarehouseBrandId)?.brandName ?? "brand"}</strong>
+              {addWarehouseBrandId && (
+                <span className="font-mono text-xs ml-1 bg-slate-100 px-1 rounded">
+                  {brands?.find((b) => b.id === addWarehouseBrandId)?.brandCode}
+                </span>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label className="text-sm">Warehouse Name <span className="text-red-500">*</span></Label>
+                <Input value={addWarehouseForm.warehouseName} onChange={(e) => setAddWarehouseForm((p) => ({ ...p, warehouseName: e.target.value }))} placeholder="Mumbai FC" />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-sm">State <span className="text-red-500">*</span></Label>
+                <Input value={addWarehouseForm.warehouseState} onChange={(e) => setAddWarehouseForm((p) => ({ ...p, warehouseState: e.target.value }))} placeholder="Maharashtra" />
+              </div>
+              <div className="col-span-2 space-y-1.5">
+                <Label className="text-sm">Warehouse GSTIN <span className="text-red-500">*</span></Label>
+                <Input value={addWarehouseForm.warehouseGstin} onChange={(e) => setAddWarehouseForm((p) => ({ ...p, warehouseGstin: e.target.value }))} placeholder="27AABCZ1234D1Z5" className="font-mono" />
+                <p className="text-[10px] text-slate-400">First 2 digits = state code for TCS Section 52 accrual</p>
+              </div>
+              <div className="col-span-2 space-y-1.5">
+                <Label className="text-sm">Warehouse Address <span className="text-red-500">*</span></Label>
+                <Input value={addWarehouseForm.warehouseAddress} onChange={(e) => setAddWarehouseForm((p) => ({ ...p, warehouseAddress: e.target.value }))} placeholder="Plot 12, MIDC Industrial Area, Thane 400604" />
+              </div>
+              <div className="col-span-2 flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="isPrimary"
+                  checked={addWarehouseForm.isPrimary}
+                  onChange={(e) => setAddWarehouseForm((p) => ({ ...p, isPrimary: e.target.checked }))}
+                  className="h-4 w-4"
+                />
+                <Label htmlFor="isPrimary" className="text-sm cursor-pointer">Mark as primary warehouse (unsets current primary)</Label>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowAddWarehouse(false)}>Cancel</Button>
+            <Button onClick={handleAddWarehouse} disabled={addWarehouseLoading || !addWarehouseForm.warehouseName || !addWarehouseForm.warehouseGstin || !addWarehouseForm.warehouseAddress}>
+              {addWarehouseLoading ? "Adding..." : "Add Warehouse"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Reject Dialog */}
       <Dialog open={showRejectDialog} onOpenChange={setShowRejectDialog}>

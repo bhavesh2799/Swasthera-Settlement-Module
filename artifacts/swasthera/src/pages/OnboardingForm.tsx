@@ -2,14 +2,16 @@ import { useLocation } from "wouter";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
+import { useState } from "react";
 import { useCreateOnboarding } from "@workspace/api-client-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage, FormDescription } from "@/components/ui/form";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, Info } from "lucide-react";
+import { ArrowLeft, Info, Plus, Trash2 } from "lucide-react";
 
 const onboardingSchema = z.object({
   companyName: z.string().min(1, "Required"),
@@ -42,10 +44,21 @@ const onboardingSchema = z.object({
 
 type OnboardingFormValues = z.infer<typeof onboardingSchema>;
 
+interface TierSlab {
+  minGmv: number;
+  maxGmv: number | null;
+  rate: number;
+}
+
 export function OnboardingForm() {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
   const createMutation = useCreateOnboarding();
+
+  const [tierSlabs, setTierSlabs] = useState<TierSlab[]>([
+    { minGmv: 0, maxGmv: 500000, rate: 15 },
+    { minGmv: 500000, maxGmv: null, rate: 12 },
+  ]);
 
   const form = useForm<OnboardingFormValues>({
     resolver: zodResolver(onboardingSchema),
@@ -79,8 +92,42 @@ export function OnboardingForm() {
     }
   });
 
+  const commissionType = form.watch("commissionType");
+
+  const updateSlab = (i: number, key: keyof TierSlab, value: number | null) => {
+    setTierSlabs((prev) => {
+      const next = [...prev];
+      next[i] = { ...next[i], [key]: value };
+      // Auto-update next slab's minGmv when maxGmv changes
+      if (key === "maxGmv" && value !== null && i + 1 < next.length) {
+        next[i + 1] = { ...next[i + 1], minGmv: value };
+      }
+      return next;
+    });
+  };
+
+  const addSlab = () => {
+    const last = tierSlabs[tierSlabs.length - 1];
+    const newMin = last?.maxGmv ?? 0;
+    setTierSlabs((prev) => [
+      ...prev.slice(0, -1),
+      { ...prev[prev.length - 1], maxGmv: newMin },
+      { minGmv: newMin, maxGmv: null, rate: 10 },
+    ]);
+  };
+
+  const removeSlab = (i: number) => {
+    if (tierSlabs.length <= 1) return;
+    setTierSlabs((prev) => prev.filter((_, idx) => idx !== i));
+  };
+
   const onSubmit = (data: OnboardingFormValues) => {
-    createMutation.mutate({ data }, {
+    const payload: Record<string, unknown> = { ...data };
+    if (data.commissionType === "TIERED") {
+      payload.tierConfig = JSON.stringify(tierSlabs);
+      payload.commissionRate = 0;
+    }
+    createMutation.mutate({ data: payload as typeof data }, {
       onSuccess: (res) => {
         toast({ title: "Draft created — run KYB verification next", description: `Ref: ${res.ref}` });
         setLocation(`/onboarding/${res.id}`);
@@ -159,7 +206,7 @@ export function OnboardingForm() {
             {/* Brand Details */}
             <Card className="shadow-sm border-slate-200/60 bg-white">
               <CardHeader className="bg-slate-50/50 border-b border-slate-100 py-4">
-                <CardTitle className="text-base">Brand Details</CardTitle>
+                <CardTitle className="text-base">Primary Brand</CardTitle>
               </CardHeader>
               <CardContent className="p-6 grid grid-cols-2 gap-4">
                 <Field name="brandName" label="Brand Display Name" placeholder="Zara India" />
@@ -227,42 +274,120 @@ export function OnboardingForm() {
               <CardHeader className="bg-slate-50/50 border-b border-slate-100 py-4">
                 <CardTitle className="text-base">Commercial Terms</CardTitle>
               </CardHeader>
-              <CardContent className="p-6 grid grid-cols-4 gap-4">
-                <FormField control={form.control} name="commissionType" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Commission Type</FormLabel>
-                    <Select onValueChange={field.onChange} defaultValue={field.value}>
-                      <FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl>
-                      <SelectContent>
-                        <SelectItem value="FLAT_PERCENT">Flat %</SelectItem>
-                        <SelectItem value="TIERED">Tiered</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-                <FormField control={form.control} name="commissionRate" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Commission Rate (%)</FormLabel>
-                    <FormControl><Input type="number" step="0.01" min="0" max="100" {...field} /></FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-                <FormField control={form.control} name="returnWindowDays" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Return Window (days)</FormLabel>
-                    <FormControl><Input type="number" min="0" max="90" {...field} /></FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )} />
-                <FormField control={form.control} name="tcsRate" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>TCS Rate (%)</FormLabel>
-                    <FormControl><Input type="number" step="0.01" {...field} /></FormControl>
-                    <FormDescription className="text-xs">Section 52 GST</FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )} />
+              <CardContent className="p-6 space-y-4">
+                <div className="grid grid-cols-4 gap-4">
+                  <FormField control={form.control} name="commissionType" render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Commission Type</FormLabel>
+                      <Select onValueChange={field.onChange} defaultValue={field.value}>
+                        <FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl>
+                        <SelectContent>
+                          <SelectItem value="FLAT_PERCENT">Flat %</SelectItem>
+                          <SelectItem value="TIERED">Tiered GMV Slabs</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )} />
+
+                  {commissionType !== "TIERED" && (
+                    <FormField control={form.control} name="commissionRate" render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Commission Rate (%)</FormLabel>
+                        <FormControl><Input type="number" step="0.01" min="0" max="100" {...field} /></FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )} />
+                  )}
+
+                  <FormField control={form.control} name="returnWindowDays" render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Return Window (days)</FormLabel>
+                      <FormControl><Input type="number" min="0" max="90" {...field} /></FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )} />
+
+                  <FormField control={form.control} name="tcsRate" render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>TCS Rate (%)</FormLabel>
+                      <FormControl><Input type="number" step="0.01" {...field} /></FormControl>
+                      <FormDescription className="text-xs">Section 52 GST</FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )} />
+                </div>
+
+                {/* Tiered GMV slab builder */}
+                {commissionType === "TIERED" && (
+                  <div className="border border-amber-200 bg-amber-50/40 rounded-lg p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm font-semibold text-amber-900">GMV Tier Slabs</p>
+                        <p className="text-xs text-amber-700 mt-0.5">Commission rate applied to orders within each GMV band per settlement cycle</p>
+                      </div>
+                      <Button type="button" variant="outline" size="sm" className="border-amber-300 text-amber-800 hover:bg-amber-100" onClick={addSlab}>
+                        <Plus className="h-3.5 w-3.5 mr-1.5" /> Add Tier
+                      </Button>
+                    </div>
+
+                    <div className="space-y-2">
+                      {tierSlabs.map((slab, i) => (
+                        <div key={i} className="flex gap-2 items-end bg-white rounded border border-amber-100 p-3">
+                          <div className="flex items-center h-9 px-2 bg-amber-100 rounded text-xs font-mono text-amber-800 shrink-0">
+                            {i + 1}
+                          </div>
+                          <div className="flex-1 space-y-1">
+                            <Label className="text-xs text-slate-500">Min GMV (₹)</Label>
+                            <Input
+                              type="number"
+                              value={slab.minGmv}
+                              onChange={(e) => updateSlab(i, "minGmv", parseFloat(e.target.value) || 0)}
+                              className="h-8 text-sm"
+                              readOnly={i > 0}
+                            />
+                          </div>
+                          <div className="flex-1 space-y-1">
+                            <Label className="text-xs text-slate-500">Max GMV (₹) {i === tierSlabs.length - 1 ? "(unlimited)" : ""}</Label>
+                            <Input
+                              type="number"
+                              value={slab.maxGmv ?? ""}
+                              onChange={(e) => updateSlab(i, "maxGmv", e.target.value ? parseFloat(e.target.value) : null)}
+                              placeholder={i === tierSlabs.length - 1 ? "No limit" : ""}
+                              className="h-8 text-sm"
+                            />
+                          </div>
+                          <div className="w-24 space-y-1">
+                            <Label className="text-xs text-slate-500">Rate (%)</Label>
+                            <Input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              max="100"
+                              value={slab.rate}
+                              onChange={(e) => updateSlab(i, "rate", parseFloat(e.target.value) || 0)}
+                              className="h-8 text-sm"
+                            />
+                          </div>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-red-400 hover:text-red-600 hover:bg-red-50 shrink-0"
+                            onClick={() => removeSlab(i)}
+                            disabled={tierSlabs.length <= 1}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="rounded bg-amber-100/60 px-3 py-2 text-xs text-amber-800">
+                      Example: ₹0–5L @ 15%, ₹5L+ @ 12% means orders in first ₹5L of monthly GMV settle at 15%, above that at 12%.
+                    </div>
+                  </div>
+                )}
               </CardContent>
             </Card>
 

@@ -400,7 +400,13 @@ export function OrdersList() {
               ) : (
                 bags?.map((row) => {
                   const today = new Date().toISOString().split("T")[0];
-                  const windowExpired = row.windowExpiryDate && row.windowExpiryDate < today;
+                  const windowExpired = row.windowExpiryDate ? row.windowExpiryDate < today : false;
+                  // Derive display eligibility from the return window date for in_window/eligible states
+                  // so the two columns are always consistent (DB may have stale data)
+                  const displayEligibility =
+                    row.eligibility === "in_window" || row.eligibility === "eligible"
+                      ? windowExpired ? "eligible" : "in_window"
+                      : row.eligibility;
                   return (
                     <TableRow key={row.id} className="border-slate-100/50">
                       <TableCell className="px-6">
@@ -426,7 +432,7 @@ export function OrdersList() {
                       <TableCell>
                         {row.windowExpiryDate ? (
                           <div>
-                            <div className={`text-xs font-medium ${windowExpired ? "text-green-700" : "text-amber-700"}`}>
+                            <div className={`text-xs font-medium ${windowExpired ? "text-slate-500" : "text-amber-700"}`}>
                               {windowExpired ? "Expired" : "Active"}
                             </div>
                             <div className="text-[10px] text-slate-400">{row.windowExpiryDate}</div>
@@ -434,7 +440,7 @@ export function OrdersList() {
                         ) : <span className="text-xs text-slate-400">—</span>}
                       </TableCell>
                       <TableCell className="px-6">
-                        <EligibilityBadge status={row.eligibility} />
+                        <EligibilityBadge status={displayEligibility} />
                       </TableCell>
                       {isBackend && (
                         <TableCell className="px-4 text-right">
@@ -731,20 +737,44 @@ function BulkUploadDialog({ open, onOpenChange, brands, onSubmit, isPending }: B
   };
 
   const handleSubmit = () => {
-    const bags = parsedRows.map((row) => {
+    const allMapped = parsedRows.map((row, i) => {
       const brand = brandMap.get(row.brandId);
+      const brandId = parseInt(row.brandId);
+      const esp = parseFloat(row.esp) || 0;
+      const issues: string[] = [];
+      if (!brand) issues.push(`row ${i + 2}: brandId "${row.brandId}" not found in approved brands`);
+      if (!row.sku) issues.push(`row ${i + 2}: sku is empty`);
+      if (esp <= 0) issues.push(`row ${i + 2}: esp must be > 0`);
       return {
-        brandId: parseInt(row.brandId),
-        brandName: brand?.brandName ?? "",
-        cycle: row.cycle || currentCycle(),
-        sku: row.sku,
-        esp: parseFloat(row.esp) || 0,
-        qty: parseInt(row.qty) || 1,
-        omsState: row.omsState || "delivery_done",
-        deliveryDate: row.deliveryDate || new Date().toISOString().split("T")[0],
+        bag: {
+          brandId,
+          brandName: brand?.brandName ?? `Brand-${brandId}`,
+          cycle: row.cycle || currentCycle(),
+          sku: row.sku,
+          esp,
+          qty: parseInt(row.qty) || 1,
+          omsState: row.omsState || "delivery_done",
+          deliveryDate: row.deliveryDate || new Date().toISOString().split("T")[0],
+        },
+        issues,
+        valid: brand !== undefined && !!row.sku && esp > 0,
       };
-    }).filter((b) => b.brandId && b.sku && b.esp > 0);
-    if (bags.length === 0) return;
+    });
+
+    const invalid = allMapped.filter((r) => !r.valid);
+    const bags = allMapped.filter((r) => r.valid).map((r) => r.bag);
+
+    if (invalid.length > 0 && bags.length === 0) {
+      setParseError(`All rows have validation errors:\n${invalid.flatMap((r) => r.issues).slice(0, 5).join("\n")}`);
+      return;
+    }
+    if (invalid.length > 0) {
+      setParseError(`${invalid.length} row(s) skipped due to errors (${bags.length} valid rows will be uploaded)`);
+    }
+    if (bags.length === 0) {
+      setParseError("No valid rows to upload. Check that brandId matches an approved brand and esp > 0.");
+      return;
+    }
     onSubmit(bags);
   };
 

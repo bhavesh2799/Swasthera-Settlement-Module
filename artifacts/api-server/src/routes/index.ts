@@ -8,6 +8,7 @@ import complianceRouter from "./compliance";
 import settlementsRouter from "./settlements";
 import payoutsRouter from "./payouts";
 import commissionMasterRouter from "./commission-master";
+import brandsRouter from "./brands";
 
 const router: IRouter = Router();
 
@@ -20,5 +21,6 @@ router.use(complianceRouter);
 router.use(settlementsRouter);
 router.use(payoutsRouter);
 router.use(commissionMasterRouter);
+router.use(brandsRouter);
 
 export default router;

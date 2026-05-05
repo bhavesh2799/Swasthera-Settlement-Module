@@ -61,6 +61,8 @@ interface BagRow {
   tdsAmount: number;
   eligibility: string;
   cycle: string;
+  stateCode?: string;
+  stateGstin?: string;
 }
 
 const OMS_STATES = [
@@ -428,6 +430,12 @@ export function OrdersList() {
                       <TableCell className="text-right text-sm">
                         <div className="text-slate-700">{formatCurrency(row.tcsAmount)}</div>
                         <div className="text-slate-500">{formatCurrency(row.tdsAmount)}</div>
+                        {row.stateCode && (
+                          <div className="font-mono text-[10px] text-slate-400 mt-0.5">State: {row.stateCode}</div>
+                        )}
+                        {row.stateGstin && (
+                          <div className="font-mono text-[10px] text-slate-400 truncate max-w-[100px]">{row.stateGstin}</div>
+                        )}
                       </TableCell>
                       <TableCell>
                         {row.windowExpiryDate ? (

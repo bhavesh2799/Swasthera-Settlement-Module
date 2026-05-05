@@ -60,15 +60,64 @@ function mapWarehouse(w: typeof warehousesTable.$inferSelect) {
 
 // ── Brands ───────────────────────────────────────────────────────────────────
 
-// List all brands for an onboarding
+// List all brands for an onboarding (auto-populates from onboarding data if table is empty for this record)
 router.get("/onboardings/:id/brands", async (req, res) => {
   try {
     const onboardingId = parseInt(req.params.id);
-    const brands = await db
+    let brands = await db
       .select()
       .from(brandsTable)
       .where(eq(brandsTable.onboardingId, onboardingId))
       .orderBy(brandsTable.createdAt);
+
+    // Auto-populate: if no brands exist yet, seed from the onboarding's denormalized brand fields
+    if (brands.length === 0) {
+      const [ob] = await db.select().from(onboardingsTable).where(eq(onboardingsTable.id, onboardingId));
+      if (ob && ob.brandName) {
+        const [newBrand] = await db.insert(brandsTable).values({
+          onboardingId: ob.id,
+          companyId: `CO-${String(ob.id).padStart(5, "0")}`,
+          brandName: ob.brandName,
+          brandLegalName: ob.brandLegalName,
+          brandCategory: ob.brandCategory,
+          brandType: ob.brandType,
+          commissionRate: ob.commissionRate,
+          commissionType: ob.commissionType ?? "FLAT_PERCENT",
+          returnWindowDays: ob.returnWindowDays,
+          tcsRate: ob.tcsRate,
+          tdsRate: ob.tdsRate,
+          tcsApplicable: ob.tcsApplicable,
+          status: "ACTIVE",
+        }).returning();
+
+        const [brandWithCode] = await db.update(brandsTable)
+          .set({ brandCode: genBrandCode(newBrand.id) })
+          .where(eq(brandsTable.id, newBrand.id))
+          .returning();
+
+        // Also create the primary warehouse for this brand
+        if (ob.warehouseName && ob.warehouseGstin) {
+          const [newWarehouse] = await db.insert(warehousesTable).values({
+            brandId: brandWithCode.id,
+            onboardingId: ob.id,
+            warehouseName: ob.warehouseName,
+            warehouseState: ob.warehouseState,
+            warehouseGstin: ob.warehouseGstin,
+            warehouseAddress: ob.warehouseAddress,
+            isPrimary: true,
+            isActive: true,
+            stateCode: ob.warehouseGstin.substring(0, 2),
+          }).returning();
+
+          await db.update(warehousesTable)
+            .set({ warehouseCode: genWarehouseCode(newWarehouse.id) })
+            .where(eq(warehousesTable.id, newWarehouse.id));
+        }
+
+        brands = [brandWithCode];
+      }
+    }
+
     res.json(brands.map(mapBrand));
   } catch (err) {
     req.log.error({ err }, "list brands error");

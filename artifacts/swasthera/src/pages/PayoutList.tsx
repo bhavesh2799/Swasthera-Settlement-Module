@@ -219,6 +219,9 @@ export function PayoutList() {
                   <TableCell>
                     <div className="font-medium text-slate-900">{row.brandName}</div>
                     <div className="text-xs font-mono text-slate-500">{row.cycle}</div>
+                    {(row as PayoutRow & { companyId?: string | null }).companyId && (
+                      <div className="font-mono text-[10px] text-slate-400 mt-0.5">{(row as PayoutRow & { companyId?: string | null }).companyId}</div>
+                    )}
                   </TableCell>
                   <TableCell>
                     <div className="text-sm text-slate-700">{row.bankName}</div>

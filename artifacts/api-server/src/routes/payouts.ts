@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
-import { payoutsTable, activityTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { payoutsTable, activityTable, settlementsTable } from "@workspace/db";
+import { eq, sql } from "drizzle-orm";
 
 const router = Router();
 
@@ -23,7 +23,22 @@ router.get("/payouts", async (req, res) => {
           .orderBy(payoutsTable.initiatedAt)
       : await db.select().from(payoutsTable).orderBy(payoutsTable.initiatedAt);
 
-    res.json(rows.map(mapPayout));
+    // Fetch onboarding IDs via settlements to derive company IDs
+    const settlementIds = [...new Set(rows.map((r) => r.settlementId).filter(Boolean))] as number[];
+    const settlementsData = settlementIds.length > 0
+      ? await db.select({ id: settlementsTable.id, onboardingId: settlementsTable.onboardingId })
+          .from(settlementsTable)
+          .where(sql`${settlementsTable.id} = ANY(ARRAY[${sql.join(settlementIds.map((id) => sql`${id}`), sql`, `)}]::int[])`)
+      : [];
+    const settlementOnboardingMap = new Map(settlementsData.map((s) => [s.id, s.onboardingId]));
+
+    res.json(rows.map((r) => {
+      const onboardingId = settlementOnboardingMap.get(r.settlementId);
+      return {
+        ...mapPayout(r),
+        companyId: onboardingId ? `CO-${String(onboardingId).padStart(5, "0")}` : null,
+      };
+    }));
   } catch (err) {
     req.log.error({ err }, "list payouts error");
     res.status(500).json({ error: "Internal server error" });

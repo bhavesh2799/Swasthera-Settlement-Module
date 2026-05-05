@@ -15,6 +15,8 @@ router.get("/settlements", async (req, res) => {
     res.json(rows.map((r) => ({
       id: r.id,
       cycle: r.cycle,
+      onboardingId: r.onboardingId,
+      companyId: `CO-${String(r.onboardingId).padStart(5, "0")}`,
       companyName: r.companyName,
       brandName: r.brandName,
       eligibleBags: r.eligibleBags,

@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
-import { onboardingsTable, activityTable, commissionMasterTable } from "@workspace/db";
+import { onboardingsTable, activityTable, commissionMasterTable, brandsTable, warehousesTable } from "@workspace/db";
 import { eq, like, and, SQL } from "drizzle-orm";
 
 const router = Router();
@@ -95,6 +95,45 @@ router.post("/onboardings", async (req, res) => {
       agreedByMakerId: "Anjali Patel",
       notes: "Initial commission rate set at onboarding",
     });
+
+    // Auto-create primary brand entry in brands table
+    const [newBrand] = await db.insert(brandsTable).values({
+      onboardingId: row.id,
+      companyId: `CO-${String(row.id).padStart(5, "0")}`,
+      brandName: body.brandName,
+      brandLegalName: body.brandLegalName,
+      brandCategory: body.brandCategory,
+      brandType: body.brandType,
+      commissionRate: String(body.commissionRate ?? "0"),
+      commissionType: body.commissionType ?? "FLAT_PERCENT",
+      returnWindowDays: body.returnWindowDays ?? 15,
+      tcsRate: String(body.tcsRate ?? "1"),
+      tdsRate: String(body.tdsRate ?? "1"),
+      tcsApplicable: body.tcsApplicable !== false,
+      status: "ACTIVE",
+    }).returning();
+
+    const [brandWithCode] = await db.update(brandsTable)
+      .set({ brandCode: `BR-${String(newBrand.id).padStart(5, "0")}` })
+      .where(eq(brandsTable.id, newBrand.id))
+      .returning();
+
+    // Auto-create primary warehouse entry in warehouses table
+    const [newWarehouse] = await db.insert(warehousesTable).values({
+      brandId: brandWithCode.id,
+      onboardingId: row.id,
+      warehouseName: body.warehouseName,
+      warehouseState: body.warehouseState,
+      warehouseGstin: body.warehouseGstin,
+      warehouseAddress: body.warehouseAddress,
+      isPrimary: true,
+      isActive: true,
+      stateCode: body.warehouseGstin ? String(body.warehouseGstin).substring(0, 2) : undefined,
+    }).returning();
+
+    await db.update(warehousesTable)
+      .set({ warehouseCode: `WH-${String(newWarehouse.id).padStart(5, "0")}` })
+      .where(eq(warehousesTable.id, newWarehouse.id));
 
     await db.insert(activityTable).values({
       user: "Anjali Patel",

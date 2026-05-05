@@ -201,6 +201,9 @@ export function SettlementList() {
                     <TableCell>
                       <div className="font-medium text-slate-900">{row.brandName}</div>
                       <div className="text-xs text-slate-500">{row.companyName}</div>
+                      {(row as { companyId?: string }).companyId && (
+                        <div className="font-mono text-[10px] text-slate-400 mt-0.5">{(row as { companyId?: string }).companyId}</div>
+                      )}
                     </TableCell>
                     <TableCell className="text-right text-slate-600">{row.eligibleBags}</TableCell>
                     <TableCell className="text-right text-slate-600">{formatCurrency(row.grossGmv)}</TableCell>

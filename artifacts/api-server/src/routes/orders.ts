@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
-import { bagsTable, onboardingsTable } from "@workspace/db";
+import { bagsTable, onboardingsTable, brandsTable, warehousesTable } from "@workspace/db";
 import { eq, and, like, lt, SQL } from "drizzle-orm";
 import { sql } from "drizzle-orm";
 
@@ -120,6 +120,20 @@ router.post("/bags", async (req, res) => {
       stateGstin = body.stateGstin ?? ob.warehouseGstin ?? ob.masterGstin ?? "";
       returnWindowDays = ob.returnWindowDays ?? 7;
     }
+    // Prefer warehouse table data (more accurate — CO → BR → WH hierarchy)
+    const [primaryBrand] = await db.select().from(brandsTable)
+      .where(eq(brandsTable.onboardingId, body.brandId))
+      .orderBy(brandsTable.createdAt)
+      .limit(1);
+    if (primaryBrand) {
+      const [primaryWarehouse] = await db.select().from(warehousesTable)
+        .where(and(eq(warehousesTable.brandId, primaryBrand.id), eq(warehousesTable.isPrimary, true)))
+        .limit(1);
+      if (primaryWarehouse) {
+        stateCode = body.stateCode ?? primaryWarehouse.stateCode ?? stateCode;
+        stateGstin = body.stateGstin ?? primaryWarehouse.warehouseGstin ?? stateGstin;
+      }
+    }
 
     const deliveryDt = new Date(deliveryDate);
     const windowExpiryDate = new Date(deliveryDt.getTime() + returnWindowDays * 24 * 3600 * 1000).toISOString().split("T")[0];
@@ -215,7 +229,10 @@ router.post("/bags/bulk", async (req, res) => {
         tdsAmount: String(b.tdsAmount ?? 0),
         eligibility: eligibility as "eligible" | "in_window" | "on_hold" | "settled" | "awaiting_delivery",
         cycle: b.cycle,
-        stateCode: brand?.stateCode ?? brand?.masterGstin?.substring(0, 2) ?? "27",
+        stateCode: (() => {
+          // Use warehouse table if available
+          return brand?.stateCode ?? brand?.masterGstin?.substring(0, 2) ?? "27";
+        })(),
         stateGstin: brand?.warehouseGstin ?? brand?.masterGstin ?? "",
       }).returning();
       return row;

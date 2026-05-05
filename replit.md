@@ -38,13 +38,18 @@ A full-stack, deployable React web application for a finance team to manage a 6-
 ## Database Schema
 
 Tables:
-- `onboardings` — Brand onboarding submissions (status: DRAFT → SUBMITTED → APPROVED/REJECTED → ACTIVE)
+- `onboardings` — Brand onboarding submissions (status: DRAFT → SUBMITTED → APPROVED/REJECTED → ACTIVE); denormalized brand/warehouse fields kept for backward compat
   - Fields: registeredAddress, brandLegalName, stateCode, tcsApplicable (BRD §2)
   - Document URLs: panDocUrl, gstCertUrl, cinDocUrl, cancelledChequeUrl, signedAgreementUrl, digitalSignatureUrl (BRD §3.1)
   - KYB tracking: kybStatus, kybVerifiedAt, kybAttempts (BRD §3.2)
+- `brands` — Normalised brand table (Company → Brand hierarchy); brandCode=BR-XXXXX, companyId=CO-XXXXX derived from onboarding_id
+  - Auto-created on POST /onboardings; auto-populated from onboarding data on first GET /onboardings/:id/brands
+- `warehouses` — Normalised warehouse table (Brand → Warehouse hierarchy); warehouseCode=WH-XXXXX
+  - isPrimary flag; stateCode derived from warehouseGstin prefix; auto-created alongside brand
+  - Used as authoritative source for stateCode/GSTIN in bag/TCS calculations
 - `commission_master` — Versioned commission rate history per onboarding (BRD §3.4)
   - Fields: commissionType (FLAT_PERCENT/TIERED), commissionPercent, effectiveFromDate, effectiveToDate, isCurrent
-- `bags` — OMS bag register with eligibility (eligible/in_window/on_hold/settled/awaiting_delivery)
+- `bags` — OMS bag register with eligibility (eligible/in_window/on_hold/settled/awaiting_delivery); stateCode + stateGstin sourced from primary warehouse
 - `tcs_records` — TCS accruals by state GSTIN per month; supports reversal entries (isReversal, reversalReason, originalBagId)
 - `tds_records` — TDS deductions by company TAN per month; supports reversal entries
 - `settlements` — Settlement computation runs with deduction waterfall; includes brandPromotions + marketplacePromotions (BRD §7)
@@ -58,7 +63,7 @@ All routes under `/api/`:
 - `GET /dashboard/summary` — Cycle KPIs (GMV, net payable, TCS, TDS, pending approvals)
 - `GET /dashboard/brand-settlements` — Brand settlement status table
 - `GET /activity` — Recent activity log
-- `GET/POST /onboardings` — List & create onboardings (auto-creates initial commission_master record)
+- `GET/POST /onboardings` — List & create onboardings (auto-creates commission_master + brands entry + warehouses entry)
 - `GET/PUT /onboardings/:id` — Get & update onboarding (PUT recalculates docsUploaded count)
 - `POST /onboardings/:id/kyb-check` — Simulate KYB API (validates PAN format regex, 600ms delay); blocks submit if failed
 - `POST /onboardings/:id/submit` — Maker submits (blocked if kybStatus !== PASSED)

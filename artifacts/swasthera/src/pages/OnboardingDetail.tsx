@@ -37,6 +37,7 @@ interface BrandItem {
   returnWindowDays: number;
   tcsRate: number;
   tdsRate: number;
+  mdrRate: number;
   tcsApplicable: boolean;
   fyndBrandId: string | null;
   pendingChanges?: Record<string, unknown> | null;
@@ -173,6 +174,7 @@ const FIELD_LABELS: Record<string, string> = {
   returnWindowDays: "Return Window (days)",
   tcsRate: "TCS Rate (%)",
   tdsRate: "TDS Rate (%)",
+  mdrRate: "MDR Rate (%)",
   tcsApplicable: "TCS Applicable",
   warehouseName: "Warehouse Name",
   warehouseState: "State",
@@ -298,7 +300,7 @@ export function OnboardingDetail() {
   const [addBrandForm, setAddBrandForm] = useState({
     brandName: "", brandLegalName: "", brandCategory: "", brandType: "RETAILER",
     commissionType: "FLAT_PERCENT", commissionRate: "", returnWindowDays: "15",
-    tcsRate: "1", tdsRate: "1",
+    tcsRate: "1", tdsRate: "1", mdrRate: "0",
   });
   const [addBrandLoading, setAddBrandLoading] = useState(false);
 
@@ -317,7 +319,7 @@ export function OnboardingDetail() {
   const [editBrandForm, setEditBrandForm] = useState({
     brandName: "", brandLegalName: "", brandCategory: "", brandType: "RETAILER",
     commissionType: "FLAT_PERCENT", commissionRate: "", returnWindowDays: "15",
-    tcsRate: "1", tdsRate: "1",
+    tcsRate: "1", tdsRate: "1", mdrRate: "0",
   });
   const [editBrandLoading, setEditBrandLoading] = useState(false);
 
@@ -386,12 +388,13 @@ export function OnboardingDetail() {
           returnWindowDays: parseInt(addBrandForm.returnWindowDays) || 15,
           tcsRate: parseFloat(addBrandForm.tcsRate) || 1,
           tdsRate: parseFloat(addBrandForm.tdsRate) || 1,
+          mdrRate: parseFloat(addBrandForm.mdrRate) || 0,
         }),
       });
       if (!r.ok) throw new Error("Failed");
       toast({ title: "Brand added successfully" });
       setShowAddBrand(false);
-      setAddBrandForm({ brandName: "", brandLegalName: "", brandCategory: "", brandType: "RETAILER", commissionType: "FLAT_PERCENT", commissionRate: "", returnWindowDays: "15", tcsRate: "1", tdsRate: "1" });
+      setAddBrandForm({ brandName: "", brandLegalName: "", brandCategory: "", brandType: "RETAILER", commissionType: "FLAT_PERCENT", commissionRate: "", returnWindowDays: "15", tcsRate: "1", tdsRate: "1", mdrRate: "0" });
       refetchBrands();
     } catch {
       toast({ title: "Failed to add brand", variant: "destructive" });
@@ -435,6 +438,7 @@ export function OnboardingDetail() {
       returnWindowDays: String(brand.returnWindowDays ?? "15"),
       tcsRate: String(brand.tcsRate ?? "1"),
       tdsRate: String(brand.tdsRate ?? "1"),
+      mdrRate: String(brand.mdrRate ?? "0"),
     });
     setShowEditBrand(true);
   };
@@ -452,6 +456,7 @@ export function OnboardingDetail() {
           returnWindowDays: parseInt(editBrandForm.returnWindowDays) || 15,
           tcsRate: parseFloat(editBrandForm.tcsRate) || 1,
           tdsRate: parseFloat(editBrandForm.tdsRate) || 1,
+          mdrRate: parseFloat(editBrandForm.mdrRate) || 0,
         }),
       });
       if (!r.ok) throw new Error("Failed");
@@ -1530,6 +1535,10 @@ export function OnboardingDetail() {
                             <span className="text-slate-400 uppercase tracking-wider font-medium mr-1.5">TDS</span>
                             <span className="text-slate-700">{brand.tdsRate}%</span>
                           </div>
+                          <div>
+                            <span className="text-slate-400 uppercase tracking-wider font-medium mr-1.5">MDR</span>
+                            <span className="text-slate-700">{brand.mdrRate}%</span>
+                          </div>
                         </div>
 
                         {/* Tier slabs if TIERED */}
@@ -1758,6 +1767,10 @@ export function OnboardingDetail() {
                 <Label className="text-sm">TDS Rate (%)</Label>
                 <Input type="number" step="0.01" min="0" value={addBrandForm.tdsRate} onChange={(e) => setAddBrandForm((p) => ({ ...p, tdsRate: e.target.value }))} />
               </div>
+              <div className="space-y-1.5">
+                <Label className="text-sm">MDR Rate (%)</Label>
+                <Input type="number" step="0.01" min="0" max="100" value={addBrandForm.mdrRate} onChange={(e) => setAddBrandForm((p) => ({ ...p, mdrRate: e.target.value }))} />
+              </div>
             </div>
           </div>
           <DialogFooter>
@@ -1964,6 +1977,10 @@ export function OnboardingDetail() {
             <div className="space-y-1.5">
               <Label className="text-sm">TDS Rate (%)</Label>
               <Input type="number" step="0.01" min="0" value={editBrandForm.tdsRate} onChange={(e) => setEditBrandForm((p) => ({ ...p, tdsRate: e.target.value }))} />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-sm">MDR Rate (%)</Label>
+              <Input type="number" step="0.01" min="0" max="100" value={editBrandForm.mdrRate} onChange={(e) => setEditBrandForm((p) => ({ ...p, mdrRate: e.target.value }))} />
             </div>
           </div>
           <DialogFooter>

@@ -52,6 +52,7 @@ function mapBrand(b: typeof brandsTable.$inferSelect) {
     returnWindowDays: b.returnWindowDays,
     tcsRate: parseFloat(String(b.tcsRate)),
     tdsRate: parseFloat(String(b.tdsRate)),
+    mdrRate: parseFloat(String(b.mdrRate)),
     tcsApplicable: b.tcsApplicable,
     fyndBrandId: b.fyndBrandId,
     pendingChanges: parsePending(b.pendingChanges),
@@ -120,6 +121,7 @@ router.get("/onboardings/:id/brands", async (req, res) => {
           returnWindowDays: ob.returnWindowDays,
           tcsRate: ob.tcsRate,
           tdsRate: ob.tdsRate,
+          mdrRate: ob.mdrRate,
           tcsApplicable: ob.tcsApplicable,
           status: "ACTIVE",
         }).returning();
@@ -180,6 +182,7 @@ router.post("/onboardings/:id/brands", authorize(["maker", "admin"]), async (req
       returnWindowDays?: number;
       tcsRate?: number;
       tdsRate?: number;
+      mdrRate?: number;
       tcsApplicable?: boolean;
     };
 
@@ -202,6 +205,7 @@ router.post("/onboardings/:id/brands", authorize(["maker", "admin"]), async (req
         returnWindowDays: body.returnWindowDays ?? ob.returnWindowDays ?? 15,
         tcsRate: String(body.tcsRate ?? ob.tcsRate ?? "1"),
         tdsRate: String(body.tdsRate ?? ob.tdsRate ?? "1"),
+        mdrRate: String(body.mdrRate ?? ob.mdrRate ?? "0"),
         tcsApplicable: body.tcsApplicable !== false,
         status: "PENDING_APPROVAL",
       })
@@ -246,6 +250,7 @@ router.put("/brands/:id", authorize(["checker", "admin"]), async (req, res) => {
     if (body.returnWindowDays !== undefined) updates.returnWindowDays = body.returnWindowDays as number;
     if (body.tcsRate !== undefined) updates.tcsRate = String(body.tcsRate);
     if (body.tdsRate !== undefined) updates.tdsRate = String(body.tdsRate);
+    if (body.mdrRate !== undefined) updates.mdrRate = String(body.mdrRate);
     if (body.tcsApplicable !== undefined) updates.tcsApplicable = body.tcsApplicable as boolean;
     if (body.status !== undefined) updates.status = body.status as typeof brandsTable.$inferInsert["status"];
     if (body.fyndBrandId !== undefined) updates.fyndBrandId = body.fyndBrandId as string;
@@ -267,7 +272,7 @@ router.put("/brands/:id", authorize(["checker", "admin"]), async (req, res) => {
 // Maker proposes an edit to a brand — stored as pendingChanges, awaits Checker approval
 const BRAND_EDITABLE = [
   "brandName", "brandLegalName", "brandCategory", "brandType",
-  "commissionRate", "commissionType", "returnWindowDays", "tcsRate", "tdsRate", "tcsApplicable",
+  "commissionRate", "commissionType", "returnWindowDays", "tcsRate", "tdsRate", "mdrRate", "tcsApplicable",
 ] as const;
 
 router.post("/brands/:id/propose-edit", authorize(["maker", "admin"]), async (req, res) => {
@@ -318,7 +323,7 @@ router.post("/brands/:id/approve", authorize(["checker", "admin"]), async (req, 
     if (pending) {
       for (const f of BRAND_EDITABLE) {
         if (pending[f] === undefined) continue;
-        if (f === "commissionRate" || f === "tcsRate" || f === "tdsRate") {
+        if (f === "commissionRate" || f === "tcsRate" || f === "tdsRate" || f === "mdrRate") {
           (updates as Record<string, unknown>)[f] = String(pending[f]);
         } else {
           (updates as Record<string, unknown>)[f] = pending[f];
@@ -327,6 +332,17 @@ router.post("/brands/:id/approve", authorize(["checker", "admin"]), async (req, 
     }
 
     const [row] = await db.update(brandsTable).set(updates).where(eq(brandsTable.id, brand.id)).returning();
+
+    // MDR is operationally sourced from the onboarding's commercial terms at
+    // settlement time (mirroring commissionRate/tcsRate/tdsRate). Keep the
+    // onboarding snapshot in sync when an approved brand edit changes the MDR
+    // rate, so the new rate actually reaches the next settlement run.
+    if (pending && pending.mdrRate !== undefined && row.onboardingId != null) {
+      await db.update(onboardingsTable)
+        .set({ mdrRate: String(pending.mdrRate), updatedAt: new Date() })
+        .where(eq(onboardingsTable.id, row.onboardingId));
+    }
+
     await logActivity(
       req.user?.name ?? "Checker",
       `Approved brand "${row.brandName}" (${row.brandCode})${pending ? " edit" : ""}`,

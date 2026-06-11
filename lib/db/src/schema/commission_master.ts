@@ -18,6 +18,7 @@ export const commissionMasterTable = pgTable("commission_master", {
   tdsTan: text("tds_tan"),
   tdsLimit: numeric("tds_limit", { precision: 12, scale: 2 }).default("180000"),
   tcsRate: numeric("tcs_rate", { precision: 5, scale: 2 }),
+  mdrRate: numeric("mdr_rate", { precision: 5, scale: 2 }),
   returnWindowDays: integer("return_window_days"),
   settlementHoldDays: integer("settlement_hold_days"),
   addendumDocUrl: text("addendum_doc_url"),

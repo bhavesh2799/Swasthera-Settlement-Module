@@ -4,3 +4,4 @@
 - [API contract drift](api-contract-drift.md) — generated hooks send OpenAPI keys (e.g. `rejectionReason`) but hand-written servers may read another (`notes`); a field saving as null usually means a body-key mismatch.
 - [KYB via GSTIN](kyb-via-gstin.md) — KYB has no separate detail-page step; it's auto-PASSED on GSTIN fetch at onboarding; don't gate submit on kybStatus.
 - [Entity governance pattern](entity-governance-pattern.md) — brand/warehouse edits go through propose→approve/reject; lock legacy PUT routes to checker; PENDING entities must not mutate live primary state.
+- [Commercial rate source of truth](commercial-rate-source-of-truth.md) — settlement reads commission/tcs/tds/mdr from the onboarding row, not brands; brand-level rate edits must propagate to onboarding on approval or they never reach compute.

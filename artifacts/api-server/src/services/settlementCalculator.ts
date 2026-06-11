@@ -19,7 +19,10 @@ export interface SettlementInput {
   commissionRate: number; // percent
   brandPromotions?: number;
   marketplacePromotions?: number; // tracked but NOT deducted from payout
+  /** Flat MDR amount. Ignored when `mdrRate` (> 0) is supplied. */
   mdrCharges?: number;
+  /** MDR rate (percent) applied on gross GMV; takes precedence over flat `mdrCharges`. */
+  mdrRate?: number;
   penalty?: number;
   /** Negative deficit carried in from the brand's previous cycle (≤ 0). */
   priorCarryForward?: number;
@@ -36,6 +39,7 @@ export interface SettlementResult {
   tcsAmount: number;
   tdsAmount: number;
   mdrCharges: number;
+  mdrRate: number;
   penalty: number;
   /** Raw net before applying the prior carry-forward and the zero-floor. */
   rawNet: number;
@@ -51,11 +55,14 @@ export function calculateSettlement(input: SettlementInput): SettlementResult {
   const num = (v: string) => parseFloat(v) || 0;
   const brandPromotions = input.brandPromotions ?? 0;
   const marketplacePromotions = input.marketplacePromotions ?? 0;
-  const mdrCharges = input.mdrCharges ?? 0;
+  const mdrRate = input.mdrRate ?? 0;
   const penalty = input.penalty ?? 0;
   const priorCarryForward = input.priorCarryForward ?? 0;
 
   const grossGmv = input.bags.reduce((s, b) => s + num(b.esp) * b.qty, 0);
+  // MDR is a payment-gateway charge levied on gross GMV. A configured brand-level
+  // rate takes precedence; otherwise fall back to any flat amount passed in.
+  const mdrCharges = mdrRate > 0 ? (grossGmv * mdrRate) / 100 : (input.mdrCharges ?? 0);
   // Brand-funded promotions ARE deducted; marketplace-funded promotions are NOT.
   const netBeforeCommission = grossGmv - brandPromotions;
   const commission = (netBeforeCommission * input.commissionRate) / 100;
@@ -83,6 +90,7 @@ export function calculateSettlement(input: SettlementInput): SettlementResult {
     tcsAmount: round(tcsAmount),
     tdsAmount: round(tdsAmount),
     mdrCharges: round(mdrCharges),
+    mdrRate,
     penalty: round(penalty),
     rawNet: round(rawNet),
     netPayable: round(netPayable),

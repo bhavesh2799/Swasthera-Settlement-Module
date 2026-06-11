@@ -21,6 +21,8 @@ export const brandsTable = pgTable("brands", {
   returnWindowDays: integer("return_window_days").notNull().default(15),
   tcsRate: numeric("tcs_rate", { precision: 5, scale: 2 }).notNull().default("1"),
   tdsRate: numeric("tds_rate", { precision: 5, scale: 2 }).notNull().default("1"),
+  // MDR (Merchant Discount Rate) — payment-gateway charge applied as % of GMV at settlement.
+  mdrRate: numeric("mdr_rate", { precision: 5, scale: 2 }).notNull().default("0"),
   tcsApplicable: boolean("tcs_applicable").notNull().default(true),
   // Finance SPOC (brand level — BRD FIX 5)
   spocName: text("spoc_name"),

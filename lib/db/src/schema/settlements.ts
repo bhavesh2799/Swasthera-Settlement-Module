@@ -27,6 +27,8 @@ export const settlementsTable = pgTable("settlements", {
   tcsAmount: numeric("tcs_amount", { precision: 14, scale: 2 }).notNull(),
   tdsAmount: numeric("tds_amount", { precision: 14, scale: 2 }).notNull(),
   mdrCharges: numeric("mdr_charges", { precision: 14, scale: 2 }).notNull().default("0"),
+  // Resolved MDR rate (%) applied for this run — persisted for audit alongside mdrCharges.
+  mdrRate: numeric("mdr_rate", { precision: 5, scale: 2 }).notNull().default("0"),
   penalty: numeric("penalty", { precision: 14, scale: 2 }).notNull().default("0"),
   netPayable: numeric("net_payable", { precision: 14, scale: 2 }).notNull(),
   // Negative-net handling: if the raw net is below zero we never pay out a

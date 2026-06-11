@@ -46,7 +46,7 @@ const ONBOARDING_TEXT_FIELDS = [
 ] as const;
 
 const ONBOARDING_EDITABLE_KEYS = [
-  ...ONBOARDING_TEXT_FIELDS, "commissionRate", "tcsRate", "tdsRate", "extraDocuments",
+  ...ONBOARDING_TEXT_FIELDS, "commissionRate", "tcsRate", "tdsRate", "mdrRate", "extraDocuments",
 ] as const;
 
 // Translate a raw body / pendingChanges object into a typed update set,
@@ -64,6 +64,7 @@ function buildOnboardingUpdates(body: Record<string, unknown>): Partial<typeof o
   if (body.commissionRate !== undefined) updates.commissionRate = String(body.commissionRate);
   if (body.tcsRate !== undefined) updates.tcsRate = String(body.tcsRate);
   if (body.tdsRate !== undefined) updates.tdsRate = String(body.tdsRate);
+  if (body.mdrRate !== undefined) updates.mdrRate = String(body.mdrRate);
   if (body.masterGstin) updates.stateCode = String(body.masterGstin).substring(0, 2);
   return updates;
 }
@@ -171,6 +172,7 @@ router.post("/onboardings", async (req, res) => {
       returnWindowDays: body.returnWindowDays,
       tcsRate: String(body.tcsRate),
       tdsRate: String(body.tdsRate),
+      mdrRate: body.mdrRate !== undefined ? String(body.mdrRate) : "0",
       panDocUrl: body.panDocUrl,
       gstCertUrl: body.gstCertUrl,
       cinDocUrl: body.cinDocUrl,
@@ -189,6 +191,7 @@ router.post("/onboardings", async (req, res) => {
       onboardingId: row.id,
       commissionType: "FLAT_PERCENT",
       commissionPercent: String(body.commissionRate),
+      mdrRate: body.mdrRate !== undefined ? String(body.mdrRate) : undefined,
       effectiveFromDate: new Date().toISOString().split("T")[0],
       isCurrent: true,
       agreedByMakerId: "Anjali Patel",
@@ -208,6 +211,7 @@ router.post("/onboardings", async (req, res) => {
       returnWindowDays: body.returnWindowDays ?? 15,
       tcsRate: String(body.tcsRate ?? "1"),
       tdsRate: String(body.tdsRate ?? "1"),
+      mdrRate: String(body.mdrRate ?? "0"),
       tcsApplicable: body.tcsApplicable !== false,
       spocName: body.brandSpocName ?? body.spocName,
       spocEmail: body.brandSpocEmail ?? body.spocEmail,
@@ -708,6 +712,7 @@ function mapOnboarding(r: typeof onboardingsTable.$inferSelect) {
     returnWindowDays: r.returnWindowDays,
     tcsRate: parseFloat(r.tcsRate),
     tdsRate: parseFloat(r.tdsRate),
+    mdrRate: parseFloat(r.mdrRate),
     panDocUrl: r.panDocUrl,
     gstCertUrl: r.gstCertUrl,
     cinDocUrl: r.cinDocUrl,

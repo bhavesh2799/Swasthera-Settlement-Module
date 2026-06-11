@@ -59,9 +59,14 @@ router.post("/settlements", async (req, res) => {
       .limit(1);
     const priorCarryForward = prior ? parseFloat(prior.carryForward) : 0;
 
+    // MDR rate is sourced from the onboarding's commercial terms, consistent with
+    // how commissionRate/tcsRate/tdsRate are read here. Blank coerces to 0.
+    const mdrRate = parseFloat(String(ob.mdrRate)) || 0;
+
     const calc = calculateSettlement({
       bags: eligibleBags.map((b) => ({ esp: b.esp, qty: b.qty, tcsAmount: b.tcsAmount, tdsAmount: b.tdsAmount })),
       commissionRate: parseFloat(ob.commissionRate),
+      mdrRate,
       priorCarryForward,
     });
 
@@ -85,6 +90,7 @@ router.post("/settlements", async (req, res) => {
       tcsAmount: calc.tcsAmount.toFixed(2),
       tdsAmount: calc.tdsAmount.toFixed(2),
       mdrCharges: calc.mdrCharges.toFixed(2),
+      mdrRate: calc.mdrRate.toFixed(2),
       penalty: calc.penalty.toFixed(2),
       netPayable: calc.netPayable.toFixed(2),
       carryForward: calc.carryForward.toFixed(2),
@@ -269,6 +275,7 @@ router.get("/settlements/:id/soc", async (req, res) => {
     const [payout] = await db.select().from(payoutsTable).where(eq(payoutsTable.settlementId, settlement.id));
 
     const commRate = parseFloat(settlement.commissionRate);
+    const mdrRate = parseFloat(settlement.mdrRate) || 0;
     const utr = payout?.utr ?? "";
     const settlementDate = payout?.settledAt?.toISOString().split("T")[0] ?? "";
 
@@ -291,7 +298,8 @@ router.get("/settlements/:id/soc", async (req, res) => {
       const gstOnCommission = commission * 0.18;
       const tcs = parseFloat(b.tcsAmount);
       const tds = parseFloat(b.tdsAmount);
-      const mdr = 0;
+      // MDR is levied on gross GMV (per-bag ESP), per the brand's configured rate.
+      const mdr = esp * mdrRate / 100;
       const net = netEsp - commission - gstOnCommission - tcs - tds - mdr;
       const returnStatus = b.eligibility === "on_hold" ? "INITIATED" : "NONE";
       const mrp = (parseFloat(b.esp) * 1.15 * b.qty).toFixed(2);
@@ -376,6 +384,7 @@ function mapSettlement(r: typeof settlementsTable.$inferSelect) {
     tcsAmount: parseFloat(r.tcsAmount),
     tdsAmount: parseFloat(r.tdsAmount),
     mdrCharges: parseFloat(r.mdrCharges),
+    mdrRate: parseFloat(r.mdrRate),
     penalty: parseFloat(r.penalty),
     netPayable: parseFloat(r.netPayable),
     carryForward: parseFloat(r.carryForward),

@@ -58,6 +58,7 @@ const onboardingSchema = z.object({
   returnWindowDays: z.coerce.number().min(0).max(90),
   tcsRate: z.coerce.number().min(0),
   tdsRate: z.coerce.number().min(0),
+  mdrRate: z.coerce.number().min(0).max(100),
 }).refine((d) => d.companyType !== "OTHER" || (d.entityTypeOther && d.entityTypeOther.trim().length > 0), {
   message: "Specify the entity type",
   path: ["entityTypeOther"],
@@ -170,6 +171,7 @@ export function OnboardingForm() {
       returnWindowDays: 15,
       tcsRate: 1,
       tdsRate: 1,
+      mdrRate: 0,
     },
   });
 
@@ -621,7 +623,7 @@ export function OnboardingForm() {
                 <CardTitle className="text-base">Commercial Terms</CardTitle>
               </CardHeader>
               <CardContent className="p-6 space-y-4">
-                <div className="grid grid-cols-5 gap-4">
+                <div className="grid grid-cols-6 gap-4">
                   <FormField control={control} name="commissionType" render={({ field }) => (
                     <FormItem>
                       <FormLabel>Commission Type</FormLabel>
@@ -668,6 +670,15 @@ export function OnboardingForm() {
                       <FormLabel>TDS Rate (%)</FormLabel>
                       <FormControl><Input type="number" step="0.01" {...field} /></FormControl>
                       <FormDescription className="text-xs">Section 194-O</FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )} />
+
+                  <FormField control={control} name="mdrRate" render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>MDR Rate (%)</FormLabel>
+                      <FormControl><Input type="number" step="0.01" min="0" max="100" {...field} /></FormControl>
+                      <FormDescription className="text-xs">Payment gateway</FormDescription>
                       <FormMessage />
                     </FormItem>
                   )} />

@@ -54,6 +54,8 @@ export const onboardingsTable = pgTable("onboardings", {
   returnWindowDays: integer("return_window_days").notNull(),
   tcsRate: numeric("tcs_rate", { precision: 5, scale: 2 }).notNull(),
   tdsRate: numeric("tds_rate", { precision: 5, scale: 2 }).notNull(),
+  // MDR (Merchant Discount Rate) — payment-gateway charge applied as % of GMV at settlement.
+  mdrRate: numeric("mdr_rate", { precision: 5, scale: 2 }).notNull().default("0"),
   // Document uploads (6 required per BRD)
   panDocUrl: text("pan_doc_url"),
   gstCertUrl: text("gst_cert_url"),

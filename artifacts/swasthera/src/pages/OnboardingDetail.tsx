@@ -10,7 +10,7 @@ import { useQueryClient, useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, CheckCircle, XCircle, Send, Shield, ShieldCheck, ShieldAlert, FileText, Upload, Plus, RefreshCw, Building2, ExternalLink, Warehouse, Store, MapPin, Tag, ChevronDown, ChevronRight, Percent } from "lucide-react";
+import { ArrowLeft, CheckCircle, XCircle, Send, ShieldCheck, FileText, Upload, Plus, RefreshCw, Building2, ExternalLink, Warehouse, Store, MapPin, Tag, ChevronDown, ChevronRight, Percent } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
@@ -19,6 +19,7 @@ import { useState, useRef } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { useRole } from "@/contexts/RoleContext";
 import { Separator } from "@/components/ui/separator";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 interface BrandItem {
   id: number;
@@ -54,6 +55,26 @@ interface WarehouseItem {
   fyndLocationId: string | null;
 }
 
+interface ExtraDoc {
+  label: string;
+  url: string;
+  level: string;
+  brandId?: number;
+  brandName?: string;
+  warehouseId?: number;
+  warehouseName?: string;
+}
+
+interface BankAccountItem {
+  id: number;
+  accountNumber: string;
+  ifsc: string;
+  bankName: string;
+  branchName: string | null;
+  accountType: string;
+  isPrimary: boolean;
+}
+
 interface CommissionVersion {
   id: number;
   version?: number;
@@ -69,13 +90,6 @@ interface CommissionVersion {
   agreedByMakerId: string | null;
   approvedByCheckerId: string | null;
   createdAt: string;
-}
-
-interface KybCheck {
-  key: string;
-  label: string;
-  status: "passed" | "failed" | "skipped";
-  detail: string;
 }
 
 type DocKey =
@@ -132,13 +146,6 @@ function statusLabel(status: string): { text: string; cls: string } {
   }
 }
 
-function kybBadge(status: string) {
-  if (status === "PASSED") return <Badge className="bg-green-100 text-green-800 border-transparent hover:bg-green-100"><ShieldCheck className="mr-1 h-3 w-3" />KYB Passed</Badge>;
-  if (status === "FAILED") return <Badge className="bg-red-100 text-red-800 border-transparent hover:bg-red-100"><ShieldAlert className="mr-1 h-3 w-3" />KYB Failed</Badge>;
-  if (status === "PENDING") return <Badge className="bg-amber-100 text-amber-800 border-transparent hover:bg-amber-100"><RefreshCw className="mr-1 h-3 w-3" />KYB Pending</Badge>;
-  return <Badge variant="outline"><Shield className="mr-1 h-3 w-3" />KYB Not Started</Badge>;
-}
-
 export function OnboardingDetail() {
   const [, setLocation] = useLocation();
   const params = useParams();
@@ -171,8 +178,6 @@ export function OnboardingDetail() {
   const [showEditDialog, setShowEditDialog] = useState(false);
   const [editLoading, setEditLoading] = useState(false);
   const [showCommissionDialog, setShowCommissionDialog] = useState(false);
-  const [kybLoading, setKybLoading] = useState(false);
-  const [kybResult, setKybResult] = useState<{ kybStatus: string; message: string; checks?: KybCheck[] } | null>(null);
   const [newCommission, setNewCommission] = useState<{
     commissionType: "FLAT_PERCENT" | "SLAB" | "GMV_TIER";
     commissionPercent: string;
@@ -193,7 +198,9 @@ export function OnboardingDetail() {
   const [updatingDoc, setUpdatingDoc] = useState<DocKey | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const extraFileInputRef = useRef<HTMLInputElement>(null);
-  const [addDocCtx, setAddDocCtx] = useState<{ label: string; level: string } | null>(null);
+  const [showAddDoc, setShowAddDoc] = useState(false);
+  const [addDocFileName, setAddDocFileName] = useState("");
+  const [addDocForm, setAddDocForm] = useState<{ level: string; label: string; brandId: string; warehouseId: string }>({ level: "company", label: "", brandId: "", warehouseId: "" });
 
   // Brands & Warehouses
   const { data: brands, refetch: refetchBrands } = useQuery<BrandItem[]>({
@@ -205,6 +212,18 @@ export function OnboardingDetail() {
     },
     enabled: !!id,
   });
+
+  const primaryBrandId = brands?.[0]?.id;
+  const { data: bankAccountsData } = useQuery<{ bankAccounts: BankAccountItem[] }>({
+    queryKey: ["bank-accounts", primaryBrandId],
+    queryFn: async () => {
+      const r = await fetch(`/api/brands/${primaryBrandId}/bank-accounts`);
+      if (!r.ok) return { bankAccounts: [] };
+      return r.json();
+    },
+    enabled: !!primaryBrandId,
+  });
+  const bankAccounts = bankAccountsData?.bankAccounts ?? [];
 
   const [expandedBrands, setExpandedBrands] = useState<Set<number>>(new Set());
   const toggleBrand = (brandId: number) =>
@@ -295,26 +314,6 @@ export function OnboardingDetail() {
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: getGetOnboardingQueryKey(id) });
 
-  const handleKyb = async () => {
-    setKybLoading(true);
-    setKybResult(null);
-    try {
-      const r = await fetch(`/api/onboardings/${id}/kyb-check`, { method: "POST" });
-      const data = await r.json();
-      setKybResult(data);
-      toast({
-        title: data.kybStatus === "PASSED" ? "KYB Verification Passed" : "KYB Verification Failed",
-        description: data.message,
-        variant: data.kybStatus === "PASSED" ? "default" : "destructive",
-      });
-      invalidate();
-    } catch {
-      toast({ title: "KYB check failed", variant: "destructive" });
-    } finally {
-      setKybLoading(false);
-    }
-  };
-
   const handleDocUpload = (docKey: DocKey) => {
     setUpdatingDoc(docKey);
     fileInputRef.current?.click();
@@ -339,32 +338,52 @@ export function OnboardingDetail() {
     setUpdatingDoc(null);
   };
 
-  const handleAddExtraDoc = (level: string) => {
-    const label = window.prompt("Document name (e.g. Lease Agreement, Utility Bill)?");
-    if (!label || !label.trim()) return;
-    setAddDocCtx({ label: label.trim(), level });
-    extraFileInputRef.current?.click();
+  const openAddDoc = (level: string) => {
+    setAddDocForm({ level, label: "", brandId: brands?.[0] ? String(brands[0].id) : "", warehouseId: "" });
+    setAddDocFileName("");
+    if (level === "warehouse" && brands?.[0]) loadWarehouses(brands[0].id);
+    setShowAddDoc(true);
   };
 
-  const handleExtraFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!e.target.files?.[0] || !addDocCtx) return;
-    const filename = e.target.files[0].name;
-    const url = `https://docs.swasthera.in/extra/${id}/${encodeURIComponent(filename)}`;
-    const existing = ((onboarding as unknown as Record<string, unknown>).extraDocuments as Array<{ label: string; url: string; level: string }>) ?? [];
-    const next = [...existing, { label: addDocCtx.label, url, level: addDocCtx.level }];
+  const handleExtraFileSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files?.[0]) return;
+    setAddDocFileName(e.target.files[0].name);
+    e.target.value = "";
+  };
+
+  const handleSaveExtraDoc = async () => {
+    const { level, label, brandId, warehouseId } = addDocForm;
+    if (!label.trim()) { toast({ title: "Enter a document name", variant: "destructive" }); return; }
+    if (!addDocFileName) { toast({ title: "Choose a file to upload", variant: "destructive" }); return; }
+    if (level === "brand" && !brandId) { toast({ title: "Select which brand this document is for", variant: "destructive" }); return; }
+    if (level === "warehouse" && (!brandId || !warehouseId)) { toast({ title: "Select the brand and warehouse this document is for", variant: "destructive" }); return; }
+
+    const url = `https://docs.swasthera.in/extra/${id}/${encodeURIComponent(addDocFileName)}`;
+    const entry: ExtraDoc = { label: label.trim(), url, level };
+    if (level === "brand" || level === "warehouse") {
+      const b = brands?.find((x) => String(x.id) === brandId);
+      entry.brandId = Number(brandId);
+      entry.brandName = b?.brandName;
+    }
+    if (level === "warehouse") {
+      const w = (warehousesByBrand[Number(brandId)] ?? []).find((x) => String(x.id) === warehouseId);
+      entry.warehouseId = Number(warehouseId);
+      entry.warehouseName = w?.warehouseName;
+    }
+    const existing = ((onboarding as unknown as Record<string, unknown>).extraDocuments as ExtraDoc[]) ?? [];
     try {
-      await fetch(`/api/onboardings/${id}`, {
+      const r = await fetch(`/api/onboardings/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ extraDocuments: next }),
+        body: JSON.stringify({ extraDocuments: [...existing, entry] }),
       });
-      toast({ title: `${addDocCtx.label} added` });
+      if (!r.ok) throw new Error("save failed");
+      toast({ title: `${entry.label} added` });
+      setShowAddDoc(false);
       invalidate();
     } catch {
-      toast({ title: "Upload failed", variant: "destructive" });
+      toast({ title: "Could not save document — please try again", variant: "destructive" });
     }
-    e.target.value = "";
-    setAddDocCtx(null);
   };
 
   const handleRemoveExtraDoc = async (idx: number) => {
@@ -445,7 +464,7 @@ export function OnboardingDetail() {
       onSuccess: () => { toast({ title: "Submitted for Checker review" }); invalidate(); },
       onError: (err: unknown) => {
         const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? "Submission failed";
-        toast({ title: msg.includes("KYB") ? "KYB required before submission" : "Submission failed", description: msg, variant: "destructive" });
+        toast({ title: "Submission failed", description: msg, variant: "destructive" });
       }
     });
   };
@@ -488,8 +507,8 @@ export function OnboardingDetail() {
   if (isLoading) return <div className="p-8 text-center text-slate-500">Loading...</div>;
   if (!onboarding) return <div className="p-8 text-center text-slate-500">Onboarding not found</div>;
 
-  const kybPassed = onboarding.kybStatus === "PASSED";
-  const docsComplete = (onboarding.docsUploaded ?? 0) >= 5;
+  const ob = onboarding as unknown as Record<string, unknown>;
+  const extraDocs = (ob.extraDocuments as ExtraDoc[]) ?? [];
 
   return (
     <div className="flex-1 overflow-auto bg-slate-50/50 p-6 md:p-8 space-y-6">
@@ -507,7 +526,9 @@ export function OnboardingDetail() {
             <Badge className={statusLabel(onboarding.status ?? "DRAFT").cls}>{statusLabel(onboarding.status ?? "DRAFT").text}</Badge>
             <Badge variant="outline" className="font-mono text-xs">{onboarding.ref}</Badge>
             <Badge variant="outline" className="text-xs">v{(onboarding as unknown as Record<string, unknown>).version as number ?? 1}</Badge>
-            {kybBadge(onboarding.kybStatus ?? "NOT_STARTED")}
+            {onboarding.kybStatus === "PASSED" && (
+              <Badge className="bg-green-100 text-green-800 border-transparent hover:bg-green-100"><ShieldCheck className="mr-1 h-3 w-3" />KYB Verified via GSTIN</Badge>
+            )}
           </div>
           <div className="flex flex-wrap items-center gap-3 mt-1">
             <p className="text-slate-500">{onboarding.companyName}</p>
@@ -524,9 +545,9 @@ export function OnboardingDetail() {
         <div className="flex gap-2 flex-wrap">
           {/* BRD §3.1: Maker sees Submit; cannot Approve/Reject. Checker sees Approve/Reject; cannot Submit */}
           {isMaker && onboarding.status === "DRAFT" && (
-            <Button onClick={handleSubmit} disabled={submitMutation.isPending || !kybPassed}>
+            <Button onClick={handleSubmit} disabled={submitMutation.isPending}>
               <Send className="mr-2 h-4 w-4" />
-              {kybPassed ? "Submit for Review" : "KYB Required First"}
+              Submit for Review
             </Button>
           )}
           {isChecker && onboarding.status === "SUBMITTED" && (
@@ -543,9 +564,9 @@ export function OnboardingDetail() {
             </>
           )}
           {isMaker && onboarding.status === "REJECTED" && (
-            <Button onClick={handleSubmit} disabled={submitMutation.isPending || !kybPassed} className="bg-amber-600 hover:bg-amber-700">
+            <Button onClick={handleSubmit} disabled={submitMutation.isPending} className="bg-amber-600 hover:bg-amber-700">
               <Send className="mr-2 h-4 w-4" />
-              {kybPassed ? "Re-submit for Review" : "KYB Required First"}
+              Re-submit for Review
             </Button>
           )}
           {isMaker && onboarding.status === "SUBMITTED" && (
@@ -561,61 +582,6 @@ export function OnboardingDetail() {
         </div>
       </div>
 
-      {/* KYB Panel */}
-      <Card className={`shadow-sm border ${kybPassed ? "border-green-200 bg-green-50/30" : onboarding.kybStatus === "FAILED" ? "border-red-200 bg-red-50/30" : "border-amber-200 bg-amber-50/30"}`}>
-        <CardHeader className="py-4 border-b border-inherit">
-          <CardTitle className="text-base font-semibold flex items-center gap-2">
-            <Shield className="h-4 w-4" />
-            KYB Verification — BRD Phase Gate
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="p-5 flex flex-col sm:flex-row items-start sm:items-center gap-4">
-          <div className="flex-1 space-y-1">
-            <p className="text-sm text-slate-600">
-              KYB verifies <strong>PAN, GST registration, CIN, and Bank account</strong> via the KYB API. This must pass before document upload or Checker submission.
-            </p>
-            {!!(onboarding as unknown as Record<string, unknown>).kybVerifiedAt && (
-              <p className="text-xs text-slate-500">Last checked: {new Date((onboarding as unknown as Record<string, unknown>).kybVerifiedAt as string).toLocaleString()} · Attempts: {(onboarding as unknown as Record<string, unknown>).kybAttempts as number}</p>
-            )}
-            {kybResult && (
-              <>
-                <p className={`text-sm font-medium mt-1 ${kybResult.kybStatus === "PASSED" ? "text-green-700" : "text-red-700"}`}>
-                  {kybResult.message}
-                </p>
-                {kybResult.checks && (
-                  <ul className="mt-2 space-y-1.5">
-                    {kybResult.checks.map((c) => (
-                      <li key={c.key} className="flex items-start gap-2 text-sm">
-                        {c.status === "passed" ? (
-                          <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-green-600" />
-                        ) : c.status === "failed" ? (
-                          <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-red-600" />
-                        ) : (
-                          <Shield className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" />
-                        )}
-                        <span className={c.status === "failed" ? "text-red-700" : c.status === "skipped" ? "text-slate-500" : "text-slate-700"}>
-                          <span className="font-medium">{c.label}:</span> {c.detail}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </>
-            )}
-          </div>
-          {isMaker && onboarding.status === "DRAFT" && (
-            <Button
-              variant={kybPassed ? "outline" : "default"}
-              onClick={handleKyb}
-              disabled={kybLoading}
-              className="shrink-0"
-            >
-              {kybLoading ? <><RefreshCw className="mr-2 h-4 w-4 animate-spin" />Verifying...</> : kybPassed ? <><ShieldCheck className="mr-2 h-4 w-4" />Re-run KYB</> : <><Shield className="mr-2 h-4 w-4" />Run KYB Check</>}
-            </Button>
-          )}
-        </CardContent>
-      </Card>
-
       <div className="grid gap-6 md:grid-cols-2">
         {/* Company & Tax */}
         <Card className="shadow-sm border-slate-200/60 bg-white">
@@ -623,23 +589,36 @@ export function OnboardingDetail() {
             <CardTitle className="text-base font-semibold text-slate-800">Company & Tax Details</CardTitle>
           </CardHeader>
           <CardContent className="p-6 grid grid-cols-2 gap-y-4 gap-x-6">
-            {[
-              ["Company Type", onboarding.companyType],
+            {([
+              ["Company Legal Name", onboarding.companyName || "—"],
+              ["Trade Name", (ob.tradeName as string) || "—"],
+              ["Company Type", onboarding.companyType === "OTHER" ? ((ob.entityTypeOther as string) || "Other") : onboarding.companyType],
               ["PAN", onboarding.pan],
               ["Master GSTIN", onboarding.masterGstin],
               ["TAN", onboarding.tan || "—"],
               ["CIN", onboarding.cin || "—"],
-              ["State Code", (onboarding as unknown as Record<string, unknown>).stateCode as string || onboarding.masterGstin?.substring(0, 2) || "—"],
-            ].map(([label, value]) => (
+              ...(ob.llpCode ? [["LLP Code", ob.llpCode as string]] : []),
+              ["State Code", (ob.stateCode as string) || onboarding.masterGstin?.substring(0, 2) || "—"],
+              ["Registration Status", (ob.registrationStatus as string) || "—"],
+              ["Taxpayer Type", (ob.taxpayerType as string) || "—"],
+              ["Date of Registration", (ob.dateOfRegistration as string) || "—"],
+              ["Jurisdiction", (ob.jurisdictionCode as string) || "—"],
+            ] as Array<[string, string]>).map(([label, value]) => (
               <div key={label}>
                 <p className="text-xs text-slate-500 font-medium uppercase tracking-wider mb-1">{label}</p>
                 <p className="font-mono text-sm text-slate-900">{value}</p>
               </div>
             ))}
-            {!!(onboarding as unknown as Record<string, unknown>).registeredAddress && (
+            {!!ob.natureOfBusiness && (
+              <div className="col-span-2">
+                <p className="text-xs text-slate-500 font-medium uppercase tracking-wider mb-1">Nature of Business</p>
+                <p className="text-sm text-slate-900">{ob.natureOfBusiness as string}</p>
+              </div>
+            )}
+            {!!ob.registeredAddress && (
               <div className="col-span-2">
                 <p className="text-xs text-slate-500 font-medium uppercase tracking-wider mb-1">Registered Address</p>
-                <p className="text-sm text-slate-900">{(onboarding as unknown as Record<string, unknown>).registeredAddress as string}</p>
+                <p className="text-sm text-slate-900">{ob.registeredAddress as string}</p>
               </div>
             )}
           </CardContent>
@@ -672,17 +651,51 @@ export function OnboardingDetail() {
           <CardHeader className="border-b border-slate-100 bg-slate-50/50 py-4">
             <CardTitle className="text-base font-semibold text-slate-800">Banking Information</CardTitle>
           </CardHeader>
-          <CardContent className="p-6 grid grid-cols-2 gap-y-4 gap-x-6">
-            {[
-              ["Bank Name", onboarding.bankName],
-              ["IFSC Code", onboarding.bankIfsc],
-              ["Account Number", onboarding.bankAccount],
-            ].map(([label, value]) => (
-              <div key={label}>
-                <p className="text-xs text-slate-500 font-medium uppercase tracking-wider mb-1">{label}</p>
-                <p className="font-mono text-sm text-slate-900">{value}</p>
+          <CardContent className="p-6 space-y-4">
+            {bankAccounts.length > 0 ? (
+              <div className="space-y-3">
+                {bankAccounts.map((acc) => (
+                  <div key={acc.id} className="rounded-lg border border-slate-200 p-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-sm font-semibold text-slate-900">{acc.bankName}</p>
+                      <div className="flex items-center gap-1.5">
+                        <Badge variant="outline" className="text-[10px] font-normal capitalize">{acc.accountType?.toLowerCase()}</Badge>
+                        {acc.isPrimary && <Badge className="bg-blue-100 text-blue-800 border-transparent text-[10px]">Primary</Badge>}
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-y-2 gap-x-6">
+                      <div>
+                        <p className="text-xs text-slate-500 font-medium uppercase tracking-wider mb-0.5">Account Number</p>
+                        <p className="font-mono text-sm text-slate-900">{acc.accountNumber}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-slate-500 font-medium uppercase tracking-wider mb-0.5">IFSC Code</p>
+                        <p className="font-mono text-sm text-slate-900">{acc.ifsc}</p>
+                      </div>
+                      {acc.branchName && (
+                        <div className="col-span-2">
+                          <p className="text-xs text-slate-500 font-medium uppercase tracking-wider mb-0.5">Branch</p>
+                          <p className="text-sm text-slate-900">{acc.branchName}</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
               </div>
-            ))}
+            ) : (
+              <div className="grid grid-cols-2 gap-y-4 gap-x-6">
+                {[
+                  ["Bank Name", onboarding.bankName],
+                  ["IFSC Code", onboarding.bankIfsc],
+                  ["Account Number", onboarding.bankAccount],
+                ].map(([label, value]) => (
+                  <div key={label}>
+                    <p className="text-xs text-slate-500 font-medium uppercase tracking-wider mb-1">{label}</p>
+                    <p className="font-mono text-sm text-slate-900">{value || "—"}</p>
+                  </div>
+                ))}
+              </div>
+            )}
             {onboarding.spocName && (
               <div className="col-span-2 pt-2 border-t border-slate-100 mt-2">
                 <p className="text-xs text-slate-500 font-medium uppercase tracking-wider mb-2">Finance SPOC</p>
@@ -729,14 +742,11 @@ export function OnboardingDetail() {
             Document Checklist
             <span className="text-xs font-normal text-slate-500 ml-1">({onboarding.docsUploaded ?? 0} of {onboarding.docsRequired ?? 6} required uploaded)</span>
           </CardTitle>
-          {!kybPassed && (
-            <Badge variant="outline" className="text-amber-600 border-amber-200 bg-amber-50 text-xs">KYB must pass before uploads</Badge>
-          )}
         </CardHeader>
         <CardContent className="p-0">
           {DOC_SECTIONS.map((section) => {
-            const canEdit = isMaker && kybPassed && (onboarding.status === "DRAFT" || onboarding.status === "REJECTED");
-            const extras = (((onboarding as unknown as Record<string, unknown>).extraDocuments as Array<{ label: string; url: string; level: string }>) ?? [])
+            const canEdit = isMaker && (onboarding.status === "DRAFT" || onboarding.status === "REJECTED");
+            const extras = extraDocs
               .map((d, i) => ({ ...d, _idx: i }))
               .filter((d) => d.level === section.level);
             return (
@@ -744,7 +754,7 @@ export function OnboardingDetail() {
                 <div className="flex items-center justify-between px-6 py-2.5 bg-slate-50/40">
                   <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{section.title}</p>
                   {canEdit && (
-                    <Button size="sm" variant="ghost" className="h-7 text-xs text-slate-600" onClick={() => handleAddExtraDoc(section.level)}>
+                    <Button size="sm" variant="ghost" className="h-7 text-xs text-slate-600" onClick={() => openAddDoc(section.level)}>
                       <Plus className="mr-1 h-3.5 w-3.5" /> Add Document
                     </Button>
                   )}
@@ -783,7 +793,14 @@ export function OnboardingDetail() {
                       <div className="flex items-center gap-3">
                         <CheckCircle className="h-4 w-4 text-green-500 shrink-0" />
                         <div>
-                          <p className="text-sm font-medium text-slate-900">{d.label} <span className="text-xs font-normal text-slate-400">(additional)</span></p>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="text-sm font-medium text-slate-900">{d.label} <span className="text-xs font-normal text-slate-400">(additional)</span></p>
+                            {(d.brandName || d.warehouseName) && (
+                              <Badge variant="outline" className="text-[10px] font-normal">
+                                {d.warehouseName ? `${d.brandName} · ${d.warehouseName}` : d.brandName}
+                              </Badge>
+                            )}
+                          </div>
                           <a href={d.url} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:underline flex items-center gap-1 mt-0.5">
                             {d.url.split("/").pop()} <ExternalLink className="h-3 w-3" />
                           </a>
@@ -1198,6 +1215,85 @@ export function OnboardingDetail() {
             <Button onClick={handleAddWarehouse} disabled={addWarehouseLoading || !addWarehouseForm.warehouseName || !addWarehouseForm.warehouseGstin || !addWarehouseForm.warehouseAddress}>
               {addWarehouseLoading ? "Adding..." : "Add Warehouse"}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Add Document Dialog */}
+      <Dialog open={showAddDoc} onOpenChange={setShowAddDoc}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Add Document</DialogTitle>
+            <DialogDescription>
+              Attach a document at the{" "}
+              <strong className="capitalize">{addDocForm.level}</strong> level
+              {addDocForm.level !== "company" && " and choose which it belongs to"}.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-1.5">
+              <Label className="text-sm">Document Name <span className="text-red-500">*</span></Label>
+              <Input
+                value={addDocForm.label}
+                onChange={(e) => setAddDocForm((p) => ({ ...p, label: e.target.value }))}
+                placeholder="e.g. Lease Agreement, Utility Bill, Brand Authorization"
+              />
+            </div>
+
+            {(addDocForm.level === "brand" || addDocForm.level === "warehouse") && (
+              <div className="space-y-1.5">
+                <Label className="text-sm">Brand <span className="text-red-500">*</span></Label>
+                <Select
+                  value={addDocForm.brandId}
+                  onValueChange={(v) => {
+                    setAddDocForm((p) => ({ ...p, brandId: v, warehouseId: "" }));
+                    if (addDocForm.level === "warehouse") loadWarehouses(Number(v));
+                  }}
+                >
+                  <SelectTrigger><SelectValue placeholder="Select brand" /></SelectTrigger>
+                  <SelectContent>
+                    {(brands ?? []).map((b) => (
+                      <SelectItem key={b.id} value={String(b.id)}>{b.brandName} <span className="text-xs text-slate-400">({b.brandCode})</span></SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
+            {addDocForm.level === "warehouse" && (
+              <div className="space-y-1.5">
+                <Label className="text-sm">Warehouse <span className="text-red-500">*</span></Label>
+                <Select
+                  value={addDocForm.warehouseId}
+                  onValueChange={(v) => setAddDocForm((p) => ({ ...p, warehouseId: v }))}
+                  disabled={!addDocForm.brandId}
+                >
+                  <SelectTrigger><SelectValue placeholder={addDocForm.brandId ? "Select warehouse" : "Select a brand first"} /></SelectTrigger>
+                  <SelectContent>
+                    {(warehousesByBrand[Number(addDocForm.brandId)] ?? []).map((w) => (
+                      <SelectItem key={w.id} value={String(w.id)}>{w.warehouseName} <span className="text-xs text-slate-400">({w.warehouseCode})</span></SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {addDocForm.brandId && (warehousesByBrand[Number(addDocForm.brandId)] ?? []).length === 0 && (
+                  <p className="text-[10px] text-amber-500">No warehouses for this brand yet — add one first.</p>
+                )}
+              </div>
+            )}
+
+            <div className="space-y-1.5">
+              <Label className="text-sm">File <span className="text-red-500">*</span></Label>
+              <div className="flex items-center gap-3">
+                <Button type="button" variant="outline" size="sm" onClick={() => extraFileInputRef.current?.click()}>
+                  <Upload className="mr-1.5 h-3.5 w-3.5" /> Choose File
+                </Button>
+                <span className="text-sm text-slate-500 truncate">{addDocFileName || "No file chosen"}</span>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowAddDoc(false)}>Cancel</Button>
+            <Button onClick={handleSaveExtraDoc}>Add Document</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -334,7 +334,7 @@ export function OnboardingForm() {
       { data: payload as unknown as Parameters<typeof createMutation.mutate>[0]["data"] },
       {
         onSuccess: (res) => {
-          toast({ title: "Draft created — run KYB verification next", description: `Ref: ${res.ref}` });
+          toast({ title: "Draft created — add documents next", description: `Ref: ${res.ref}` });
           setLocation(`/onboarding/${res.id}`);
         },
         onError: () => {

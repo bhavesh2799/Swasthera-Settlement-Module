@@ -2,3 +2,4 @@
 - [Onboarding response field whitelist](onboarding-response-mapping.md) — new onboarding columns can persist in DB but return null in API responses unless added to the mapper whitelist.
 - [Brand ledger posting policy](ledger-posting-policy.md) — when settlement credits and payout debits post to the running brand ledger.
 - [API contract drift](api-contract-drift.md) — generated hooks send OpenAPI keys (e.g. `rejectionReason`) but hand-written servers may read another (`notes`); a field saving as null usually means a body-key mismatch.
+- [KYB via GSTIN](kyb-via-gstin.md) — KYB has no separate detail-page step; it's auto-PASSED on GSTIN fetch at onboarding; don't gate submit on kybStatus.

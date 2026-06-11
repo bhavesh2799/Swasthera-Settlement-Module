@@ -62,10 +62,14 @@ router.post("/onboardings", async (req, res) => {
   try {
     const body = req.body;
     const ref = genRef();
+    // KYB is performed up-front via the GSTIN fetch, so an onboarding created with a
+    // GSTIN is considered KYB-verified and needs no separate verification step later.
+    const kybVerified = !!body.masterGstin;
     const [row] = await db.insert(onboardingsTable).values({
       ref,
       status: "DRAFT",
-      kybStatus: "NOT_STARTED",
+      kybStatus: kybVerified ? "PASSED" : "NOT_STARTED",
+      kybVerifiedAt: kybVerified ? new Date() : undefined,
       companyName: body.companyName,
       tradeName: body.tradeName,
       companyType: body.companyType,
@@ -336,10 +340,8 @@ router.post("/onboardings/:id/submit", authorize(["maker", "admin"]), async (req
     const [ob] = await db.select().from(onboardingsTable).where(eq(onboardingsTable.id, parseInt(req.params.id)));
     if (!ob) return res.status(404).json({ error: "Not found" });
 
-    // BRD §3.1: Cannot submit until KYB has passed
-    if (ob.kybStatus !== "PASSED") {
-      return res.status(400).json({ error: "KYB verification must pass before submission. Run KYB check first." });
-    }
+    // KYB is verified up-front via the GSTIN fetch during onboarding, so there is no
+    // separate KYB gate at submission time — the Maker can submit directly.
 
     const maker = submittedBy || "Anjali Patel";
     // Resubmission after rejection bumps the version (BRD FIX 7)

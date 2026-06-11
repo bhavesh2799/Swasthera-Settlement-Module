@@ -608,8 +608,9 @@ router.post("/warehouses/:id/reject", authorize(["checker", "admin"]), async (re
   }
 });
 
-// Deactivate a warehouse
-router.delete("/warehouses/:id", async (req, res) => {
+// Deactivate a warehouse — privileged override only. Deactivation mutates live
+// warehouse state, so it must be checker/admin gated (governance), never maker.
+router.delete("/warehouses/:id", authorize(["checker", "admin"]), async (req, res) => {
   try {
     const [row] = await db
       .update(warehousesTable)
@@ -617,6 +618,13 @@ router.delete("/warehouses/:id", async (req, res) => {
       .where(eq(warehousesTable.id, parseInt(req.params.id)))
       .returning();
     if (!row) return res.status(404).json({ error: "Warehouse not found" });
+    await logActivity(
+      req.user?.name ?? "Checker",
+      `Deactivated warehouse "${row.warehouseName}" (${row.warehouseCode})`,
+      "warehouse",
+      row.warehouseCode ?? genWarehouseCode(row.id),
+      "warning",
+    );
     res.json({ deactivated: true, id: row.id });
   } catch (err) {
     req.log.error({ err }, "delete warehouse error");

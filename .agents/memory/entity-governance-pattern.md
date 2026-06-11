@@ -10,9 +10,10 @@ New entities are created in `PENDING_APPROVAL`; edits store a diff in `pendingCh
 and flip status to `PENDING_APPROVAL`. Approve applies the diff / activates; reject reverts an edit
 to `ACTIVE` or marks a brand-new entity `REJECTED`.
 
-**Rule: legacy direct `PUT /brands/:id` and `PUT /warehouses/:id` must stay restricted to
-`authorize(["checker","admin"])`.** They bypass the approval workflow entirely, so a maker reaching
-them is a governance hole.
+**Rule: every route that mutates live brand/warehouse state must be `authorize(["checker","admin"])`
+or go through propose→approve.** This includes the legacy `PUT /brands/:id`, `PUT /warehouses/:id`,
+AND `DELETE /warehouses/:id` (deactivation is a material edit). Any maker-reachable live mutation is a
+governance hole — audit ALL verbs (PUT/DELETE/POST), not just the obvious edit endpoints.
 **Why:** these routes predate the approval flow and the frontend no longer uses them (it uses
 propose-edit). Leaving them open let a maker mutate live rows without checker sign-off.
 

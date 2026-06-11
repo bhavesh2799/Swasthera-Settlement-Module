@@ -1,6 +1,6 @@
 import { pgTable, serial, text, integer, numeric, boolean, timestamp, pgEnum } from "drizzle-orm/pg-core";
 
-export const brandStatusEnum = pgEnum("brand_status", ["DRAFT", "ACTIVE", "INACTIVE"]);
+export const brandStatusEnum = pgEnum("brand_status", ["DRAFT", "ACTIVE", "INACTIVE", "PENDING_APPROVAL", "REJECTED"]);
 
 export const brandsTable = pgTable("brands", {
   id: serial("id").primaryKey(),
@@ -30,6 +30,8 @@ export const brandsTable = pgTable("brands", {
   brandCompanyAgreementUrl: text("brand_company_agreement_url"),
   // Fynd sync IDs
   fyndBrandId: text("fynd_brand_id"),
+  // Maker-Checker: proposed edits awaiting checker approval (JSON of changed fields)
+  pendingChanges: text("pending_changes"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });

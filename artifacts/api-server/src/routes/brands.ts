@@ -1,9 +1,29 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
-import { brandsTable, warehousesTable, onboardingsTable } from "@workspace/db";
-import { eq, and } from "drizzle-orm";
+import { brandsTable, warehousesTable, onboardingsTable, activityTable } from "@workspace/db";
+import { eq, and, ne } from "drizzle-orm";
+import { authorize } from "../middlewares/rbac";
 
 const router = Router();
+
+async function logActivity(
+  user: string,
+  action: string,
+  entityType: string,
+  entityRef: string,
+  level: "info" | "success" | "warning" = "info",
+) {
+  await db.insert(activityTable).values({ user, action, entityType, entityRef, level });
+}
+
+function parsePending(raw: string | null): Record<string, unknown> | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -34,6 +54,7 @@ function mapBrand(b: typeof brandsTable.$inferSelect) {
     tdsRate: parseFloat(String(b.tdsRate)),
     tcsApplicable: b.tcsApplicable,
     fyndBrandId: b.fyndBrandId,
+    pendingChanges: parsePending(b.pendingChanges),
     createdAt: b.createdAt.toISOString(),
     updatedAt: b.updatedAt.toISOString(),
   };
@@ -51,6 +72,8 @@ function mapWarehouse(w: typeof warehousesTable.$inferSelect) {
     warehouseAddress: w.warehouseAddress,
     isPrimary: w.isPrimary,
     isActive: w.isActive,
+    status: w.status,
+    pendingChanges: parsePending(w.pendingChanges),
     stateCode: w.stateCode ?? w.warehouseGstin?.substring(0, 2),
     fyndLocationId: w.fyndLocationId,
     createdAt: w.createdAt.toISOString(),
@@ -137,7 +160,7 @@ router.get("/onboardings/:id/brands", async (req, res) => {
 });
 
 // Create a brand for an onboarding
-router.post("/onboardings/:id/brands", async (req, res) => {
+router.post("/onboardings/:id/brands", authorize(["maker", "admin"]), async (req, res) => {
   try {
     const onboardingId = parseInt(req.params.id);
     const [ob] = await db
@@ -180,7 +203,7 @@ router.post("/onboardings/:id/brands", async (req, res) => {
         tcsRate: String(body.tcsRate ?? ob.tcsRate ?? "1"),
         tdsRate: String(body.tdsRate ?? ob.tdsRate ?? "1"),
         tcsApplicable: body.tcsApplicable !== false,
-        status: "ACTIVE",
+        status: "PENDING_APPROVAL",
       })
       .returning();
 
@@ -191,6 +214,14 @@ router.post("/onboardings/:id/brands", async (req, res) => {
       .where(eq(brandsTable.id, brand.id))
       .returning();
 
+    await logActivity(
+      req.user?.name ?? "Maker",
+      `Added brand "${updated.brandName}" (${updated.brandCode}) — awaiting Checker approval`,
+      "brand",
+      updated.brandCode ?? genBrandCode(updated.id),
+      "info",
+    );
+
     res.status(201).json(mapBrand(updated));
   } catch (err) {
     req.log.error({ err }, "create brand error");
@@ -198,8 +229,9 @@ router.post("/onboardings/:id/brands", async (req, res) => {
   }
 });
 
-// Update a brand
-router.put("/brands/:id", async (req, res) => {
+// Direct brand update — privileged override only. Maker edits MUST go through
+// /brands/:id/propose-edit so changes are checker-approved (governance).
+router.put("/brands/:id", authorize(["checker", "admin"]), async (req, res) => {
   try {
     const body = req.body as Record<string, unknown>;
     const updates: Partial<typeof brandsTable.$inferInsert> = {};
@@ -215,7 +247,7 @@ router.put("/brands/:id", async (req, res) => {
     if (body.tcsRate !== undefined) updates.tcsRate = String(body.tcsRate);
     if (body.tdsRate !== undefined) updates.tdsRate = String(body.tdsRate);
     if (body.tcsApplicable !== undefined) updates.tcsApplicable = body.tcsApplicable as boolean;
-    if (body.status !== undefined) updates.status = body.status as "DRAFT" | "ACTIVE" | "INACTIVE";
+    if (body.status !== undefined) updates.status = body.status as typeof brandsTable.$inferInsert["status"];
     if (body.fyndBrandId !== undefined) updates.fyndBrandId = body.fyndBrandId as string;
     updates.updatedAt = new Date();
 
@@ -228,6 +260,116 @@ router.put("/brands/:id", async (req, res) => {
     res.json(mapBrand(row));
   } catch (err) {
     req.log.error({ err }, "update brand error");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Maker proposes an edit to a brand — stored as pendingChanges, awaits Checker approval
+const BRAND_EDITABLE = [
+  "brandName", "brandLegalName", "brandCategory", "brandType",
+  "commissionRate", "commissionType", "returnWindowDays", "tcsRate", "tdsRate", "tcsApplicable",
+] as const;
+
+router.post("/brands/:id/propose-edit", authorize(["maker", "admin"]), async (req, res) => {
+  try {
+    const body = req.body as Record<string, unknown>;
+    const [brand] = await db.select().from(brandsTable).where(eq(brandsTable.id, parseInt(req.params.id)));
+    if (!brand) return res.status(404).json({ error: "Brand not found" });
+
+    const proposed: Record<string, unknown> = {};
+    for (const f of BRAND_EDITABLE) {
+      if (body[f] !== undefined) proposed[f] = body[f];
+    }
+    if (Object.keys(proposed).length === 0) {
+      return res.status(400).json({ error: "No editable fields supplied" });
+    }
+
+    const [row] = await db
+      .update(brandsTable)
+      .set({ pendingChanges: JSON.stringify(proposed), status: "PENDING_APPROVAL", updatedAt: new Date() })
+      .where(eq(brandsTable.id, brand.id))
+      .returning();
+
+    await logActivity(
+      req.user?.name ?? "Maker",
+      `Proposed edit to brand "${brand.brandName}" (${row.brandCode}) — awaiting Checker approval`,
+      "brand",
+      row.brandCode ?? genBrandCode(row.id),
+      "info",
+    );
+    res.json(mapBrand(row));
+  } catch (err) {
+    req.log.error({ err }, "propose brand edit error");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Checker approves a pending brand (new brand or proposed edit)
+router.post("/brands/:id/approve", authorize(["checker", "admin"]), async (req, res) => {
+  try {
+    const [brand] = await db.select().from(brandsTable).where(eq(brandsTable.id, parseInt(req.params.id)));
+    if (!brand) return res.status(404).json({ error: "Brand not found" });
+    if (brand.status !== "PENDING_APPROVAL") {
+      return res.status(400).json({ error: "Brand is not pending approval" });
+    }
+
+    const pending = parsePending(brand.pendingChanges);
+    const updates: Partial<typeof brandsTable.$inferInsert> = { status: "ACTIVE", pendingChanges: null, updatedAt: new Date() };
+    if (pending) {
+      for (const f of BRAND_EDITABLE) {
+        if (pending[f] === undefined) continue;
+        if (f === "commissionRate" || f === "tcsRate" || f === "tdsRate") {
+          (updates as Record<string, unknown>)[f] = String(pending[f]);
+        } else {
+          (updates as Record<string, unknown>)[f] = pending[f];
+        }
+      }
+    }
+
+    const [row] = await db.update(brandsTable).set(updates).where(eq(brandsTable.id, brand.id)).returning();
+    await logActivity(
+      req.user?.name ?? "Checker",
+      `Approved brand "${row.brandName}" (${row.brandCode})${pending ? " edit" : ""}`,
+      "brand",
+      row.brandCode ?? genBrandCode(row.id),
+      "success",
+    );
+    res.json(mapBrand(row));
+  } catch (err) {
+    req.log.error({ err }, "approve brand error");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Checker rejects a pending brand — discards proposed edit, or marks a brand-new entry REJECTED
+router.post("/brands/:id/reject", authorize(["checker", "admin"]), async (req, res) => {
+  try {
+    const { notes } = req.body as { notes?: string };
+    const [brand] = await db.select().from(brandsTable).where(eq(brandsTable.id, parseInt(req.params.id)));
+    if (!brand) return res.status(404).json({ error: "Brand not found" });
+    if (brand.status !== "PENDING_APPROVAL") {
+      return res.status(400).json({ error: "Brand is not pending approval" });
+    }
+
+    const wasEdit = !!brand.pendingChanges;
+    // An edit reverts to ACTIVE (live values untouched); a brand-new entry becomes REJECTED.
+    const newStatus = wasEdit ? "ACTIVE" : "REJECTED";
+    const [row] = await db
+      .update(brandsTable)
+      .set({ status: newStatus, pendingChanges: null, updatedAt: new Date() })
+      .where(eq(brandsTable.id, brand.id))
+      .returning();
+
+    await logActivity(
+      req.user?.name ?? "Checker",
+      `Rejected brand "${row.brandName}" (${row.brandCode})${wasEdit ? " edit" : ""}${notes ? ` — ${notes}` : ""}`,
+      "brand",
+      row.brandCode ?? genBrandCode(row.id),
+      "warning",
+    );
+    res.json(mapBrand(row));
+  } catch (err) {
+    req.log.error({ err }, "reject brand error");
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -251,7 +393,7 @@ router.get("/brands/:id/warehouses", async (req, res) => {
 });
 
 // Create a warehouse for a brand
-router.post("/brands/:id/warehouses", async (req, res) => {
+router.post("/brands/:id/warehouses", authorize(["maker", "admin"]), async (req, res) => {
   try {
     const brandId = parseInt(req.params.id);
     const [brand] = await db
@@ -272,14 +414,10 @@ router.post("/brands/:id/warehouses", async (req, res) => {
       return res.status(400).json({ error: "warehouseName, warehouseState, warehouseGstin, warehouseAddress are required" });
     }
 
-    // If this is primary, unset all others for this brand
-    if (body.isPrimary) {
-      await db
-        .update(warehousesTable)
-        .set({ isPrimary: false })
-        .where(eq(warehousesTable.brandId, brandId));
-    }
-
+    // NOTE: do NOT unset other primaries here. A new warehouse stays
+    // PENDING_APPROVAL and must not mutate live primary selection until a
+    // Checker approves it (see /warehouses/:id/approve). orders.ts only reads
+    // ACTIVE primary warehouses, so a pending primary never shadows the live one.
     const [warehouse] = await db
       .insert(warehousesTable)
       .values({
@@ -291,6 +429,7 @@ router.post("/brands/:id/warehouses", async (req, res) => {
         warehouseAddress: body.warehouseAddress,
         isPrimary: body.isPrimary ?? false,
         isActive: true,
+        status: "PENDING_APPROVAL",
         stateCode: body.warehouseGstin.substring(0, 2),
       })
       .returning();
@@ -302,6 +441,14 @@ router.post("/brands/:id/warehouses", async (req, res) => {
       .where(eq(warehousesTable.id, warehouse.id))
       .returning();
 
+    await logActivity(
+      req.user?.name ?? "Maker",
+      `Added warehouse "${updated.warehouseName}" (${updated.warehouseCode}) — awaiting Checker approval`,
+      "warehouse",
+      updated.warehouseCode ?? genWarehouseCode(updated.id),
+      "info",
+    );
+
     res.status(201).json(mapWarehouse(updated));
   } catch (err) {
     req.log.error({ err }, "create warehouse error");
@@ -309,8 +456,9 @@ router.post("/brands/:id/warehouses", async (req, res) => {
   }
 });
 
-// Update a warehouse
-router.put("/warehouses/:id", async (req, res) => {
+// Direct warehouse update — privileged override only. Maker edits MUST go through
+// /warehouses/:id/propose-edit so changes are checker-approved (governance).
+router.put("/warehouses/:id", authorize(["checker", "admin"]), async (req, res) => {
   try {
     const body = req.body as Record<string, unknown>;
     const updates: Partial<typeof warehousesTable.$inferInsert> = {};
@@ -324,6 +472,7 @@ router.put("/warehouses/:id", async (req, res) => {
     if (body.warehouseAddress !== undefined) updates.warehouseAddress = body.warehouseAddress as string;
     if (body.isPrimary !== undefined) updates.isPrimary = body.isPrimary as boolean;
     if (body.isActive !== undefined) updates.isActive = body.isActive as boolean;
+    if (body.status !== undefined) updates.status = body.status as string;
     if (body.fyndLocationId !== undefined) updates.fyndLocationId = body.fyndLocationId as string;
     updates.updatedAt = new Date();
 
@@ -336,6 +485,125 @@ router.put("/warehouses/:id", async (req, res) => {
     res.json(mapWarehouse(row));
   } catch (err) {
     req.log.error({ err }, "update warehouse error");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Maker proposes an edit to a warehouse — stored as pendingChanges, awaits Checker approval
+const WAREHOUSE_EDITABLE = [
+  "warehouseName", "warehouseState", "warehouseGstin", "warehouseAddress", "isPrimary",
+] as const;
+
+router.post("/warehouses/:id/propose-edit", authorize(["maker", "admin"]), async (req, res) => {
+  try {
+    const body = req.body as Record<string, unknown>;
+    const [wh] = await db.select().from(warehousesTable).where(eq(warehousesTable.id, parseInt(req.params.id)));
+    if (!wh) return res.status(404).json({ error: "Warehouse not found" });
+
+    const proposed: Record<string, unknown> = {};
+    for (const f of WAREHOUSE_EDITABLE) {
+      if (body[f] !== undefined) proposed[f] = body[f];
+    }
+    if (Object.keys(proposed).length === 0) {
+      return res.status(400).json({ error: "No editable fields supplied" });
+    }
+
+    const [row] = await db
+      .update(warehousesTable)
+      .set({ pendingChanges: JSON.stringify(proposed), status: "PENDING_APPROVAL", updatedAt: new Date() })
+      .where(eq(warehousesTable.id, wh.id))
+      .returning();
+
+    await logActivity(
+      req.user?.name ?? "Maker",
+      `Proposed edit to warehouse "${wh.warehouseName}" (${row.warehouseCode}) — awaiting Checker approval`,
+      "warehouse",
+      row.warehouseCode ?? genWarehouseCode(row.id),
+      "info",
+    );
+    res.json(mapWarehouse(row));
+  } catch (err) {
+    req.log.error({ err }, "propose warehouse edit error");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Checker approves a pending warehouse (new warehouse or proposed edit)
+router.post("/warehouses/:id/approve", authorize(["checker", "admin"]), async (req, res) => {
+  try {
+    const [wh] = await db.select().from(warehousesTable).where(eq(warehousesTable.id, parseInt(req.params.id)));
+    if (!wh) return res.status(404).json({ error: "Warehouse not found" });
+    if (wh.status !== "PENDING_APPROVAL") {
+      return res.status(400).json({ error: "Warehouse is not pending approval" });
+    }
+
+    const pending = parsePending(wh.pendingChanges);
+    const updates: Partial<typeof warehousesTable.$inferInsert> = { status: "ACTIVE", pendingChanges: null, updatedAt: new Date() };
+    if (pending) {
+      for (const f of WAREHOUSE_EDITABLE) {
+        if (pending[f] === undefined) continue;
+        (updates as Record<string, unknown>)[f] = pending[f];
+      }
+      if (pending.warehouseGstin !== undefined) {
+        updates.stateCode = String(pending.warehouseGstin).substring(0, 2);
+      }
+    }
+
+    // Enforce single-primary at approval time — covers both a brand-new primary
+    // warehouse (pending === null, row already flagged primary) and an edit that
+    // proposes primary. This is the only point where live primary state changes.
+    const becomingPrimary = pending ? pending.isPrimary === true : wh.isPrimary === true;
+    if (becomingPrimary) {
+      await db
+        .update(warehousesTable)
+        .set({ isPrimary: false })
+        .where(and(eq(warehousesTable.brandId, wh.brandId), ne(warehousesTable.id, wh.id)));
+      updates.isPrimary = true;
+    }
+
+    const [row] = await db.update(warehousesTable).set(updates).where(eq(warehousesTable.id, wh.id)).returning();
+    await logActivity(
+      req.user?.name ?? "Checker",
+      `Approved warehouse "${row.warehouseName}" (${row.warehouseCode})${pending ? " edit" : ""}`,
+      "warehouse",
+      row.warehouseCode ?? genWarehouseCode(row.id),
+      "success",
+    );
+    res.json(mapWarehouse(row));
+  } catch (err) {
+    req.log.error({ err }, "approve warehouse error");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Checker rejects a pending warehouse — discards proposed edit, or marks a brand-new entry REJECTED
+router.post("/warehouses/:id/reject", authorize(["checker", "admin"]), async (req, res) => {
+  try {
+    const { notes } = req.body as { notes?: string };
+    const [wh] = await db.select().from(warehousesTable).where(eq(warehousesTable.id, parseInt(req.params.id)));
+    if (!wh) return res.status(404).json({ error: "Warehouse not found" });
+    if (wh.status !== "PENDING_APPROVAL") {
+      return res.status(400).json({ error: "Warehouse is not pending approval" });
+    }
+
+    const wasEdit = !!wh.pendingChanges;
+    const newStatus = wasEdit ? "ACTIVE" : "REJECTED";
+    const [row] = await db
+      .update(warehousesTable)
+      .set({ status: newStatus, pendingChanges: null, isActive: wasEdit ? wh.isActive : false, updatedAt: new Date() })
+      .where(eq(warehousesTable.id, wh.id))
+      .returning();
+
+    await logActivity(
+      req.user?.name ?? "Checker",
+      `Rejected warehouse "${row.warehouseName}" (${row.warehouseCode})${wasEdit ? " edit" : ""}${notes ? ` — ${notes}` : ""}`,
+      "warehouse",
+      row.warehouseCode ?? genWarehouseCode(row.id),
+      "warning",
+    );
+    res.json(mapWarehouse(row));
+  } catch (err) {
+    req.log.error({ err }, "reject warehouse error");
     res.status(500).json({ error: "Internal server error" });
   }
 });

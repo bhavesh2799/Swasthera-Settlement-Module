@@ -10,7 +10,7 @@ import { useQueryClient, useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, CheckCircle, XCircle, Send, ShieldCheck, FileText, Upload, Plus, RefreshCw, Building2, ExternalLink, Warehouse, Store, MapPin, Tag, ChevronDown, ChevronRight, Percent } from "lucide-react";
+import { ArrowLeft, CheckCircle, XCircle, Send, ShieldCheck, FileText, Upload, Plus, RefreshCw, Building2, ExternalLink, Warehouse, Store, MapPin, Tag, ChevronDown, ChevronRight, Percent, Pencil } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
@@ -39,6 +39,7 @@ interface BrandItem {
   tdsRate: number;
   tcsApplicable: boolean;
   fyndBrandId: string | null;
+  pendingChanges?: Record<string, unknown> | null;
 }
 
 interface WarehouseItem {
@@ -51,8 +52,10 @@ interface WarehouseItem {
   warehouseAddress: string;
   isPrimary: boolean;
   isActive: boolean;
+  status: string;
   stateCode: string | null;
   fyndLocationId: string | null;
+  pendingChanges?: Record<string, unknown> | null;
 }
 
 interface ExtraDoc {
@@ -144,6 +147,41 @@ function statusLabel(status: string): { text: string; cls: string } {
     case "DRAFT": return { text: "Draft", cls: "bg-slate-100 text-slate-700 border-transparent" };
     default: return { text: status, cls: "bg-slate-100 text-slate-700 border-transparent" };
   }
+}
+
+function entityStatusBadge(status: string): { text: string; cls: string } {
+  switch (status) {
+    case "ACTIVE": return { text: "Active", cls: "bg-green-100 text-green-800 hover:bg-green-100" };
+    case "INACTIVE": return { text: "Inactive", cls: "bg-slate-100 text-slate-600 hover:bg-slate-100" };
+    case "PENDING_APPROVAL": return { text: "Pending Approval", cls: "bg-amber-100 text-amber-800 hover:bg-amber-100" };
+    case "REJECTED": return { text: "Rejected", cls: "bg-red-100 text-red-800 hover:bg-red-100" };
+    default: return { text: status, cls: "bg-amber-100 text-amber-800 hover:bg-amber-100" };
+  }
+}
+
+// Human-readable labels for fields that appear in a pendingChanges diff panel.
+const FIELD_LABELS: Record<string, string> = {
+  brandName: "Brand Name",
+  brandLegalName: "Brand Legal Name",
+  brandCategory: "Category",
+  brandType: "Brand Type",
+  commissionRate: "Commission Rate (%)",
+  commissionType: "Commission Type",
+  returnWindowDays: "Return Window (days)",
+  tcsRate: "TCS Rate (%)",
+  tdsRate: "TDS Rate (%)",
+  tcsApplicable: "TCS Applicable",
+  warehouseName: "Warehouse Name",
+  warehouseState: "State",
+  warehouseGstin: "Warehouse GSTIN",
+  warehouseAddress: "Address",
+  isPrimary: "Primary Warehouse",
+};
+
+function formatFieldValue(v: unknown): string {
+  if (v === null || v === undefined || v === "") return "—";
+  if (typeof v === "boolean") return v ? "Yes" : "No";
+  return String(v);
 }
 
 export function OnboardingDetail() {
@@ -250,6 +288,40 @@ export function OnboardingDetail() {
 
   const [warehousesByBrand, setWarehousesByBrand] = useState<Record<number, WarehouseItem[]>>({});
 
+  // Edit Brand (maker proposes; requires checker approval)
+  const [showEditBrand, setShowEditBrand] = useState(false);
+  const [editBrandId, setEditBrandId] = useState<number | null>(null);
+  const [editBrandForm, setEditBrandForm] = useState({
+    brandName: "", brandLegalName: "", brandCategory: "", brandType: "RETAILER",
+    commissionType: "FLAT_PERCENT", commissionRate: "", returnWindowDays: "15",
+    tcsRate: "1", tdsRate: "1",
+  });
+  const [editBrandLoading, setEditBrandLoading] = useState(false);
+
+  // Edit Warehouse (maker proposes; requires checker approval)
+  const [showEditWarehouse, setShowEditWarehouse] = useState(false);
+  const [editWarehouseId, setEditWarehouseId] = useState<number | null>(null);
+  const [editWarehouseBrandId, setEditWarehouseBrandId] = useState<number | null>(null);
+  const [editWarehouseForm, setEditWarehouseForm] = useState({
+    warehouseName: "", warehouseState: "", warehouseGstin: "", warehouseAddress: "", isPrimary: false,
+  });
+  const [editWarehouseLoading, setEditWarehouseLoading] = useState(false);
+
+  // Edit Company (rides the onboarding submit → checker approval flow)
+  const [showEditCompany, setShowEditCompany] = useState(false);
+  const [editCompanyForm, setEditCompanyForm] = useState({
+    companyName: "", tradeName: "", companyType: "PRIVATE_LIMITED", pan: "", masterGstin: "", tan: "", cin: "", registeredAddress: "",
+  });
+  const [editCompanyLoading, setEditCompanyLoading] = useState(false);
+
+  // Locks the document-name field when uploading a fixed brand/warehouse doc through the tagging dialog
+  const [lockDocLabel, setLockDocLabel] = useState(false);
+
+  // Shared reject dialog for pending brand/warehouse entities
+  const [rejectEntity, setRejectEntity] = useState<{ kind: "brand" | "warehouse"; id: number; name: string; brandId?: number; isEdit: boolean } | null>(null);
+  const [entityRejectNotes, setEntityRejectNotes] = useState("");
+  const [entityActionLoading, setEntityActionLoading] = useState(false);
+
   const loadWarehouses = async (brandId: number) => {
     const r = await fetch(`/api/brands/${brandId}/warehouses`);
     if (!r.ok) return;
@@ -314,6 +386,175 @@ export function OnboardingDetail() {
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: getGetOnboardingQueryKey(id) });
 
+  const openEditBrand = (brand: BrandItem) => {
+    setEditBrandId(brand.id);
+    setEditBrandForm({
+      brandName: brand.brandName ?? "",
+      brandLegalName: brand.brandLegalName ?? "",
+      brandCategory: brand.brandCategory ?? "",
+      brandType: brand.brandType ?? "RETAILER",
+      commissionType: brand.commissionType ?? "FLAT_PERCENT",
+      commissionRate: String(brand.commissionRate ?? ""),
+      returnWindowDays: String(brand.returnWindowDays ?? "15"),
+      tcsRate: String(brand.tcsRate ?? "1"),
+      tdsRate: String(brand.tdsRate ?? "1"),
+    });
+    setShowEditBrand(true);
+  };
+
+  const handleEditBrand = async () => {
+    if (!editBrandId || !editBrandForm.brandName || !editBrandForm.brandCategory) return;
+    setEditBrandLoading(true);
+    try {
+      const r = await fetch(`/api/brands/${editBrandId}/propose-edit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...editBrandForm,
+          commissionRate: parseFloat(editBrandForm.commissionRate) || 0,
+          returnWindowDays: parseInt(editBrandForm.returnWindowDays) || 15,
+          tcsRate: parseFloat(editBrandForm.tcsRate) || 1,
+          tdsRate: parseFloat(editBrandForm.tdsRate) || 1,
+        }),
+      });
+      if (!r.ok) throw new Error("Failed");
+      toast({ title: "Edit submitted — awaiting Checker approval" });
+      setShowEditBrand(false);
+      setEditBrandId(null);
+      refetchBrands();
+    } catch {
+      toast({ title: "Failed to submit edit", variant: "destructive" });
+    } finally {
+      setEditBrandLoading(false);
+    }
+  };
+
+  const openEditWarehouse = (wh: WarehouseItem) => {
+    setEditWarehouseId(wh.id);
+    setEditWarehouseBrandId(wh.brandId);
+    setEditWarehouseForm({
+      warehouseName: wh.warehouseName ?? "",
+      warehouseState: wh.warehouseState ?? "",
+      warehouseGstin: wh.warehouseGstin ?? "",
+      warehouseAddress: wh.warehouseAddress ?? "",
+      isPrimary: !!wh.isPrimary,
+    });
+    setShowEditWarehouse(true);
+  };
+
+  const handleEditWarehouse = async () => {
+    if (!editWarehouseId || !editWarehouseForm.warehouseName || !editWarehouseForm.warehouseGstin) return;
+    setEditWarehouseLoading(true);
+    try {
+      const r = await fetch(`/api/warehouses/${editWarehouseId}/propose-edit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(editWarehouseForm),
+      });
+      if (!r.ok) throw new Error("Failed");
+      toast({ title: "Edit submitted — awaiting Checker approval" });
+      setShowEditWarehouse(false);
+      if (editWarehouseBrandId) loadWarehouses(editWarehouseBrandId);
+      setEditWarehouseId(null);
+    } catch {
+      toast({ title: "Failed to submit edit", variant: "destructive" });
+    } finally {
+      setEditWarehouseLoading(false);
+    }
+  };
+
+  const handleApproveBrand = async (brand: BrandItem) => {
+    setEntityActionLoading(true);
+    try {
+      const r = await fetch(`/api/brands/${brand.id}/approve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      if (!r.ok) throw new Error("Failed");
+      toast({ title: `${brand.brandName} approved` });
+      refetchBrands();
+    } catch {
+      toast({ title: "Approval failed", variant: "destructive" });
+    } finally {
+      setEntityActionLoading(false);
+    }
+  };
+
+  const handleApproveWarehouse = async (wh: WarehouseItem) => {
+    setEntityActionLoading(true);
+    try {
+      const r = await fetch(`/api/warehouses/${wh.id}/approve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      if (!r.ok) throw new Error("Failed");
+      toast({ title: `${wh.warehouseName} approved` });
+      loadWarehouses(wh.brandId);
+    } catch {
+      toast({ title: "Approval failed", variant: "destructive" });
+    } finally {
+      setEntityActionLoading(false);
+    }
+  };
+
+  const handleRejectEntity = async () => {
+    if (!rejectEntity) return;
+    setEntityActionLoading(true);
+    try {
+      const base = rejectEntity.kind === "brand" ? "brands" : "warehouses";
+      const r = await fetch(`/api/${base}/${rejectEntity.id}/reject`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ notes: entityRejectNotes }),
+      });
+      if (!r.ok) throw new Error("Failed");
+      toast({ title: `${rejectEntity.name} ${rejectEntity.isEdit ? "edit rejected" : "rejected"}`, variant: "destructive" });
+      if (rejectEntity.kind === "brand") refetchBrands();
+      else if (rejectEntity.brandId) loadWarehouses(rejectEntity.brandId);
+      setRejectEntity(null);
+      setEntityRejectNotes("");
+    } catch {
+      toast({ title: "Rejection failed", variant: "destructive" });
+    } finally {
+      setEntityActionLoading(false);
+    }
+  };
+
+  const openEditCompany = () => {
+    setEditCompanyForm({
+      companyName: onboarding?.companyName ?? "",
+      tradeName: (ob.tradeName as string) ?? "",
+      companyType: onboarding?.companyType ?? "PRIVATE_LIMITED",
+      pan: onboarding?.pan ?? "",
+      masterGstin: onboarding?.masterGstin ?? "",
+      tan: onboarding?.tan ?? "",
+      cin: onboarding?.cin ?? "",
+      registeredAddress: (ob.registeredAddress as string) ?? "",
+    });
+    setShowEditCompany(true);
+  };
+
+  const handleEditCompany = async () => {
+    if (!editCompanyForm.companyName) return;
+    setEditCompanyLoading(true);
+    try {
+      const r = await fetch(`/api/onboardings/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(editCompanyForm),
+      });
+      if (!r.ok) throw new Error("Failed");
+      toast({ title: "Company details updated" });
+      setShowEditCompany(false);
+      invalidate();
+    } catch {
+      toast({ title: "Failed to update company details", variant: "destructive" });
+    } finally {
+      setEditCompanyLoading(false);
+    }
+  };
+
+  const openTagDoc = (label: string) => {
+    setAddDocForm({ level: "brand", label, brandId: brands?.[0] ? String(brands[0].id) : "", warehouseId: "" });
+    setAddDocFileName("");
+    setLockDocLabel(true);
+    setShowAddDoc(true);
+  };
+
   const handleDocUpload = (docKey: DocKey) => {
     setUpdatingDoc(docKey);
     fileInputRef.current?.click();
@@ -341,6 +582,7 @@ export function OnboardingDetail() {
   const openAddDoc = (level: string) => {
     setAddDocForm({ level, label: "", brandId: brands?.[0] ? String(brands[0].id) : "", warehouseId: "" });
     setAddDocFileName("");
+    setLockDocLabel(false);
     if (level === "warehouse" && brands?.[0]) loadWarehouses(brands[0].id);
     setShowAddDoc(true);
   };
@@ -585,8 +827,13 @@ export function OnboardingDetail() {
       <div className="grid gap-6 md:grid-cols-2">
         {/* Company & Tax */}
         <Card className="shadow-sm border-slate-200/60 bg-white">
-          <CardHeader className="border-b border-slate-100 bg-slate-50/50 py-4">
+          <CardHeader className="border-b border-slate-100 bg-slate-50/50 py-4 flex flex-row items-center justify-between space-y-0">
             <CardTitle className="text-base font-semibold text-slate-800">Company & Tax Details</CardTitle>
+            {isMaker && (onboarding.status === "DRAFT" || onboarding.status === "REJECTED") && (
+              <Button size="sm" variant="outline" className="h-7 text-xs" onClick={openEditCompany}>
+                <Pencil className="mr-1 h-3.5 w-3.5" /> Edit
+              </Button>
+            )}
           </CardHeader>
           <CardContent className="p-6 grid grid-cols-2 gap-y-4 gap-x-6">
             {([
@@ -745,10 +992,19 @@ export function OnboardingDetail() {
         </CardHeader>
         <CardContent className="p-0">
           {DOC_SECTIONS.map((section) => {
-            const canEdit = isMaker && (onboarding.status === "DRAFT" || onboarding.status === "REJECTED");
+            const isBrandLevel = section.level === "brand";
+            // Company docs only editable while draft/rejected; brand & warehouse docs can be
+            // tagged any time the onboarding is not under checker review.
+            const canEdit = isBrandLevel || section.level === "warehouse"
+              ? isMaker && onboarding.status !== "SUBMITTED"
+              : isMaker && (onboarding.status === "DRAFT" || onboarding.status === "REJECTED");
+            const fixedLabels = section.docs.map((d) => d.label);
             const extras = extraDocs
               .map((d, i) => ({ ...d, _idx: i }))
-              .filter((d) => d.level === section.level);
+              .filter((d) => d.level === section.level)
+              // Brand fixed docs (Signed Agreement / Cancelled Cheque) are rendered in their
+              // own fixed rows below — don't duplicate them in the "additional" list.
+              .filter((d) => !(isBrandLevel && fixedLabels.includes(d.label)));
             return (
               <div key={section.level} className="border-b border-slate-100 last:border-b-0">
                 <div className="flex items-center justify-between px-6 py-2.5 bg-slate-50/40">
@@ -761,8 +1017,14 @@ export function OnboardingDetail() {
                 </div>
                 <div className="divide-y divide-slate-100">
                   {section.docs.map(({ key, label, required, hint }) => {
-                    const uploaded = !!(onboarding as unknown as Record<string, unknown>)[key];
-                    const url = (onboarding as unknown as Record<string, unknown>)[key] as string | undefined;
+                    // A brand fixed doc is satisfied either by the legacy onboarding field
+                    // OR by a brand-tagged extra document with the matching label.
+                    const tagged = isBrandLevel
+                      ? extraDocs.find((d) => d.level === "brand" && d.label === label)
+                      : undefined;
+                    const fieldUrl = (onboarding as unknown as Record<string, unknown>)[key] as string | undefined;
+                    const url = tagged?.url ?? fieldUrl;
+                    const uploaded = !!url;
                     return (
                       <div key={key} className="flex items-center justify-between px-6 py-3.5 hover:bg-slate-50/50">
                         <div className="flex items-center gap-3">
@@ -771,7 +1033,12 @@ export function OnboardingDetail() {
                             : <div className="h-4 w-4 rounded-full border-2 border-slate-300 shrink-0" />
                           }
                           <div>
-                            <p className="text-sm font-medium text-slate-900">{label} {required && <span className="text-red-500">*</span>}</p>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="text-sm font-medium text-slate-900">{label} {required && <span className="text-red-500">*</span>}</p>
+                              {tagged?.brandName && (
+                                <Badge variant="outline" className="text-[10px] font-normal">{tagged.brandName}</Badge>
+                              )}
+                            </div>
                             <p className="text-xs text-slate-500">{hint}</p>
                             {uploaded && url && (
                               <a href={url} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:underline flex items-center gap-1 mt-0.5">
@@ -781,8 +1048,16 @@ export function OnboardingDetail() {
                           </div>
                         </div>
                         {canEdit && (
-                          <Button size="sm" variant={uploaded ? "outline" : "default"} onClick={() => handleDocUpload(key)} className="text-xs">
-                            <Upload className="mr-1.5 h-3.5 w-3.5" />{uploaded ? "Replace" : "Upload"}
+                          <Button
+                            size="sm"
+                            variant={uploaded ? "outline" : "default"}
+                            onClick={() => isBrandLevel ? openTagDoc(label) : handleDocUpload(key)}
+                            className="text-xs"
+                          >
+                            {isBrandLevel
+                              ? <><Tag className="mr-1.5 h-3.5 w-3.5" />{uploaded ? "Re-tag" : "Tag to Brand"}</>
+                              : <><Upload className="mr-1.5 h-3.5 w-3.5" />{uploaded ? "Replace" : "Upload"}</>
+                            }
                           </Button>
                         )}
                       </div>
@@ -920,15 +1195,14 @@ export function OnboardingDetail() {
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="font-semibold text-slate-900">{brand.brandName}</span>
-                          <Badge
-                            className={`text-[10px] border-transparent ${
-                              brand.status === "ACTIVE" ? "bg-green-100 text-green-800 hover:bg-green-100" :
-                              brand.status === "INACTIVE" ? "bg-slate-100 text-slate-600 hover:bg-slate-100" :
-                              "bg-amber-100 text-amber-800 hover:bg-amber-100"
-                            }`}
-                          >
-                            {brand.status}
+                          <Badge className={`text-[10px] border-transparent ${entityStatusBadge(brand.status).cls}`}>
+                            {entityStatusBadge(brand.status).text}
                           </Badge>
+                          {brand.pendingChanges && (
+                            <Badge className="text-[10px] border-transparent bg-amber-50 text-amber-700 hover:bg-amber-50">
+                              <Pencil className="mr-1 h-2.5 w-2.5" /> Edit pending
+                            </Badge>
+                          )}
                           <span className="font-mono text-[10px] bg-blue-50 text-blue-700 border border-blue-100 px-1.5 py-0.5 rounded">
                             {brand.brandCode}
                           </span>
@@ -938,24 +1212,62 @@ export function OnboardingDetail() {
                           <p className="text-xs text-slate-500 mt-0.5">{brand.brandLegalName}</p>
                         )}
                       </div>
-                      <div className="shrink-0 text-right space-y-0.5">
-                        {brand.commissionType === "TIERED" ? (
-                          <div className="flex items-center gap-1 text-xs font-medium text-amber-700">
-                            <Percent className="h-3 w-3" />
-                            Tiered ({brand.tierConfig?.length ?? 0} slabs)
-                          </div>
-                        ) : (
-                          <div className="text-xs font-medium text-slate-700">
-                            {brand.commissionRate}% commission
+                      <div className="shrink-0 flex items-center gap-3" onClick={(e) => e.stopPropagation()}>
+                        <div className="text-right space-y-0.5">
+                          {brand.commissionType === "TIERED" ? (
+                            <div className="flex items-center gap-1 text-xs font-medium text-amber-700">
+                              <Percent className="h-3 w-3" />
+                              Tiered ({brand.tierConfig?.length ?? 0} slabs)
+                            </div>
+                          ) : (
+                            <div className="text-xs font-medium text-slate-700">
+                              {brand.commissionRate}% commission
+                            </div>
+                          )}
+                          <div className="text-[10px] text-slate-400">{brand.returnWindowDays}d return window</div>
+                        </div>
+                        {isChecker && brand.status === "PENDING_APPROVAL" && (
+                          <div className="flex items-center gap-1.5">
+                            <Button size="sm" variant="outline" className="h-7 text-xs text-red-600 border-red-200 hover:bg-red-50"
+                              onClick={() => { setRejectEntity({ kind: "brand", id: brand.id, name: brand.brandName, isEdit: !!brand.pendingChanges }); setEntityRejectNotes(""); }}>
+                              <XCircle className="mr-1 h-3.5 w-3.5" /> Reject
+                            </Button>
+                            <Button size="sm" className="h-7 text-xs bg-green-600 hover:bg-green-700" disabled={entityActionLoading}
+                              onClick={() => handleApproveBrand(brand)}>
+                              <CheckCircle className="mr-1 h-3.5 w-3.5" /> Approve
+                            </Button>
                           </div>
                         )}
-                        <div className="text-[10px] text-slate-400">{brand.returnWindowDays}d return window</div>
+                        {isMaker && onboarding.status !== "SUBMITTED" && brand.status !== "PENDING_APPROVAL" && (
+                          <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => openEditBrand(brand)}>
+                            <Pencil className="mr-1 h-3.5 w-3.5" /> Edit
+                          </Button>
+                        )}
                       </div>
                     </div>
 
                     {/* Expanded: Warehouses + commercial detail */}
                     {isExpanded && (
                       <div className="bg-slate-50/50 border-t border-slate-100 px-6 py-4 space-y-4">
+                        {/* Pending edit diff */}
+                        {brand.pendingChanges && (
+                          <div className="rounded border border-amber-200 bg-amber-50/60 p-3">
+                            <p className="text-xs font-semibold text-amber-800 mb-2 flex items-center gap-1.5">
+                              <Pencil className="h-3 w-3" /> Proposed changes awaiting Checker approval
+                            </p>
+                            <div className="space-y-1">
+                              {Object.entries(brand.pendingChanges).map(([k, v]) => (
+                                <div key={k} className="grid grid-cols-[140px_1fr] gap-2 text-xs">
+                                  <span className="text-slate-500">{FIELD_LABELS[k] ?? k}</span>
+                                  <span className="text-slate-800">
+                                    <span className="line-through text-slate-400 mr-2">{formatFieldValue((brand as unknown as Record<string, unknown>)[k])}</span>
+                                    <span className="font-medium">{formatFieldValue(v)}</span>
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                         {/* Brand IDs row */}
                         <div className="flex flex-wrap gap-4 text-xs">
                           <div>
@@ -1034,6 +1346,16 @@ export function OnboardingDetail() {
                                       {wh.isPrimary && (
                                         <Badge className="text-[10px] bg-blue-100 text-blue-800 border-transparent hover:bg-blue-100">Primary</Badge>
                                       )}
+                                      {wh.status && wh.status !== "ACTIVE" && (
+                                        <Badge className={`text-[10px] border-transparent ${entityStatusBadge(wh.status).cls}`}>
+                                          {entityStatusBadge(wh.status).text}
+                                        </Badge>
+                                      )}
+                                      {wh.pendingChanges && (
+                                        <Badge className="text-[10px] border-transparent bg-amber-50 text-amber-700 hover:bg-amber-50">
+                                          <Pencil className="mr-1 h-2.5 w-2.5" /> Edit pending
+                                        </Badge>
+                                      )}
                                       <span className="font-mono text-[10px] bg-slate-50 text-slate-600 border border-slate-200 px-1.5 py-0.5 rounded">{wh.warehouseCode}</span>
                                     </div>
                                     <div className="flex flex-wrap gap-3 mt-1 text-xs text-slate-500">
@@ -1042,6 +1364,41 @@ export function OnboardingDetail() {
                                       {wh.stateCode && <span>State: {wh.stateCode}</span>}
                                     </div>
                                     <p className="text-xs text-slate-400 mt-0.5">{wh.warehouseAddress}</p>
+                                    {wh.pendingChanges && (
+                                      <div className="mt-2 rounded border border-amber-200 bg-amber-50/60 p-2 space-y-1">
+                                        <p className="text-[11px] font-semibold text-amber-800 flex items-center gap-1">
+                                          <Pencil className="h-2.5 w-2.5" /> Proposed changes awaiting approval
+                                        </p>
+                                        {Object.entries(wh.pendingChanges).map(([k, v]) => (
+                                          <div key={k} className="grid grid-cols-[120px_1fr] gap-2 text-[11px]">
+                                            <span className="text-slate-500">{FIELD_LABELS[k] ?? k}</span>
+                                            <span>
+                                              <span className="line-through text-slate-400 mr-2">{formatFieldValue((wh as unknown as Record<string, unknown>)[k])}</span>
+                                              <span className="font-medium text-slate-800">{formatFieldValue(v)}</span>
+                                            </span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                  <div className="shrink-0 flex items-center gap-1.5">
+                                    {isChecker && wh.status === "PENDING_APPROVAL" && (
+                                      <>
+                                        <Button size="sm" variant="outline" className="h-7 text-xs text-red-600 border-red-200 hover:bg-red-50"
+                                          onClick={() => { setRejectEntity({ kind: "warehouse", id: wh.id, name: wh.warehouseName, brandId: wh.brandId, isEdit: !!wh.pendingChanges }); setEntityRejectNotes(""); }}>
+                                          <XCircle className="mr-1 h-3.5 w-3.5" /> Reject
+                                        </Button>
+                                        <Button size="sm" className="h-7 text-xs bg-green-600 hover:bg-green-700" disabled={entityActionLoading}
+                                          onClick={() => handleApproveWarehouse(wh)}>
+                                          <CheckCircle className="mr-1 h-3.5 w-3.5" /> Approve
+                                        </Button>
+                                      </>
+                                    )}
+                                    {isMaker && onboarding.status !== "SUBMITTED" && wh.status !== "PENDING_APPROVAL" && (
+                                      <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => openEditWarehouse(wh)}>
+                                        <Pencil className="mr-1 h-3.5 w-3.5" /> Edit
+                                      </Button>
+                                    )}
                                   </div>
                                 </div>
                               ))}
@@ -1153,6 +1510,10 @@ export function OnboardingDetail() {
                 <Label className="text-sm">TCS Rate (%)</Label>
                 <Input type="number" step="0.01" min="0" value={addBrandForm.tcsRate} onChange={(e) => setAddBrandForm((p) => ({ ...p, tcsRate: e.target.value }))} />
               </div>
+              <div className="space-y-1.5">
+                <Label className="text-sm">TDS Rate (%)</Label>
+                <Input type="number" step="0.01" min="0" value={addBrandForm.tdsRate} onChange={(e) => setAddBrandForm((p) => ({ ...p, tdsRate: e.target.value }))} />
+              </div>
             </div>
           </div>
           <DialogFooter>
@@ -1237,7 +1598,12 @@ export function OnboardingDetail() {
                 value={addDocForm.label}
                 onChange={(e) => setAddDocForm((p) => ({ ...p, label: e.target.value }))}
                 placeholder="e.g. Lease Agreement, Utility Bill, Brand Authorization"
+                disabled={lockDocLabel}
+                className={lockDocLabel ? "bg-slate-50 text-slate-500" : ""}
               />
+              {lockDocLabel && (
+                <p className="text-[10px] text-slate-400">Tagging the required “{addDocForm.label}” document to the selected brand.</p>
+              )}
             </div>
 
             {(addDocForm.level === "brand" || addDocForm.level === "warehouse") && (
@@ -1293,7 +1659,199 @@ export function OnboardingDetail() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowAddDoc(false)}>Cancel</Button>
-            <Button onClick={handleSaveExtraDoc}>Add Document</Button>
+            <Button onClick={handleSaveExtraDoc}>{lockDocLabel ? "Tag Document" : "Add Document"}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Brand Dialog */}
+      <Dialog open={showEditBrand} onOpenChange={setShowEditBrand}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Edit Brand</DialogTitle>
+            <DialogDescription>Changes are submitted for Checker approval before they take effect.</DialogDescription>
+          </DialogHeader>
+          <div className="grid grid-cols-2 gap-4 py-2">
+            <div className="space-y-1.5">
+              <Label className="text-sm">Brand Name <span className="text-red-500">*</span></Label>
+              <Input value={editBrandForm.brandName} onChange={(e) => setEditBrandForm((p) => ({ ...p, brandName: e.target.value }))} />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-sm">Legal Name</Label>
+              <Input value={editBrandForm.brandLegalName} onChange={(e) => setEditBrandForm((p) => ({ ...p, brandLegalName: e.target.value }))} />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-sm">Category <span className="text-red-500">*</span></Label>
+              <Input value={editBrandForm.brandCategory} onChange={(e) => setEditBrandForm((p) => ({ ...p, brandCategory: e.target.value }))} />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-sm">Brand Type</Label>
+              <Select value={editBrandForm.brandType} onValueChange={(v) => setEditBrandForm((p) => ({ ...p, brandType: v }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="RETAILER">Retailer</SelectItem>
+                  <SelectItem value="DISTRIBUTOR">Distributor</SelectItem>
+                  <SelectItem value="MANUFACTURER">Manufacturer</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-sm">Commission Type</Label>
+              <Select value={editBrandForm.commissionType} onValueChange={(v) => setEditBrandForm((p) => ({ ...p, commissionType: v }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="FLAT_PERCENT">Flat Percent</SelectItem>
+                  <SelectItem value="TIERED">Tiered</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-sm">Commission Rate (%)</Label>
+              <Input type="number" step="0.01" min="0" max="100" value={editBrandForm.commissionRate} onChange={(e) => setEditBrandForm((p) => ({ ...p, commissionRate: e.target.value }))} />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-sm">Return Window (days)</Label>
+              <Input type="number" min="0" max="90" value={editBrandForm.returnWindowDays} onChange={(e) => setEditBrandForm((p) => ({ ...p, returnWindowDays: e.target.value }))} />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-sm">TCS Rate (%)</Label>
+              <Input type="number" step="0.01" min="0" value={editBrandForm.tcsRate} onChange={(e) => setEditBrandForm((p) => ({ ...p, tcsRate: e.target.value }))} />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-sm">TDS Rate (%)</Label>
+              <Input type="number" step="0.01" min="0" value={editBrandForm.tdsRate} onChange={(e) => setEditBrandForm((p) => ({ ...p, tdsRate: e.target.value }))} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowEditBrand(false)}>Cancel</Button>
+            <Button onClick={handleEditBrand} disabled={editBrandLoading || !editBrandForm.brandName || !editBrandForm.brandCategory}>
+              {editBrandLoading ? "Submitting..." : "Submit for Approval"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Warehouse Dialog */}
+      <Dialog open={showEditWarehouse} onOpenChange={setShowEditWarehouse}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Edit Warehouse</DialogTitle>
+            <DialogDescription>Changes are submitted for Checker approval before they take effect.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-1.5">
+              <Label className="text-sm">Warehouse Name <span className="text-red-500">*</span></Label>
+              <Input value={editWarehouseForm.warehouseName} onChange={(e) => setEditWarehouseForm((p) => ({ ...p, warehouseName: e.target.value }))} />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <Label className="text-sm">State</Label>
+                <Input value={editWarehouseForm.warehouseState} onChange={(e) => setEditWarehouseForm((p) => ({ ...p, warehouseState: e.target.value }))} />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-sm">GSTIN <span className="text-red-500">*</span></Label>
+                <Input value={editWarehouseForm.warehouseGstin} onChange={(e) => setEditWarehouseForm((p) => ({ ...p, warehouseGstin: e.target.value }))} />
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-sm">Address</Label>
+              <Textarea value={editWarehouseForm.warehouseAddress} onChange={(e) => setEditWarehouseForm((p) => ({ ...p, warehouseAddress: e.target.value }))} className="min-h-[70px]" />
+            </div>
+            <label className="flex items-center gap-2 text-sm text-slate-600">
+              <input type="checkbox" checked={editWarehouseForm.isPrimary} onChange={(e) => setEditWarehouseForm((p) => ({ ...p, isPrimary: e.target.checked }))} />
+              Primary warehouse
+            </label>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowEditWarehouse(false)}>Cancel</Button>
+            <Button onClick={handleEditWarehouse} disabled={editWarehouseLoading || !editWarehouseForm.warehouseName || !editWarehouseForm.warehouseGstin}>
+              {editWarehouseLoading ? "Submitting..." : "Submit for Approval"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Company Dialog */}
+      <Dialog open={showEditCompany} onOpenChange={setShowEditCompany}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Edit Company Details</DialogTitle>
+            <DialogDescription>Update company &amp; tax identifiers. Saved to the draft; submitted to the Checker with the onboarding.</DialogDescription>
+          </DialogHeader>
+          <div className="grid grid-cols-2 gap-4 py-2">
+            <div className="space-y-1.5">
+              <Label className="text-sm">Company Legal Name <span className="text-red-500">*</span></Label>
+              <Input value={editCompanyForm.companyName} onChange={(e) => setEditCompanyForm((p) => ({ ...p, companyName: e.target.value }))} />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-sm">Trade Name</Label>
+              <Input value={editCompanyForm.tradeName} onChange={(e) => setEditCompanyForm((p) => ({ ...p, tradeName: e.target.value }))} />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-sm">Company Type</Label>
+              <Select value={editCompanyForm.companyType} onValueChange={(v) => setEditCompanyForm((p) => ({ ...p, companyType: v }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="PRIVATE_LIMITED">Private Limited</SelectItem>
+                  <SelectItem value="PUBLIC_LIMITED">Public Limited</SelectItem>
+                  <SelectItem value="LLP">LLP</SelectItem>
+                  <SelectItem value="PARTNERSHIP">Partnership</SelectItem>
+                  <SelectItem value="PROPRIETORSHIP">Proprietorship</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-sm">PAN</Label>
+              <Input value={editCompanyForm.pan} onChange={(e) => setEditCompanyForm((p) => ({ ...p, pan: e.target.value.toUpperCase() }))} />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-sm">Master GSTIN</Label>
+              <Input value={editCompanyForm.masterGstin} onChange={(e) => setEditCompanyForm((p) => ({ ...p, masterGstin: e.target.value.toUpperCase() }))} />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-sm">TAN</Label>
+              <Input value={editCompanyForm.tan} onChange={(e) => setEditCompanyForm((p) => ({ ...p, tan: e.target.value.toUpperCase() }))} />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-sm">CIN</Label>
+              <Input value={editCompanyForm.cin} onChange={(e) => setEditCompanyForm((p) => ({ ...p, cin: e.target.value.toUpperCase() }))} />
+            </div>
+            <div className="space-y-1.5 col-span-2">
+              <Label className="text-sm">Registered Address</Label>
+              <Textarea value={editCompanyForm.registeredAddress} onChange={(e) => setEditCompanyForm((p) => ({ ...p, registeredAddress: e.target.value }))} className="min-h-[70px]" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowEditCompany(false)}>Cancel</Button>
+            <Button onClick={handleEditCompany} disabled={editCompanyLoading || !editCompanyForm.companyName}>
+              {editCompanyLoading ? "Saving..." : "Save Changes"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Entity Reject Dialog (brand / warehouse) */}
+      <Dialog open={!!rejectEntity} onOpenChange={(o) => { if (!o) setRejectEntity(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Reject {rejectEntity?.kind === "brand" ? "Brand" : "Warehouse"}{rejectEntity?.isEdit ? " Edit" : ""}</DialogTitle>
+            <DialogDescription>
+              {rejectEntity?.isEdit
+                ? `Reject the proposed changes to ${rejectEntity?.name}. The entity reverts to its last approved state.`
+                : `Reject ${rejectEntity?.name}. A newly added entity will be marked rejected.`}
+            </DialogDescription>
+          </DialogHeader>
+          <Textarea
+            placeholder="Reason for rejection (visible to the Maker)..."
+            value={entityRejectNotes}
+            onChange={(e) => setEntityRejectNotes(e.target.value)}
+            className="min-h-[100px]"
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRejectEntity(null)}>Cancel</Button>
+            <Button variant="destructive" onClick={handleRejectEntity} disabled={entityActionLoading || !entityRejectNotes.trim()}>
+              {entityActionLoading ? "Rejecting..." : "Confirm Rejection"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

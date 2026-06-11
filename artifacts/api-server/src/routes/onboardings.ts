@@ -243,7 +243,7 @@ router.put("/onboardings/:id", authorize(["maker", "admin"]), async (req, res) =
     const body = req.body;
     const updates: Partial<typeof onboardingsTable.$inferInsert> = {};
     const fields = [
-      "companyName","companyType","pan","cin","llpCode","masterGstin","gstAvailable","tan","registeredAddress",
+      "companyName","tradeName","companyType","pan","cin","llpCode","masterGstin","gstAvailable","tan","registeredAddress",
       "entityTypeOther","registrationStatus","dateOfRegistration","taxpayerType","jurisdictionCode","natureOfBusiness",
       "brandName","brandLegalName","brandCategory","brandType","tcsApplicable",
       "bankAccount","bankIfsc","bankName","spocName","spocEmail","spocMobile",
@@ -267,7 +267,22 @@ router.put("/onboardings/:id", authorize(["maker", "admin"]), async (req, res) =
       // Required document set (BRD FIX 6): Company PAN/GST/TAN/DigitalSig + Brand SignedAgreement/CancelledCheque.
       // CIN and MSME are optional and do not count toward the required total.
       const docFields = ["panDocUrl","gstCertUrl","tanCopyUrl","digitalSignatureUrl","signedAgreementUrl","cancelledChequeUrl"] as const;
-      const uploaded = docFields.filter((f) => (merged as Record<string, unknown>)[f]).length;
+      // Brand-level docs (agreement / cancelled cheque) may instead be satisfied by a brand-tagged
+      // entry in extraDocuments (so they can be tagged to a specific brand/warehouse).
+      let extras: Array<{ label?: string; level?: string }> = [];
+      try {
+        extras = merged.extraDocuments ? (JSON.parse(merged.extraDocuments) as Array<{ label?: string; level?: string }>) : [];
+      } catch {
+        extras = [];
+      }
+      const taggedLabel = (label: string) => extras.some((d) => d.level === "brand" && d.label === label);
+      const fieldSatisfied = (f: (typeof docFields)[number]) => {
+        if ((merged as Record<string, unknown>)[f]) return true;
+        if (f === "signedAgreementUrl") return taggedLabel("Signed Agreement");
+        if (f === "cancelledChequeUrl") return taggedLabel("Cancelled Cheque");
+        return false;
+      };
+      const uploaded = docFields.filter(fieldSatisfied).length;
       updates.docsUploaded = uploaded;
       updates.docsRequired = docFields.length;
     }

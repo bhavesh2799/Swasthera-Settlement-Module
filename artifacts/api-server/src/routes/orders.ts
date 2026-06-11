@@ -137,7 +137,12 @@ router.post("/bags", async (req, res) => {
       .limit(1);
     if (primaryBrand) {
       const [primaryWarehouse] = await db.select().from(warehousesTable)
-        .where(and(eq(warehousesTable.brandId, primaryBrand.id), eq(warehousesTable.isPrimary, true)))
+        .where(and(
+          eq(warehousesTable.brandId, primaryBrand.id),
+          eq(warehousesTable.isPrimary, true),
+          eq(warehousesTable.status, "ACTIVE"),
+          eq(warehousesTable.isActive, true),
+        ))
         .limit(1);
       if (primaryWarehouse) {
         stateCode = body.stateCode ?? primaryWarehouse.stateCode ?? stateCode;

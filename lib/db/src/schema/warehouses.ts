@@ -13,6 +13,10 @@ export const warehousesTable = pgTable("warehouses", {
   warehouseAddress: text("warehouse_address").notNull(),
   isPrimary: boolean("is_primary").notNull().default(false),
   isActive: boolean("is_active").notNull().default(true),
+  // Maker-Checker approval status (ACTIVE | PENDING_APPROVAL | REJECTED | INACTIVE)
+  status: text("status").notNull().default("ACTIVE"),
+  // Maker-Checker: proposed edits awaiting checker approval (JSON of changed fields)
+  pendingChanges: text("pending_changes"),
   // TCS filing state code derived from GSTIN
   stateCode: text("state_code"),
   // Fynd sync ID

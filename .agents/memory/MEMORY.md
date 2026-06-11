@@ -1,3 +1,4 @@
-- [Cancellation & reversal rules](cancellation-reversal-rules.md) — order cancel → 3 cases → credit note + TDS/TCS reverse-vs-adjust gated on the 7th-of-next-month deposit deadline.
-- [Onboarding response mapping](onboarding-response-mapping.md) — shape notes for GET /onboardings/:id and related mappers.
-- [Ledger posting policy](ledger-posting-policy.md) — brand ledger debits only on SETTLED payouts; built from settlements+payouts only (no invoices).
+- [Cancellation & reversal rules](cancellation-reversal-rules.md) — how order cancellation maps to credit notes and TDS/TCS reversals in the transaction engine.
+- [Onboarding response field whitelist](onboarding-response-mapping.md) — new onboarding columns can persist in DB but return null in API responses unless added to the mapper whitelist.
+- [Brand ledger posting policy](ledger-posting-policy.md) — when settlement credits and payout debits post to the running brand ledger.
+- [API contract drift](api-contract-drift.md) — generated hooks send OpenAPI keys (e.g. `rejectionReason`) but hand-written servers may read another (`notes`); a field saving as null usually means a body-key mismatch.

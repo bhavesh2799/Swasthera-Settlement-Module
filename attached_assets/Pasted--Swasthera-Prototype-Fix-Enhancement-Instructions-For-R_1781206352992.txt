@@ -1,0 +1,215 @@
+# Swasthera Prototype — Fix & Enhancement Instructions
+**For Replit Agent — Apply all changes to the existing codebase**
+
+---
+
+## FIX 1 — Dashboard Scroll Problem
+
+**Problem:** The dashboard page scrolls excessively because the "Recent Activity" card and "Brand Settlement Status" card grow vertically with their content.
+
+**Fix — Brand Settlement Status card:**
+- Set a fixed height on this card
+- Add pagination inside the card (not page-level pagination)
+- Show a fixed number of rows per page (e.g. 5 or 10)
+- Add Previous / Next controls at the bottom of the card
+- Do not change the overall page layout or other cards
+
+**Fix — Recent Activity card:**
+- Set a fixed height on this card
+- Make the content area inside the card vertically scrollable (`overflow-y: auto`)
+- The card itself must not grow beyond its fixed height
+- Do not paginate this card — internal scroll is correct here
+
+**Result:** The dashboard must fit within the viewport height without requiring full-page scroll.
+
+---
+
+## FIX 2 — Notification Center + Email Alerts
+
+**Notification Center (in-app):**
+- Add a notification bell icon in the top navigation bar
+- Every time any field or record is created, updated, submitted, approved, or rejected anywhere in the platform, log a notification entry
+- Each notification must contain: actor name (who made the change), action description (what they did), timestamp, and a link to the relevant record
+- Display notifications in a dropdown panel when the bell is clicked
+- Show an unread count badge on the bell icon
+- Mark notifications as read when the panel is opened
+
+**Email Alerts:**
+- Every time a change is made anywhere in the platform (form update, submission, approval, rejection, document upload, status change), send an email to `bhavesh.kotwani@affordplan.com`
+- Email subject format: `[Swasthera] <Action> by <User Name> — <Record Name>`
+  - Example: `[Swasthera] Brand submitted for review by Salik Ansari — Brand XYZ`
+- Email body must include:
+  - User name who performed the action
+  - Exact action performed
+  - Record name and type (e.g. Company: Afford Prime, Brand: Procalix)
+  - Timestamp
+  - A direct link to the record in the platform
+- Use any available email service already in the project (nodemailer, SendGrid, etc.). If none exists, use nodemailer with SMTP config from environment variables
+
+---
+
+## FIX 3 — Onboarding Input Box Losing Focus
+
+**Problem:** When typing in any input field on the onboarding page, the input loses focus after the first character is typed. The user has to click the field again to continue typing.
+
+**Root cause (likely):** A parent component is re-rendering on every keystroke, which unmounts and remounts the input element. This is usually caused by defining a child component inside another component's render function, or by a state update in a parent causing a full re-render.
+
+**Fix:**
+- Audit every input field on the onboarding page
+- Ensure no component definitions exist inside another component's function body — move all sub-components to their own top-level definitions
+- Ensure form state is managed at the correct level so that a single field change does not trigger re-render of the entire form
+- After fixing, test by typing a full word into each input field without clicking — focus must not drop at any point
+- Do not change input field styling or layout as part of this fix
+
+---
+
+## FIX 4 — Onboarding Flow Redesign
+
+This is a significant structural change. Follow the exact sequence below.
+
+### Step 1 — GSTIN Entry (new first step)
+
+- The onboarding form must begin with a single input: **GSTIN**
+- Below the GSTIN input, show a button labelled **"Fetch Details via KYB"**
+- When clicked, call the KYB fetch (use seed/mock data for now)
+- On successful fetch, pre-fill the following fields automatically (show them as read-only prefilled values that the user can still edit if needed):
+  - Legal Name
+  - Trade Name
+  - Constitution of Business (this is the same as Entity Type — use one field, not two)
+  - PAN linked to GSTIN
+  - Registration Status
+  - Date of Registration
+  - Taxpayer Type
+  - Principal Place of Business
+  - State
+  - Jurisdiction Code
+  - Nature of Business
+  - GST Registration Certificate (display as a downloadable link or attachment preview)
+- After prefill, the user can review and edit any of these fields before proceeding
+
+### Step 2 — Skip GST option
+
+- Add a clearly visible option above the GSTIN input: **"GST not available — fill details manually"**
+- If the user selects this option:
+  - Hide the GSTIN input and KYB fetch button
+  - Show a manual entry form with these fields: Legal Name, Trade Name, Constitution of Business / Entity Type, PAN, TAN, and any other mandatory fields
+  - All the same mandatory field rules apply (see Step 3)
+
+### Step 3 — Mandatory Fields
+
+Mark every mandatory field with a red asterisk (*). The following are mandatory for all entity types:
+- PAN
+- TAN
+- Legal Name
+
+Additional mandatory fields by entity type:
+- Private Limited, Public Limited: CIN is mandatory
+- LLP: LLP Number is mandatory (label it "LLP Number", not CIN)
+- Partnership, Proprietorship: CIN and LLP Number are not required
+
+**Entity Type / Constitution of Business field:**
+- Show as a dropdown
+- Options: Private Limited, Public Limited, LLP, Partnership, Proprietorship, **Other**
+- If "Other" is selected, show a free-text field: "Please specify entity type"
+- Note: "Entity Type" and "Constitution of Business" are the same concept — use a single field with the label "Constitution of Business / Entity Type" or just "Entity Type" — do not show both as separate fields
+
+---
+
+## FIX 5 — Brand Onboarding Redesign
+
+Apply these changes to the Brand section of the onboarding flow.
+
+### "Same as Company" prefill
+
+- At the top of the Brand Details section, show a toggle or checkbox: **"Brand details same as company"**
+- If selected, prefill all brand fields with the company's existing details
+- The prefilled fields must remain editable — the user can override any value
+- If deselected, clear the prefilled values and show blank fields
+
+### Brand fields
+
+Show the following fields for brand entry:
+- Brand Name (required)
+- Legal Name — **remove this field entirely** (not required at brand level)
+- Brand Type — dropdown: Primary, Franchise, Authorized, Other
+- Brand Category — dropdown (use existing category list)
+- Agreement / Linkage with Company — a field or document upload to capture the formal relationship between the brand and the company (e.g. a franchise agreement or authorization letter). Label this: **"Brand–Company Agreement"**
+
+### Bank Account Details (critical change)
+
+Bank accounts are at **brand level**, not company level. Apply the following:
+
+- Under each brand, add a **Bank Accounts** section
+- A brand can have **multiple bank accounts** — support adding multiple entries
+- Each bank account entry has:
+  - IFSC Code — on entering a valid IFSC, auto-populate: Bank Name, Branch Name, Bank Address, City, State. These auto-populated fields should appear immediately on valid IFSC entry, not on form submit
+  - Account Number (manual entry)
+  - Account Type — dropdown: Current, Savings
+  - **Primary Account** — radio button or toggle to mark one account as primary. Only one account per brand can be primary at a time. Enforce this: selecting a new primary must automatically deselect the previous one
+- Add an **"Add Another Bank Account"** button to add more entries
+- Show all added accounts in a list within the brand section
+
+### Finance SPOC (critical change)
+
+- Add a **Finance SPOC** field at brand level (not company level)
+- A company with multiple brands will have a separate Finance SPOC per brand
+- Finance SPOC fields: Name, Email, Phone Number
+- Each brand must have exactly one Finance SPOC
+
+### Warehouses
+
+- No structural changes to warehouse fields
+- Warehouses remain under brand (no change needed here)
+
+### Commercial Model (under Brand)
+
+- The commercial configuration (commission, settlement terms) is at brand level
+- Within the commercial model, add two explicit fields:
+  - **TDS Rate (%)** — numeric input, mandatory
+  - **TCS Rate (%)** — numeric input, mandatory
+- These fields must be visible and editable within the commercial section of each brand
+
+---
+
+## FIX 6 — Document Upload Section
+
+Apply the following changes to the file upload section:
+
+### New mandatory document slots
+
+Add the following document upload slots if they do not already exist:
+- **MSME Certificate** — optional
+- **Signed Agreement** — mandatory
+- **TAN Copy** — mandatory
+
+### Document levels
+
+Organise all document uploads into three clearly labelled sections:
+1. **Company-level documents** — e.g. Certificate of Incorporation, PAN, TAN copy, GST certificate, MSME certificate, Signed Agreement
+2. **Brand-level documents** — e.g. Brand–Company agreement, authorization letter
+3. **Warehouse-level documents** — e.g. Warehouse GST certificate
+
+Each section must be visually separated with a section heading.
+
+### Add More Documents
+
+- At the bottom of each section (Company, Brand, Warehouse), add an **"+ Add Document"** button
+- Clicking it adds a new upload slot with two fields: a free-text label (what the document is) and a file upload input
+- There is no upper limit on additional documents
+
+---
+
+## FIX 7 — Maker Can Edit After Checker Rejection
+
+**Problem:** After a Checker rejects a submission, the Maker has no way to edit the form and re-submit.
+
+**Fix:**
+
+- When a Checker rejects a submission, the onboarding record status must change to **"Rejected — Awaiting Maker Edit"**
+- The Maker must be able to see this status on their dashboard
+- The Maker must be able to open the rejected submission and **edit all fields** — the form must be fully editable, not read-only
+- The Checker's rejection reason/comment must be visible to the Maker inside the form, shown as a highlighted notice at the top of the relevant section
+- After making edits, the Maker must see a **"Re-submit for Review"** button (not the original "Submit" button — relabel it clearly)
+- On re-submit, the status changes back to **"Pending Review"** and the Checker sees it in their queue again
+- This cycle (reject → edit → re-submit → review) must be able to repeat unlimited times
+- Each re-submission must increment a version counter on the record (v1, v2, v3…) so the Checker can see which version they are reviewing

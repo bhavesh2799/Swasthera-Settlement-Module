@@ -78,16 +78,59 @@ interface KybCheck {
   detail: string;
 }
 
-const DOC_FIELDS = [
-  { key: "panDocUrl", label: "PAN Copy", required: true, hint: "Scanned PAN card" },
-  { key: "gstCertUrl", label: "GST Certificate", required: true, hint: "GST registration certificate" },
-  { key: "cancelledChequeUrl", label: "Cancelled Cheque", required: true, hint: "Bank account verification" },
-  { key: "signedAgreementUrl", label: "Signed Agreement", required: true, hint: "Signed commercial agreement with Swasthera" },
-  { key: "digitalSignatureUrl", label: "Digital Signature", required: true, hint: "Authorised signatory digital signature" },
-  { key: "cinDocUrl", label: "CIN Certificate", required: false, hint: "Required for Private/Public Ltd" },
-] as const;
+type DocKey =
+  | "panDocUrl"
+  | "gstCertUrl"
+  | "cinDocUrl"
+  | "tanCopyUrl"
+  | "msmeCertUrl"
+  | "digitalSignatureUrl"
+  | "signedAgreementUrl"
+  | "cancelledChequeUrl";
 
-type DocKey = typeof DOC_FIELDS[number]["key"];
+interface DocDef { key: DocKey; label: string; required: boolean; hint: string; }
+interface DocSection { level: string; title: string; docs: DocDef[]; }
+
+const DOC_SECTIONS: DocSection[] = [
+  {
+    level: "company",
+    title: "Company Documents",
+    docs: [
+      { key: "panDocUrl", label: "PAN Copy", required: true, hint: "Scanned PAN card" },
+      { key: "gstCertUrl", label: "GST Certificate", required: true, hint: "GST registration certificate" },
+      { key: "cinDocUrl", label: "CIN Certificate", required: false, hint: "Required for Private/Public Ltd" },
+      { key: "tanCopyUrl", label: "TAN Copy", required: true, hint: "TAN allotment letter — required for TDS credit" },
+      { key: "msmeCertUrl", label: "MSME Certificate", required: false, hint: "Udyam registration (optional)" },
+      { key: "digitalSignatureUrl", label: "Digital Signature", required: true, hint: "Authorised signatory digital signature" },
+    ],
+  },
+  {
+    level: "brand",
+    title: "Brand Documents",
+    docs: [
+      { key: "signedAgreementUrl", label: "Signed Agreement", required: true, hint: "Signed commercial agreement with Swasthera" },
+      { key: "cancelledChequeUrl", label: "Cancelled Cheque", required: true, hint: "Bank account verification" },
+    ],
+  },
+  {
+    level: "warehouse",
+    title: "Warehouse Documents",
+    docs: [],
+  },
+];
+
+const DOC_FIELDS = DOC_SECTIONS.flatMap((s) => s.docs);
+
+function statusLabel(status: string): { text: string; cls: string } {
+  switch (status) {
+    case "SUBMITTED": return { text: "Pending Review", cls: "bg-amber-100 text-amber-800 border-transparent" };
+    case "REJECTED": return { text: "Rejected — Awaiting Maker Edit", cls: "bg-red-100 text-red-800 border-transparent" };
+    case "APPROVED": return { text: "Approved", cls: "bg-green-100 text-green-800 border-transparent" };
+    case "ACTIVE": return { text: "Active", cls: "bg-green-600 text-white border-transparent" };
+    case "DRAFT": return { text: "Draft", cls: "bg-slate-100 text-slate-700 border-transparent" };
+    default: return { text: status, cls: "bg-slate-100 text-slate-700 border-transparent" };
+  }
+}
 
 function kybBadge(status: string) {
   if (status === "PASSED") return <Badge className="bg-green-100 text-green-800 border-transparent hover:bg-green-100"><ShieldCheck className="mr-1 h-3 w-3" />KYB Passed</Badge>;
@@ -149,6 +192,8 @@ export function OnboardingDetail() {
   });
   const [updatingDoc, setUpdatingDoc] = useState<DocKey | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const extraFileInputRef = useRef<HTMLInputElement>(null);
+  const [addDocCtx, setAddDocCtx] = useState<{ label: string; level: string } | null>(null);
 
   // Brands & Warehouses
   const { data: brands, refetch: refetchBrands } = useQuery<BrandItem[]>({
@@ -294,6 +339,49 @@ export function OnboardingDetail() {
     setUpdatingDoc(null);
   };
 
+  const handleAddExtraDoc = (level: string) => {
+    const label = window.prompt("Document name (e.g. Lease Agreement, Utility Bill)?");
+    if (!label || !label.trim()) return;
+    setAddDocCtx({ label: label.trim(), level });
+    extraFileInputRef.current?.click();
+  };
+
+  const handleExtraFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files?.[0] || !addDocCtx) return;
+    const filename = e.target.files[0].name;
+    const url = `https://docs.swasthera.in/extra/${id}/${encodeURIComponent(filename)}`;
+    const existing = ((onboarding as unknown as Record<string, unknown>).extraDocuments as Array<{ label: string; url: string; level: string }>) ?? [];
+    const next = [...existing, { label: addDocCtx.label, url, level: addDocCtx.level }];
+    try {
+      await fetch(`/api/onboardings/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ extraDocuments: next }),
+      });
+      toast({ title: `${addDocCtx.label} added` });
+      invalidate();
+    } catch {
+      toast({ title: "Upload failed", variant: "destructive" });
+    }
+    e.target.value = "";
+    setAddDocCtx(null);
+  };
+
+  const handleRemoveExtraDoc = async (idx: number) => {
+    const existing = ((onboarding as unknown as Record<string, unknown>).extraDocuments as Array<{ label: string; url: string; level: string }>) ?? [];
+    const next = existing.filter((_, i) => i !== idx);
+    try {
+      await fetch(`/api/onboardings/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ extraDocuments: next }),
+      });
+      invalidate();
+    } catch {
+      toast({ title: "Could not remove document", variant: "destructive" });
+    }
+  };
+
   const handleAddCommissionVersion = async () => {
     if (!newCommission.effectiveFromDate) return;
     const { commissionType, slabs } = newCommission;
@@ -406,6 +494,7 @@ export function OnboardingDetail() {
   return (
     <div className="flex-1 overflow-auto bg-slate-50/50 p-6 md:p-8 space-y-6">
       <input ref={fileInputRef} type="file" className="hidden" onChange={handleFileSelected} />
+      <input ref={extraFileInputRef} type="file" className="hidden" onChange={handleExtraFileSelected} />
 
       {/* Header */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
@@ -415,8 +504,9 @@ export function OnboardingDetail() {
           </Button>
           <div className="flex flex-wrap items-center gap-2">
             <h1 className="text-3xl font-bold tracking-tight text-slate-900">{onboarding.brandName}</h1>
-            <Badge variant={onboarding.status === "ACTIVE" || onboarding.status === "APPROVED" ? "default" : "secondary"}>{onboarding.status}</Badge>
+            <Badge className={statusLabel(onboarding.status ?? "DRAFT").cls}>{statusLabel(onboarding.status ?? "DRAFT").text}</Badge>
             <Badge variant="outline" className="font-mono text-xs">{onboarding.ref}</Badge>
+            <Badge variant="outline" className="text-xs">v{(onboarding as unknown as Record<string, unknown>).version as number ?? 1}</Badge>
             {kybBadge(onboarding.kybStatus ?? "NOT_STARTED")}
           </div>
           <div className="flex flex-wrap items-center gap-3 mt-1">
@@ -451,6 +541,12 @@ export function OnboardingDetail() {
                 <CheckCircle className="mr-2 h-4 w-4" /> Approve
               </Button>
             </>
+          )}
+          {isMaker && onboarding.status === "REJECTED" && (
+            <Button onClick={handleSubmit} disabled={submitMutation.isPending || !kybPassed} className="bg-amber-600 hover:bg-amber-700">
+              <Send className="mr-2 h-4 w-4" />
+              {kybPassed ? "Re-submit for Review" : "KYB Required First"}
+            </Button>
           )}
           {isMaker && onboarding.status === "SUBMITTED" && (
             <Badge variant="outline" className="px-3 py-1.5 text-amber-700 border-amber-200 bg-amber-50">
@@ -625,49 +721,88 @@ export function OnboardingDetail() {
         </Card>
       </div>
 
-      {/* Document Checklist — BRD §3.1 */}
+      {/* Document Checklist — BRD §3.1 — grouped Company / Brand / Warehouse */}
       <Card className="shadow-sm border-slate-200/60 bg-white">
         <CardHeader className="border-b border-slate-100 bg-slate-50/50 py-4 flex flex-row items-center justify-between">
           <CardTitle className="text-base font-semibold flex items-center gap-2">
             <FileText className="h-4 w-4" />
             Document Checklist
-            <span className="text-xs font-normal text-slate-500 ml-1">({onboarding.docsUploaded ?? 0} of {onboarding.docsRequired ?? 6} uploaded)</span>
+            <span className="text-xs font-normal text-slate-500 ml-1">({onboarding.docsUploaded ?? 0} of {onboarding.docsRequired ?? 6} required uploaded)</span>
           </CardTitle>
           {!kybPassed && (
             <Badge variant="outline" className="text-amber-600 border-amber-200 bg-amber-50 text-xs">KYB must pass before uploads</Badge>
           )}
         </CardHeader>
         <CardContent className="p-0">
-          <div className="divide-y divide-slate-100">
-            {DOC_FIELDS.map(({ key, label, required, hint }) => {
-              const uploaded = !!(onboarding as unknown as Record<string, unknown>)[key];
-              const url = (onboarding as unknown as Record<string, unknown>)[key] as string | undefined;
-              return (
-                <div key={key} className="flex items-center justify-between px-6 py-3.5 hover:bg-slate-50/50">
-                  <div className="flex items-center gap-3">
-                    {uploaded
-                      ? <CheckCircle className="h-4 w-4 text-green-500 shrink-0" />
-                      : <div className="h-4 w-4 rounded-full border-2 border-slate-300 shrink-0" />
-                    }
-                    <div>
-                      <p className="text-sm font-medium text-slate-900">{label} {required && <span className="text-red-500">*</span>}</p>
-                      <p className="text-xs text-slate-500">{hint}</p>
-                      {uploaded && url && (
-                        <a href={url} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:underline flex items-center gap-1 mt-0.5">
-                          {url.split("/").pop()} <ExternalLink className="h-3 w-3" />
-                        </a>
-                      )}
-                    </div>
-                  </div>
-                  {isMaker && kybPassed && (onboarding.status === "DRAFT" || onboarding.status === "REJECTED") && (
-                    <Button size="sm" variant={uploaded ? "outline" : "default"} onClick={() => handleDocUpload(key)} className="text-xs">
-                      <Upload className="mr-1.5 h-3.5 w-3.5" />{uploaded ? "Replace" : "Upload"}
+          {DOC_SECTIONS.map((section) => {
+            const canEdit = isMaker && kybPassed && (onboarding.status === "DRAFT" || onboarding.status === "REJECTED");
+            const extras = (((onboarding as unknown as Record<string, unknown>).extraDocuments as Array<{ label: string; url: string; level: string }>) ?? [])
+              .map((d, i) => ({ ...d, _idx: i }))
+              .filter((d) => d.level === section.level);
+            return (
+              <div key={section.level} className="border-b border-slate-100 last:border-b-0">
+                <div className="flex items-center justify-between px-6 py-2.5 bg-slate-50/40">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{section.title}</p>
+                  {canEdit && (
+                    <Button size="sm" variant="ghost" className="h-7 text-xs text-slate-600" onClick={() => handleAddExtraDoc(section.level)}>
+                      <Plus className="mr-1 h-3.5 w-3.5" /> Add Document
                     </Button>
                   )}
                 </div>
-              );
-            })}
-          </div>
+                <div className="divide-y divide-slate-100">
+                  {section.docs.map(({ key, label, required, hint }) => {
+                    const uploaded = !!(onboarding as unknown as Record<string, unknown>)[key];
+                    const url = (onboarding as unknown as Record<string, unknown>)[key] as string | undefined;
+                    return (
+                      <div key={key} className="flex items-center justify-between px-6 py-3.5 hover:bg-slate-50/50">
+                        <div className="flex items-center gap-3">
+                          {uploaded
+                            ? <CheckCircle className="h-4 w-4 text-green-500 shrink-0" />
+                            : <div className="h-4 w-4 rounded-full border-2 border-slate-300 shrink-0" />
+                          }
+                          <div>
+                            <p className="text-sm font-medium text-slate-900">{label} {required && <span className="text-red-500">*</span>}</p>
+                            <p className="text-xs text-slate-500">{hint}</p>
+                            {uploaded && url && (
+                              <a href={url} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:underline flex items-center gap-1 mt-0.5">
+                                {url.split("/").pop()} <ExternalLink className="h-3 w-3" />
+                              </a>
+                            )}
+                          </div>
+                        </div>
+                        {canEdit && (
+                          <Button size="sm" variant={uploaded ? "outline" : "default"} onClick={() => handleDocUpload(key)} className="text-xs">
+                            <Upload className="mr-1.5 h-3.5 w-3.5" />{uploaded ? "Replace" : "Upload"}
+                          </Button>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {extras.map((d) => (
+                    <div key={d._idx} className="flex items-center justify-between px-6 py-3.5 hover:bg-slate-50/50">
+                      <div className="flex items-center gap-3">
+                        <CheckCircle className="h-4 w-4 text-green-500 shrink-0" />
+                        <div>
+                          <p className="text-sm font-medium text-slate-900">{d.label} <span className="text-xs font-normal text-slate-400">(additional)</span></p>
+                          <a href={d.url} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:underline flex items-center gap-1 mt-0.5">
+                            {d.url.split("/").pop()} <ExternalLink className="h-3 w-3" />
+                          </a>
+                        </div>
+                      </div>
+                      {canEdit && (
+                        <Button size="sm" variant="ghost" className="text-xs text-red-400 hover:text-red-600" onClick={() => handleRemoveExtraDoc(d._idx)}>
+                          <XCircle className="mr-1.5 h-3.5 w-3.5" /> Remove
+                        </Button>
+                      )}
+                    </div>
+                  ))}
+                  {section.docs.length === 0 && extras.length === 0 && (
+                    <div className="px-6 py-4 text-xs text-slate-400">No documents added{canEdit ? " — use “Add Document” above" : ""}.</div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
         </CardContent>
       </Card>
 

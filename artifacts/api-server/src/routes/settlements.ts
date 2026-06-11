@@ -5,6 +5,7 @@ import { eq, and, inArray, desc } from "drizzle-orm";
 import { authorize } from "../middlewares/rbac";
 import { writeAudit } from "../services/audit";
 import { calculateSettlement } from "../services/settlementCalculator";
+import { notify } from "../services/notify";
 
 const router = Router();
 
@@ -237,6 +238,14 @@ router.post("/settlements/:id/approve", authorize(["checker", "admin"]), async (
     });
 
     await db.insert(activityTable).values({ user: checker, action: `Approved settlement #${row.id} for ${row.brandName} — payout queued for Maker initiation`, entityType: "settlement", entityRef: String(row.id), level: "success" });
+    await notify(req, {
+      action: "Approved settlement — payout queued",
+      entityType: "settlement",
+      entityId: row.id,
+      recordName: `#${row.id} — ${row.brandName}`,
+      link: `/settlements/${row.id}`,
+      level: "success",
+    });
 
     res.json(mapSettlement(row));
   } catch (err) {

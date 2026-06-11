@@ -114,13 +114,21 @@ router.post("/utils/gst-lookup", (req, res) => {
   const stateName =
     Object.entries(STATE_CODE_MAP).find(([, c]) => c === stateCode)?.[0] ?? "maharashtra";
   const titleState = stateName.replace(/\b\w/g, (m) => m.toUpperCase());
+  const pan = code.slice(2, 12);
   return res.json({
     gstn: code,
+    pan,
     status: "Active",
     state: titleState,
     stateCode,
+    legalName: `${code.slice(2, 7)} Enterprises Private Limited`,
     tradeName: `${code.slice(2, 7)} Enterprises`,
     registeredAddress: `Unit 4, Commercial Complex, ${titleState}`,
+    registrationStatus: "Active",
+    dateOfRegistration: "2019-07-01",
+    taxpayerType: "Regular",
+    jurisdictionCode: `${stateCode}-WARD-04`,
+    natureOfBusiness: "Wholesale / Retail Trade",
     simulated: true,
   });
 });

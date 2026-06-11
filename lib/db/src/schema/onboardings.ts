@@ -22,6 +22,13 @@ export const onboardingsTable = pgTable("onboardings", {
   tan: text("tan"),
   registeredAddress: text("registered_address"),
   stateCode: text("state_code"),
+  // GSTIN-fetch / KYB prefill fields (BRD FIX 4)
+  entityTypeOther: text("entity_type_other"),
+  registrationStatus: text("registration_status"),
+  dateOfRegistration: text("date_of_registration"),
+  taxpayerType: text("taxpayer_type"),
+  jurisdictionCode: text("jurisdiction_code"),
+  natureOfBusiness: text("nature_of_business"),
   // Brand details
   brandName: text("brand_name").notNull(),
   brandLegalName: text("brand_legal_name"),
@@ -54,8 +61,14 @@ export const onboardingsTable = pgTable("onboardings", {
   cancelledChequeUrl: text("cancelled_cheque_url"),
   signedAgreementUrl: text("signed_agreement_url"),
   digitalSignatureUrl: text("digital_signature_url"),
+  msmeCertUrl: text("msme_cert_url"),
+  tanCopyUrl: text("tan_copy_url"),
+  // Extra ad-hoc documents: [{ label, url, level: "company"|"brand"|"warehouse" }]
+  extraDocuments: text("extra_documents"),
   docsUploaded: integer("docs_uploaded").notNull().default(0),
   docsRequired: integer("docs_required").notNull().default(6),
+  // Maker-Checker resubmission version (BRD FIX 7)
+  version: integer("version").notNull().default(1),
   // KYB tracking
   kybVerifiedAt: timestamp("kyb_verified_at"),
   kybAttempts: integer("kyb_attempts").notNull().default(0),

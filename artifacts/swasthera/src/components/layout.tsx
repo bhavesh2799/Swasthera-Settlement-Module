@@ -11,6 +11,7 @@ import {
   Database,
 } from "lucide-react";
 import { useRole } from "@/contexts/RoleContext";
+import { NotificationBell } from "@/components/NotificationBell";
 
 interface SidebarItemProps {
   icon: React.ElementType;
@@ -147,7 +148,10 @@ export function Layout({ children }: { children: React.ReactNode }) {
         </div>
       </aside>
 
-      <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
+      <main className="flex-1 flex flex-col min-w-0 overflow-hidden relative">
+        <div className="absolute top-4 right-6 z-40">
+          <NotificationBell />
+        </div>
         {children}
       </main>
     </div>

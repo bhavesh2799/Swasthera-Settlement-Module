@@ -22,6 +22,12 @@ export const brandsTable = pgTable("brands", {
   tcsRate: numeric("tcs_rate", { precision: 5, scale: 2 }).notNull().default("1"),
   tdsRate: numeric("tds_rate", { precision: 5, scale: 2 }).notNull().default("1"),
   tcsApplicable: boolean("tcs_applicable").notNull().default(true),
+  // Finance SPOC (brand level — BRD FIX 5)
+  spocName: text("spoc_name"),
+  spocEmail: text("spoc_email"),
+  spocMobile: text("spoc_mobile"),
+  // Brand–Company agreement / linkage (BRD FIX 5)
+  brandCompanyAgreementUrl: text("brand_company_agreement_url"),
   // Fynd sync IDs
   fyndBrandId: text("fynd_brand_id"),
   createdAt: timestamp("created_at").notNull().defaultNow(),

@@ -9,3 +9,4 @@ export * from "./warehouses";
 export * from "./bank_accounts";
 export * from "./audit_log";
 export * from "./invoices";
+export * from "./notifications";

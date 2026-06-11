@@ -3,6 +3,7 @@ import { db } from "@workspace/db";
 import { payoutsTable, activityTable, settlementsTable } from "@workspace/db";
 import { eq, sql } from "drizzle-orm";
 import { authorize } from "../middlewares/rbac";
+import { notify } from "../services/notify";
 
 const router = Router();
 
@@ -71,6 +72,14 @@ router.post("/payouts/:id/initiate", authorize(["maker", "admin"]), async (req, 
       entityRef: String(row.id),
       level: "info",
     });
+    await notify(req, {
+      action: "Payout initiated — awaiting Checker approval",
+      entityType: "payout",
+      entityId: row.id,
+      recordName: `${row.brandName} — ${row.cycle}`,
+      link: `/payouts`,
+      level: "info",
+    });
 
     res.json(mapPayout(row));
   } catch (err) {
@@ -114,6 +123,14 @@ router.post("/payouts/:id/approve", authorize(["checker", "admin"]), async (req,
       action: `Payout approved for ${row.brandName} — UTR ${utr} auto-generated · ₹${parseFloat(row.amount).toLocaleString("en-IN")} settled`,
       entityType: "payout",
       entityRef: String(row.id),
+      level: "success",
+    });
+    await notify(req, {
+      action: `Payout approved — UTR ${utr}`,
+      entityType: "payout",
+      entityId: row.id,
+      recordName: `${row.brandName} — ${row.cycle}`,
+      link: `/payouts`,
       level: "success",
     });
 

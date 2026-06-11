@@ -68,8 +68,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-screen bg-background flex text-foreground">
-      <aside className="w-64 border-r bg-card flex flex-col hidden md:flex">
-        <div className="h-14 border-b flex items-center px-6">
+      <aside className="w-64 border-r bg-card flex flex-col hidden md:flex sticky top-0 h-screen">
+        <div className="h-14 border-b flex items-center px-6 shrink-0">
           <div className="font-bold text-lg tracking-tight flex items-center gap-2">
             <div className="h-6 w-6 rounded bg-primary flex items-center justify-center text-primary-foreground text-xs">S</div>
             Swasthera
@@ -92,7 +92,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
         </nav>
 
         {/* Role switcher */}
-        <div className="p-4 border-t border-border/50 space-y-3">
+        <div className="p-4 border-t border-border/50 space-y-3 shrink-0">
+
           <div className="space-y-1.5">
             <div className="flex items-center gap-1.5 text-xs font-medium text-foreground">
               {isBackend ? <Database className="h-3.5 w-3.5 text-amber-600" /> : <Users2 className="h-3.5 w-3.5" />}

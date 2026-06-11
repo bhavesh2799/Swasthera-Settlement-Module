@@ -1,0 +1,176 @@
+Swasthera — Settlement Module Enhancement Requirements
+
+1. Customer Invoice Capture & Repository
+Every order synced to the platform must have its corresponding customer invoice captured and stored. The finance team needs a single place to find, filter, and download all customer invoices.
+Invoice Format — each customer invoice must contain:
+
+Invoice number (unique, sequential per brand)
+Invoice date
+Order ID and Bag ID
+Customer name and billing address
+Brand name and brand GSTIN
+Warehouse name, warehouse GSTIN, and warehouse state
+Line items: product name, HSN code, quantity, unit price, subtotal
+Taxable value
+GST breakup: CGST, SGST (intra-state) or IGST (inter-state) with applicable rates and amounts
+TCS amount collected (if applicable)
+Total invoice value
+Payment method
+Platform name and platform GSTIN
+
+Invoice Repository — filters the finance team must be able to apply:
+
+Brand (single select or multi-select)
+Date range (invoice date)
+Settlement period (link invoice to whichever settlement cycle it falls under)
+Order status (delivered, cancelled, returned)
+Warehouse / jurisdiction
+Invoice type (invoice vs credit note)
+
+Download options:
+
+Download individual invoice as PDF
+Bulk download filtered invoices as a ZIP of PDFs
+Export filtered invoice list as CSV (metadata only, not PDFs)
+
+
+2. Brand Settlement Invoice — PDF Format
+For every settlement cycle, a settlement invoice is generated per brand (or per bank account if jurisdiction-based splitting applies — see Section 3). This invoice is downloadable as PDF.
+Settlement Invoice Format — must contain:
+
+Settlement invoice number (unique, sequential per brand)
+Settlement period (from date — to date)
+Brand name, brand legal name, brand GSTIN
+Platform legal name and GSTIN
+Bank account details being credited (account number last 4 digits, bank name, IFSC)
+Settlement line items table — each row must show:
+
+Order ID
+Invoice number
+Order date
+GMV (gross order value)
+Commission amount and commission rate applied
+MDR amount and MDR rate applied
+TDS deducted
+TCS collected
+Net payable for that order
+
+
+For credit notes / cancellations: show as negative line items referencing the original order ID
+For adjustment carry-forwards: show as a separate line item labelled "Adjustment from previous cycle — [cycle period]"
+Summary section at the bottom:
+
+Total GMV
+Total Commission
+Total MDR
+Total TDS deducted
+Total TCS collected
+Total adjustments
+Net Settlement Amount (prominent, large)
+
+
+TAN of the brand (for TDS reference)
+Settlement status and payout date (if paid)
+Authorised signatory block (platform side)
+
+
+3. Bulk Settlement with Jurisdiction-Based Bank Account Routing
+Bulk settlement:
+
+The finance team must be able to trigger settlement for multiple brands simultaneously from a single screen
+They select which brands to include, confirm the settlement period, and initiate bulk processing
+Each brand's settlement is calculated independently and routed to its own bank account(s) per the logic below
+Bulk settlement must show a summary before confirmation: brand name, settlement amount, destination bank account, for each brand in the batch
+
+Jurisdiction-based bank account routing:
+First, a configuration step must exist in brand onboarding and in the "Edit Brand" flow:
+
+Under each brand's bank accounts section, allow the user to map a bank account to one or more states/jurisdictions
+Label this configuration: "Jurisdiction–Bank Account Mapping"
+The user selects a state (or multiple states) and assigns it to a specific bank account from the brand's existing bank account list
+Multiple states can map to the same bank account
+A state can only map to one bank account per brand (no ambiguity)
+
+Settlement routing logic:
+
+For each order in the settlement cycle, determine the order's jurisdiction (state) from the warehouse GSTIN or shipping address
+Check if the brand has a jurisdiction–bank account mapping for that state
+
+If no mapping exists for that state: route the order's settlement to the brand's primary bank account
+If a mapping exists: route to the mapped bank account
+
+
+Group all orders by their destination bank account
+Each bank account group becomes a separate settlement line item and a separate settlement invoice
+If a brand has orders going to two different bank accounts in the same settlement cycle, the final settlement screen and the payout records must show two separate entries for that brand, each with its own amount and destination account
+
+
+4. MDR Rate in Commercial Configuration
+MDR (Merchant Discount Rate) is the payment gateway charge deducted at the time of settlement.
+Where to add it:
+
+In the commercial configuration section, both during brand onboarding and in the edit brand flow
+It is a brand-level field — not company-level, not warehouse-level
+
+Field details:
+
+Label: MDR Rate (%)
+Input: numeric, decimal allowed (e.g. 1.75)
+Mandatory: No — but if left blank, MDR deduction must be treated as 0 and not cause any calculation errors
+MDR is applied on the GMV of each order and deducted at settlement time
+MDR must appear as a separate line item in the settlement invoice (see Section 2)
+MDR must be factored into the net settlement calculation: Net = GMV − Commission − TDS + TCS − MDR
+
+
+5. Order Reversal — Four Scenarios
+As a backend/finance user, order reversals must be triggerable from the platform. The system must handle four distinct scenarios:
+Scenario 1 — Simple cancellation (order cancelled before delivery):
+
+Void the original invoice
+Generate a credit note referencing the original invoice number
+Apply TDS/TCS reversal per the rules in Section 6
+Update order status to Cancelled
+No return journey is initiated
+
+Scenario 2 — Cancellation after delivery, within return window:
+
+Initiate a return journey
+Wait for brand acceptance of the return
+On brand acceptance: generate a credit note referencing the original invoice
+Apply TDS/TCS reversal per the rules in Section 6
+Update order status to Returned
+If brand rejects the return: no credit note, no reversal, order remains Delivered
+
+Scenario 3 — Cancellation after return window has expired:
+
+Do not generate a credit note
+Do not reverse TDS or TCS
+Log the cancellation request as an audit entry with reason
+Update order status to Cancellation Rejected — Window Expired
+System must display a clear message to the user explaining why no reversal is being processed
+
+Scenario 4 — Negative value scenario (credit note causes negative net settlement):
+
+Generate the credit note normally
+Calculate the revised net settlement for the cycle
+If the revised net is negative: do NOT initiate a bank transfer for the negative amount
+Instead, log the negative amount as an adjustment entry to be carried forward to the next settlement cycle
+The next cycle's settlement calculation must automatically deduct this carried-forward adjustment before computing the payout
+Label this line item in the settlement invoice: "Adjustment carried forward from [original cycle period]"
+
+
+6. TDS/TCS Reversal Rules
+These rules apply to all four reversal scenarios above. The system must enforce them automatically — the user must not be able to override them.
+Rule 1 — Same calendar month:
+If the cancellation or return is processed in the same calendar month as the original transaction date, a full TDS and TCS reversal is allowed. Reverse the exact amounts from the original invoice.
+Rule 2 — After 7th of the following month:
+If the cancellation or return is processed after the 7th day of the month following the original transaction's month, TDS and TCS reversal is NOT allowed. Do not reverse. Instead, log the would-be reversal amount as an adjustment entry in the current settlement cycle.
+Rule 3 — Between 1st and 7th of the following month:
+Reversal is still allowed during this window. Apply the same logic as Rule 1.
+Deadline flag:
+
+At all times, for any order that is within its return window, the system must calculate and display the TDS/TCS reversal deadline date (= 7th of the month following the order date)
+If today's date is past this deadline, show a visible warning on the order record: "TDS/TCS reversal no longer possible — deadline was [date]"
+This flag must also appear on the reversal confirmation screen so the finance user is aware before they proceed
+The reversal deadline and its status must also be visible in the compliance TDS/TCS report
+

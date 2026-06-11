@@ -69,6 +69,9 @@ export const onboardingsTable = pgTable("onboardings", {
   docsRequired: integer("docs_required").notNull().default(6),
   // Maker-Checker resubmission version (BRD FIX 7)
   version: integer("version").notNull().default(1),
+  // Post-approval change governance: proposed company/document field edits
+  // awaiting checker approval (JSON of changed fields). Does NOT touch status.
+  pendingChanges: text("pending_changes"),
   // KYB tracking
   kybVerifiedAt: timestamp("kyb_verified_at"),
   kybAttempts: integer("kyb_attempts").notNull().default(0),

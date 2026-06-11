@@ -14,6 +14,10 @@ export const bankAccountsTable = pgTable("bank_accounts", {
   branchName: text("branch_name"),
   accountType: accountTypeEnum("account_type").notNull().default("current"),
   isPrimary: boolean("is_primary").notNull().default(false),
+  // Maker-Checker governance: ACTIVE | PENDING_APPROVAL | REJECTED
+  status: text("status").notNull().default("ACTIVE"),
+  // Proposed edits awaiting checker approval (JSON of changed fields)
+  pendingChanges: text("pending_changes"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });

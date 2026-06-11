@@ -1,24 +1,81 @@
 import { Router } from "express";
-import { db, bankAccountsTable, brandsTable } from "@workspace/db";
-import { eq, and } from "drizzle-orm";
+import { db, bankAccountsTable, brandsTable, activityTable } from "@workspace/db";
+import { eq, and, ne } from "drizzle-orm";
 import { writeAudit } from "../services/audit";
+import { authorize } from "../middlewares/rbac";
 
 const router = Router();
+
+async function logActivity(
+  user: string,
+  action: string,
+  entityRef: string,
+  level: "info" | "success" | "warning" = "info",
+) {
+  await db.insert(activityTable).values({ user, action, entityType: "bank", entityRef, level });
+}
+
+function parsePending(raw: string | null): Record<string, unknown> | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function mapBankAccount(b: typeof bankAccountsTable.$inferSelect) {
+  return {
+    id: b.id,
+    brandId: b.brandId,
+    onboardingId: b.onboardingId,
+    accountNumber: b.accountNumber,
+    ifsc: b.ifsc,
+    bankName: b.bankName,
+    branchName: b.branchName,
+    accountType: b.accountType,
+    isPrimary: b.isPrimary,
+    status: b.status,
+    pendingChanges: parsePending(b.pendingChanges),
+    createdAt: b.createdAt.toISOString(),
+    updatedAt: b.updatedAt.toISOString(),
+  };
+}
+
+const BANK_EDITABLE = [
+  "accountNumber", "ifsc", "bankName", "branchName", "accountType", "brandId", "isPrimary",
+] as const;
+
+function maskAcct(n: string) {
+  return n.length > 4 ? `••••${n.slice(-4)}` : n;
+}
 
 // List bank accounts for a brand
 router.get("/brands/:brandId/bank-accounts", async (req, res) => {
   try {
     const brandId = parseInt(req.params.brandId);
     const rows = await db.select().from(bankAccountsTable).where(eq(bankAccountsTable.brandId, brandId));
-    return res.json({ bankAccounts: rows });
+    return res.json({ bankAccounts: rows.map(mapBankAccount) });
   } catch (err) {
     req.log.error({ err }, "list bank accounts failed");
     return res.status(500).json({ error: "Internal server error" });
   }
 });
 
-// Add a bank account to a brand
-router.post("/onboarding/bank-account", async (req, res) => {
+// List all bank accounts for an onboarding (across all its brands)
+router.get("/onboardings/:id/bank-accounts", async (req, res) => {
+  try {
+    const onboardingId = parseInt(req.params.id);
+    const rows = await db.select().from(bankAccountsTable).where(eq(bankAccountsTable.onboardingId, onboardingId));
+    return res.json({ bankAccounts: rows.map(mapBankAccount) });
+  } catch (err) {
+    req.log.error({ err }, "list onboarding bank accounts failed");
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Add a bank account to a brand — created PENDING_APPROVAL, awaits Checker
+router.post("/onboarding/bank-account", authorize(["maker", "admin"]), async (req, res) => {
   try {
     const { brandId, accountNumber, ifsc, bankName, branchName, accountType, isPrimary } = req.body as {
       brandId?: number;
@@ -35,11 +92,8 @@ router.post("/onboarding/bank-account", async (req, res) => {
     const [brand] = await db.select().from(brandsTable).where(eq(brandsTable.id, brandId));
     if (!brand) return res.status(404).json({ error: "Brand not found" });
 
-    // If marking primary, clear other primaries for this brand
-    if (isPrimary) {
-      await db.update(bankAccountsTable).set({ isPrimary: false }).where(eq(bankAccountsTable.brandId, brandId));
-    }
-
+    // A new account stays PENDING_APPROVAL. Do NOT clear other primaries here —
+    // live primary selection only changes at approval time (see /approve).
     const [row] = await db.insert(bankAccountsTable).values({
       brandId,
       onboardingId: brand.onboardingId,
@@ -49,18 +103,151 @@ router.post("/onboarding/bank-account", async (req, res) => {
       branchName: branchName ?? null,
       accountType: accountType ?? "current",
       isPrimary: isPrimary ?? false,
+      status: "PENDING_APPROVAL",
     }).returning();
 
-    await writeAudit(req, { entityType: "BankAccount", entityId: row.id, action: "create", changedFields: { accountNumber, bankName } });
-    return res.status(201).json(row);
+    await writeAudit(req, { entityType: "BankAccount", entityId: row.id, action: "create", changedFields: { accountNumber: maskAcct(accountNumber), bankName, brandId } });
+    await logActivity(
+      req.user?.name ?? "Maker",
+      `Added bank account ${maskAcct(accountNumber)} (${bankName}) to ${brand.brandName} — awaiting Checker approval`,
+      brand.brandCode ?? String(brandId),
+      "info",
+    );
+    return res.status(201).json(mapBankAccount(row));
   } catch (err) {
     req.log.error({ err }, "add bank account failed");
     return res.status(500).json({ error: "Internal server error" });
   }
 });
 
-// Set a bank account as primary
-router.post("/onboarding/bank-account/:id/primary", async (req, res) => {
+// Maker proposes an edit to a bank account — stored as pendingChanges, awaits Checker approval
+router.post("/onboarding/bank-account/:id/propose-edit", authorize(["maker", "admin"]), async (req, res) => {
+  try {
+    const body = req.body as Record<string, unknown>;
+    const [acct] = await db.select().from(bankAccountsTable).where(eq(bankAccountsTable.id, parseInt(req.params.id)));
+    if (!acct) return res.status(404).json({ error: "Bank account not found" });
+
+    const proposed: Record<string, unknown> = {};
+    for (const f of BANK_EDITABLE) {
+      if (body[f] !== undefined) proposed[f] = body[f];
+    }
+    if (proposed.ifsc !== undefined) proposed.ifsc = String(proposed.ifsc).toUpperCase();
+    if (Object.keys(proposed).length === 0) {
+      return res.status(400).json({ error: "No editable fields supplied" });
+    }
+
+    // If re-tagging to another brand, it must exist and stay within the same onboarding.
+    if (proposed.brandId !== undefined) {
+      const [brand] = await db.select().from(brandsTable).where(eq(brandsTable.id, Number(proposed.brandId)));
+      if (!brand) return res.status(404).json({ error: "Brand not found" });
+      if (brand.onboardingId !== acct.onboardingId) {
+        return res.status(400).json({ error: "Brand belongs to a different onboarding" });
+      }
+    }
+
+    const [row] = await db
+      .update(bankAccountsTable)
+      .set({ pendingChanges: JSON.stringify(proposed), status: "PENDING_APPROVAL", updatedAt: new Date() })
+      .where(eq(bankAccountsTable.id, acct.id))
+      .returning();
+
+    await writeAudit(req, { entityType: "BankAccount", entityId: acct.id, action: "propose_edit", changedFields: proposed });
+    await logActivity(
+      req.user?.name ?? "Maker",
+      `Proposed edit to bank account ${maskAcct(acct.accountNumber)} (${acct.bankName}) — awaiting Checker approval`,
+      acct.brandId != null ? String(acct.brandId) : String(acct.id),
+      "info",
+    );
+    return res.json(mapBankAccount(row));
+  } catch (err) {
+    req.log.error({ err }, "propose bank account edit failed");
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Checker approves a pending bank account (new account or proposed edit)
+router.post("/onboarding/bank-account/:id/approve", authorize(["checker", "admin"]), async (req, res) => {
+  try {
+    const [acct] = await db.select().from(bankAccountsTable).where(eq(bankAccountsTable.id, parseInt(req.params.id)));
+    if (!acct) return res.status(404).json({ error: "Bank account not found" });
+    if (acct.status !== "PENDING_APPROVAL") {
+      return res.status(400).json({ error: "Bank account is not pending approval" });
+    }
+
+    const pending = parsePending(acct.pendingChanges);
+    const updates: Partial<typeof bankAccountsTable.$inferInsert> = { status: "ACTIVE", pendingChanges: null, updatedAt: new Date() };
+    if (pending) {
+      for (const f of BANK_EDITABLE) {
+        if (pending[f] === undefined) continue;
+        (updates as Record<string, unknown>)[f] = pending[f];
+      }
+    }
+
+    // Determine final brand + primary intent (edit may re-tag to another brand).
+    const finalBrandId = (updates.brandId as number | undefined) ?? acct.brandId;
+    // Final primary = the proposed value if the edit touched it, else the row's
+    // current flag (covers a brand-new primary account that later got an edit).
+    const wantsPrimary = pending && pending.isPrimary !== undefined
+      ? pending.isPrimary === true
+      : acct.isPrimary === true;
+    if (wantsPrimary) {
+      await db
+        .update(bankAccountsTable)
+        .set({ isPrimary: false })
+        .where(and(eq(bankAccountsTable.brandId, finalBrandId), ne(bankAccountsTable.id, acct.id)));
+      updates.isPrimary = true;
+    }
+
+    const [row] = await db.update(bankAccountsTable).set(updates).where(eq(bankAccountsTable.id, acct.id)).returning();
+    await writeAudit(req, { entityType: "BankAccount", entityId: acct.id, action: pending ? "approve_edit" : "approve_create" });
+    await logActivity(
+      req.user?.name ?? "Checker",
+      `Approved bank account ${maskAcct(row.accountNumber)} (${row.bankName})${pending ? " edit" : ""}`,
+      row.brandId != null ? String(row.brandId) : String(row.id),
+      "success",
+    );
+    return res.json(mapBankAccount(row));
+  } catch (err) {
+    req.log.error({ err }, "approve bank account failed");
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Checker rejects a pending bank account — discards edit, or marks a new entry REJECTED
+router.post("/onboarding/bank-account/:id/reject", authorize(["checker", "admin"]), async (req, res) => {
+  try {
+    const { notes } = (req.body ?? {}) as { notes?: string };
+    const [acct] = await db.select().from(bankAccountsTable).where(eq(bankAccountsTable.id, parseInt(req.params.id)));
+    if (!acct) return res.status(404).json({ error: "Bank account not found" });
+    if (acct.status !== "PENDING_APPROVAL") {
+      return res.status(400).json({ error: "Bank account is not pending approval" });
+    }
+
+    const wasEdit = !!acct.pendingChanges;
+    const newStatus = wasEdit ? "ACTIVE" : "REJECTED";
+    const [row] = await db
+      .update(bankAccountsTable)
+      .set({ status: newStatus, pendingChanges: null, updatedAt: new Date() })
+      .where(eq(bankAccountsTable.id, acct.id))
+      .returning();
+
+    await writeAudit(req, { entityType: "BankAccount", entityId: acct.id, action: wasEdit ? "reject_edit" : "reject_create", changedFields: notes ? { notes } : undefined });
+    await logActivity(
+      req.user?.name ?? "Checker",
+      `Rejected bank account ${maskAcct(row.accountNumber)} (${row.bankName})${wasEdit ? " edit" : ""}${notes ? ` — ${notes}` : ""}`,
+      row.brandId != null ? String(row.brandId) : String(row.id),
+      "warning",
+    );
+    return res.json(mapBankAccount(row));
+  } catch (err) {
+    req.log.error({ err }, "reject bank account failed");
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Set a bank account as primary — privileged override only. Maker primary changes
+// MUST go through propose-edit so they are checker-approved (governance).
+router.post("/onboarding/bank-account/:id/primary", authorize(["checker", "admin"]), async (req, res) => {
   try {
     const id = parseInt(req.params.id);
     const [acct] = await db.select().from(bankAccountsTable).where(eq(bankAccountsTable.id, id));
@@ -68,15 +255,15 @@ router.post("/onboarding/bank-account/:id/primary", async (req, res) => {
     await db.update(bankAccountsTable).set({ isPrimary: false }).where(eq(bankAccountsTable.brandId, acct.brandId));
     const [row] = await db.update(bankAccountsTable).set({ isPrimary: true }).where(eq(bankAccountsTable.id, id)).returning();
     await writeAudit(req, { entityType: "BankAccount", entityId: id, action: "set_primary" });
-    return res.json(row);
+    return res.json(mapBankAccount(row));
   } catch (err) {
     req.log.error({ err }, "set primary bank account failed");
     return res.status(500).json({ error: "Internal server error" });
   }
 });
 
-// Remove a bank account
-router.delete("/onboarding/bank-account/:id", async (req, res) => {
+// Remove a bank account — privileged override only (checker/admin)
+router.delete("/onboarding/bank-account/:id", authorize(["checker", "admin"]), async (req, res) => {
   try {
     const id = parseInt(req.params.id);
     const [row] = await db.delete(bankAccountsTable).where(eq(bankAccountsTable.id, id)).returning();

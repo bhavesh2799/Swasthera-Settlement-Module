@@ -25,3 +25,23 @@ must filter `status = 'ACTIVE'` so a pending primary cannot shadow the live one.
 and let a pending warehouse drive order calculations.
 **How to apply:** any future "draft then approve" entity — defer all live-state side effects to the
 approve handler, and make every read of that state ACTIVE-only.
+
+## Onboarding-level (company/document/bank) governance
+
+Onboardings and bank accounts follow the same pattern, but onboarding lifecycle uses a status enum
+(DRAFT→SUBMITTED→APPROVED/REJECTED→ACTIVE) that must NOT be reused for change-approval. Instead,
+post-approval edits live in `onboardings.pendingChanges` (JSON text) via
+`propose-changes`/`approve-changes`/`reject-changes`, leaving `status` untouched.
+
+**Rule: the direct `PUT /onboardings/:id` must be status-gated to DRAFT/REJECTED only.** SUBMITTED is
+locked; APPROVED/ACTIVE must use propose-changes (→409 otherwise). Symmetrically, `propose-changes`
+must reject non-(APPROVED/ACTIVE) states. The frontend picks PUT vs propose-changes by status, but the
+backend guard is the real enforcement — without it a maker can bypass checker via direct PUT.
+**Why:** the legacy PUT predated governance and silently applied live mutations on approved records.
+
+**Rule: empty POST bodies crash destructuring.** Express 5 leaves `req.body` undefined when no JSON
+body is sent; `const { x } = req.body` throws → 500. Always `(req.body ?? {})` on approve/reject
+endpoints that may be called with no payload.
+
+**Rule: re-tagging a bank account's brandId must validate the brand exists AND shares the same
+onboardingId** (no FK in schema), or approval can orphan the tag across onboardings.

@@ -24,6 +24,70 @@ function genRef() {
   return `OB-${y}-${n}`;
 }
 
+function parsePending(raw: string | null): Record<string, unknown> | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+// Company + document fields a Maker may edit (post-approval via propose-changes,
+// or directly via PUT while DRAFT/REJECTED).
+const ONBOARDING_TEXT_FIELDS = [
+  "companyName","tradeName","companyType","pan","cin","llpCode","masterGstin","gstAvailable","tan","registeredAddress",
+  "entityTypeOther","registrationStatus","dateOfRegistration","taxpayerType","jurisdictionCode","natureOfBusiness",
+  "brandName","brandLegalName","brandCategory","brandType","tcsApplicable",
+  "bankAccount","bankIfsc","bankName","spocName","spocEmail","spocMobile",
+  "warehouseName","warehouseState","warehouseGstin","warehouseAddress","commissionType","returnWindowDays",
+  "panDocUrl","gstCertUrl","cinDocUrl","cancelledChequeUrl","signedAgreementUrl","digitalSignatureUrl",
+  "msmeCertUrl","tanCopyUrl",
+] as const;
+
+const ONBOARDING_EDITABLE_KEYS = [
+  ...ONBOARDING_TEXT_FIELDS, "commissionRate", "tcsRate", "tdsRate", "extraDocuments",
+] as const;
+
+// Translate a raw body / pendingChanges object into a typed update set,
+// mirroring the conversions used by PUT (numeric → string, JSON serialisation).
+function buildOnboardingUpdates(body: Record<string, unknown>): Partial<typeof onboardingsTable.$inferInsert> {
+  const updates: Partial<typeof onboardingsTable.$inferInsert> = {};
+  for (const f of ONBOARDING_TEXT_FIELDS) {
+    if (body[f] !== undefined) (updates as Record<string, unknown>)[f] = body[f];
+  }
+  if (body.extraDocuments !== undefined) {
+    updates.extraDocuments = typeof body.extraDocuments === "string"
+      ? body.extraDocuments
+      : JSON.stringify(body.extraDocuments);
+  }
+  if (body.commissionRate !== undefined) updates.commissionRate = String(body.commissionRate);
+  if (body.tcsRate !== undefined) updates.tcsRate = String(body.tcsRate);
+  if (body.tdsRate !== undefined) updates.tdsRate = String(body.tdsRate);
+  if (body.masterGstin) updates.stateCode = String(body.masterGstin).substring(0, 2);
+  return updates;
+}
+
+// Required document set (BRD FIX 6): Company PAN/GST/TAN/DigitalSig + Brand
+// SignedAgreement/CancelledCheque. CIN and MSME are optional.
+function recomputeDocCounts(merged: { extraDocuments?: string | null } & Record<string, unknown>) {
+  const docFields = ["panDocUrl","gstCertUrl","tanCopyUrl","digitalSignatureUrl","signedAgreementUrl","cancelledChequeUrl"] as const;
+  let extras: Array<{ label?: string; level?: string }> = [];
+  try {
+    extras = merged.extraDocuments ? (JSON.parse(merged.extraDocuments) as Array<{ label?: string; level?: string }>) : [];
+  } catch {
+    extras = [];
+  }
+  const taggedLabel = (label: string) => extras.some((d) => d.level === "brand" && d.label === label);
+  const fieldSatisfied = (f: (typeof docFields)[number]) => {
+    if ((merged as Record<string, unknown>)[f]) return true;
+    if (f === "signedAgreementUrl") return taggedLabel("Signed Agreement");
+    if (f === "cancelledChequeUrl") return taggedLabel("Cancelled Cheque");
+    return false;
+  };
+  return { docsUploaded: docFields.filter(fieldSatisfied).length, docsRequired: docFields.length };
+}
+
 router.get("/onboardings", async (req, res) => {
   try {
     const { status, search } = req.query as { status?: string; search?: string };
@@ -240,51 +304,27 @@ router.get("/onboardings/:id", async (req, res) => {
 
 router.put("/onboardings/:id", authorize(["maker", "admin"]), async (req, res) => {
   try {
-    const body = req.body;
-    const updates: Partial<typeof onboardingsTable.$inferInsert> = {};
-    const fields = [
-      "companyName","tradeName","companyType","pan","cin","llpCode","masterGstin","gstAvailable","tan","registeredAddress",
-      "entityTypeOther","registrationStatus","dateOfRegistration","taxpayerType","jurisdictionCode","natureOfBusiness",
-      "brandName","brandLegalName","brandCategory","brandType","tcsApplicable",
-      "bankAccount","bankIfsc","bankName","spocName","spocEmail","spocMobile",
-      "warehouseName","warehouseState","warehouseGstin","warehouseAddress","commissionType","returnWindowDays",
-      "panDocUrl","gstCertUrl","cinDocUrl","cancelledChequeUrl","signedAgreementUrl","digitalSignatureUrl",
-      "msmeCertUrl","tanCopyUrl",
-    ] as const;
-    for (const f of fields) {
-      if (body[f] !== undefined) (updates as Record<string, unknown>)[f] = body[f];
-    }
-    if (body.extraDocuments !== undefined) updates.extraDocuments = JSON.stringify(body.extraDocuments);
-    if (body.commissionRate !== undefined) updates.commissionRate = String(body.commissionRate);
-    if (body.tcsRate !== undefined) updates.tcsRate = String(body.tcsRate);
-    if (body.tdsRate !== undefined) updates.tdsRate = String(body.tdsRate);
-    if (body.masterGstin) updates.stateCode = body.masterGstin.substring(0, 2);
+    const body = req.body ?? {};
+    const updates = buildOnboardingUpdates(body);
 
     // Count docs uploaded
     const current = await db.select().from(onboardingsTable).where(eq(onboardingsTable.id, parseInt(req.params.id)));
-    if (current[0]) {
+    if (!current[0]) return res.status(404).json({ error: "Not found" });
+
+    // Governance: direct edits are only allowed pre-approval. Once SUBMITTED the
+    // record is locked, and post-approval (APPROVED/ACTIVE) changes must go
+    // through the propose-changes → approve/reject channel.
+    if (current[0].status === "DRAFT" || current[0].status === "REJECTED") {
       const merged = { ...current[0], ...updates };
-      // Required document set (BRD FIX 6): Company PAN/GST/TAN/DigitalSig + Brand SignedAgreement/CancelledCheque.
-      // CIN and MSME are optional and do not count toward the required total.
-      const docFields = ["panDocUrl","gstCertUrl","tanCopyUrl","digitalSignatureUrl","signedAgreementUrl","cancelledChequeUrl"] as const;
-      // Brand-level docs (agreement / cancelled cheque) may instead be satisfied by a brand-tagged
-      // entry in extraDocuments (so they can be tagged to a specific brand/warehouse).
-      let extras: Array<{ label?: string; level?: string }> = [];
-      try {
-        extras = merged.extraDocuments ? (JSON.parse(merged.extraDocuments) as Array<{ label?: string; level?: string }>) : [];
-      } catch {
-        extras = [];
-      }
-      const taggedLabel = (label: string) => extras.some((d) => d.level === "brand" && d.label === label);
-      const fieldSatisfied = (f: (typeof docFields)[number]) => {
-        if ((merged as Record<string, unknown>)[f]) return true;
-        if (f === "signedAgreementUrl") return taggedLabel("Signed Agreement");
-        if (f === "cancelledChequeUrl") return taggedLabel("Cancelled Cheque");
-        return false;
-      };
-      const uploaded = docFields.filter(fieldSatisfied).length;
-      updates.docsUploaded = uploaded;
-      updates.docsRequired = docFields.length;
+      const { docsUploaded, docsRequired } = recomputeDocCounts(merged);
+      updates.docsUploaded = docsUploaded;
+      updates.docsRequired = docsRequired;
+    } else {
+      return res.status(409).json({
+        error: current[0].status === "SUBMITTED"
+          ? "Onboarding is under Checker review and cannot be edited directly."
+          : "Onboarding is approved — submit changes via propose-changes for Checker approval.",
+      });
     }
 
     updates.updatedAt = new Date();
@@ -293,6 +333,138 @@ router.put("/onboardings/:id", authorize(["maker", "admin"]), async (req, res) =
     res.json(mapOnboarding(row));
   } catch (err) {
     req.log.error({ err }, "update onboarding error");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ── Post-approval company / document change governance ───────────────────────
+// Once an onboarding is APPROVED/ACTIVE, the Maker can no longer edit it directly.
+// Instead they propose company-field or document changes here; the proposal is
+// stored on `pendingChanges` (the onboarding.status lifecycle is left untouched)
+// and applied only when a Checker approves.
+
+// Maker proposes company/document edits — stored as pendingChanges, awaits Checker
+router.post("/onboardings/:id/propose-changes", authorize(["maker", "admin"]), async (req, res) => {
+  try {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const [ob] = await db.select().from(onboardingsTable).where(eq(onboardingsTable.id, parseInt(req.params.id)));
+    if (!ob) return res.status(404).json({ error: "Not found" });
+
+    // Governance: propose-changes is the post-approval channel. Pre-approval
+    // records (DRAFT/REJECTED) should use direct PUT; SUBMITTED stays locked.
+    if (ob.status !== "APPROVED" && ob.status !== "ACTIVE") {
+      return res.status(409).json({
+        error: ob.status === "SUBMITTED"
+          ? "Onboarding is under Checker review and cannot be changed."
+          : "Onboarding is not yet approved — edit it directly instead.",
+      });
+    }
+
+    // Accumulate onto any existing pending proposal so multiple edits stack.
+    const existing = parsePending(ob.pendingChanges) ?? {};
+    const proposed: Record<string, unknown> = { ...existing };
+    for (const f of ONBOARDING_EDITABLE_KEYS) {
+      if (body[f] !== undefined) proposed[f] = body[f];
+    }
+    if (Object.keys(proposed).length === 0) {
+      return res.status(400).json({ error: "No editable fields supplied" });
+    }
+
+    const [row] = await db.update(onboardingsTable)
+      .set({ pendingChanges: JSON.stringify(proposed), updatedAt: new Date() })
+      .where(eq(onboardingsTable.id, ob.id))
+      .returning();
+
+    await db.insert(activityTable).values({
+      user: req.user?.name ?? "Maker",
+      action: `Proposed changes to onboarding ${ob.ref} — awaiting Checker approval`,
+      entityType: "onboarding",
+      entityRef: ob.ref,
+      level: "info",
+    });
+    await writeAudit(req, { entityType: "Onboarding", entityId: ob.id, action: "propose_changes", changedFields: proposed });
+    await notify(req, {
+      action: "Proposed changes — awaiting approval",
+      entityType: "onboarding",
+      entityId: ob.id,
+      recordName: `${ob.ref} — ${ob.brandName}`,
+      link: `/onboarding/${ob.id}`,
+      level: "info",
+    });
+    res.json(mapOnboarding(row));
+  } catch (err) {
+    req.log.error({ err }, "propose onboarding changes error");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Checker approves pending company/document changes — applies them to the record
+router.post("/onboardings/:id/approve-changes", authorize(["checker", "admin"]), async (req, res) => {
+  try {
+    const { checkerName } = (req.body ?? {}) as { checkerName?: string };
+    const checker = checkerName || "Rajesh Kumar";
+    const [ob] = await db.select().from(onboardingsTable).where(eq(onboardingsTable.id, parseInt(req.params.id)));
+    if (!ob) return res.status(404).json({ error: "Not found" });
+    const pending = parsePending(ob.pendingChanges);
+    if (!pending) return res.status(400).json({ error: "No pending changes to approve" });
+
+    const updates = buildOnboardingUpdates(pending);
+    const merged = { ...ob, ...updates };
+    const { docsUploaded, docsRequired } = recomputeDocCounts(merged);
+    updates.docsUploaded = docsUploaded;
+    updates.docsRequired = docsRequired;
+    updates.pendingChanges = null;
+    updates.updatedAt = new Date();
+
+    const [row] = await db.update(onboardingsTable).set(updates).where(eq(onboardingsTable.id, ob.id)).returning();
+    await db.insert(activityTable).values({
+      user: checker,
+      action: `Approved changes to onboarding ${ob.ref}`,
+      entityType: "onboarding",
+      entityRef: ob.ref,
+      level: "success",
+    });
+    await writeAudit(req, { entityType: "Onboarding", entityId: ob.id, action: "approve_changes", changedFields: pending });
+    await notify(req, {
+      action: "Approved changes",
+      entityType: "onboarding",
+      entityId: ob.id,
+      recordName: `${ob.ref} — ${ob.brandName}`,
+      link: `/onboarding/${ob.id}`,
+      level: "success",
+    });
+    res.json(mapOnboarding(row));
+  } catch (err) {
+    req.log.error({ err }, "approve onboarding changes error");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Checker rejects pending company/document changes — discards the proposal
+router.post("/onboardings/:id/reject-changes", authorize(["checker", "admin"]), async (req, res) => {
+  try {
+    const { notes, checkerName } = (req.body ?? {}) as { notes?: string; checkerName?: string };
+    const checker = checkerName || "Rajesh Kumar";
+    const [ob] = await db.select().from(onboardingsTable).where(eq(onboardingsTable.id, parseInt(req.params.id)));
+    if (!ob) return res.status(404).json({ error: "Not found" });
+    if (!ob.pendingChanges) return res.status(400).json({ error: "No pending changes to reject" });
+
+    const [row] = await db.update(onboardingsTable)
+      .set({ pendingChanges: null, updatedAt: new Date() })
+      .where(eq(onboardingsTable.id, ob.id))
+      .returning();
+
+    await db.insert(activityTable).values({
+      user: checker,
+      action: `Rejected changes to onboarding ${ob.ref}${notes ? ` — ${notes}` : ""}`,
+      entityType: "onboarding",
+      entityRef: ob.ref,
+      level: "warning",
+    });
+    await writeAudit(req, { entityType: "Onboarding", entityId: ob.id, action: "reject_changes", changedFields: notes ? { notes } : undefined });
+    res.json(mapOnboarding(row));
+  } catch (err) {
+    req.log.error({ err }, "reject onboarding changes error");
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -392,7 +564,7 @@ router.post("/onboardings/:id/submit", authorize(["maker", "admin"]), async (req
 
 router.post("/onboardings/:id/approve", authorize(["checker", "admin"]), async (req, res) => {
   try {
-    const { notes, checkerName } = req.body as { notes?: string; checkerName?: string };
+    const { notes, checkerName } = (req.body ?? {}) as { notes?: string; checkerName?: string };
     const checker = checkerName || "Rajesh Kumar";
     const [row] = await db.update(onboardingsTable)
       .set({
@@ -462,7 +634,7 @@ router.post("/onboardings/:id/reject", authorize(["checker", "admin"]), async (r
 // Checker requests edits — sends submission back to Maker as DRAFT (BRD §3.1, spec step 5)
 router.post("/onboardings/:id/request-edit", authorize(["checker", "admin"]), async (req, res) => {
   try {
-    const { notes, checkerName } = req.body as { notes?: string; checkerName?: string };
+    const { notes, checkerName } = (req.body ?? {}) as { notes?: string; checkerName?: string };
     const checker = checkerName || "Rajesh Kumar";
     const [ob] = await db.select().from(onboardingsTable).where(eq(onboardingsTable.id, parseInt(req.params.id)));
     if (!ob) return res.status(404).json({ error: "Not found" });
@@ -545,6 +717,7 @@ function mapOnboarding(r: typeof onboardingsTable.$inferSelect) {
     msmeCertUrl: r.msmeCertUrl,
     tanCopyUrl: r.tanCopyUrl,
     extraDocuments: r.extraDocuments ? JSON.parse(r.extraDocuments) : [],
+    pendingChanges: parsePending(r.pendingChanges),
     version: r.version,
     docsUploaded: r.docsUploaded,
     docsRequired: r.docsRequired,

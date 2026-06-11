@@ -70,12 +70,15 @@ interface ExtraDoc {
 
 interface BankAccountItem {
   id: number;
+  brandId: number | null;
   accountNumber: string;
   ifsc: string;
   bankName: string;
   branchName: string | null;
   accountType: string;
   isPrimary: boolean;
+  status: string;
+  pendingChanges?: Record<string, unknown> | null;
 }
 
 interface CommissionVersion {
@@ -175,13 +178,32 @@ const FIELD_LABELS: Record<string, string> = {
   warehouseState: "State",
   warehouseGstin: "Warehouse GSTIN",
   warehouseAddress: "Address",
-  isPrimary: "Primary Warehouse",
+  isPrimary: "Primary",
+  bankName: "Bank Name",
+  accountNumber: "Account Number",
+  ifsc: "IFSC Code",
+  branchName: "Branch",
+  accountType: "Account Type",
+  brandId: "Tagged Brand",
 };
 
 function formatFieldValue(v: unknown): string {
   if (v === null || v === undefined || v === "") return "—";
   if (typeof v === "boolean") return v ? "Yes" : "No";
   return String(v);
+}
+
+// Friendly label/value for an onboarding pendingChanges diff (covers doc fields).
+function pendingFieldLabel(k: string): string {
+  return FIELD_LABELS[k] ?? DOC_FIELDS.find((d) => d.key === k)?.label ?? k;
+}
+function pendingFieldValue(k: string, v: unknown): string {
+  if (k === "extraDocuments") {
+    const arr = Array.isArray(v) ? v : [];
+    return `${arr.length} document${arr.length === 1 ? "" : "s"}`;
+  }
+  if (typeof v === "string" && v.startsWith("http")) return v.split("/").pop() ?? v;
+  return formatFieldValue(v);
 }
 
 export function OnboardingDetail() {
@@ -251,17 +273,18 @@ export function OnboardingDetail() {
     enabled: !!id,
   });
 
-  const primaryBrandId = brands?.[0]?.id;
-  const { data: bankAccountsData } = useQuery<{ bankAccounts: BankAccountItem[] }>({
-    queryKey: ["bank-accounts", primaryBrandId],
+  const { data: bankAccountsData, refetch: refetchBank } = useQuery<{ bankAccounts: BankAccountItem[] }>({
+    queryKey: ["bank-accounts", id],
     queryFn: async () => {
-      const r = await fetch(`/api/brands/${primaryBrandId}/bank-accounts`);
+      const r = await fetch(`/api/onboardings/${id}/bank-accounts`);
       if (!r.ok) return { bankAccounts: [] };
       return r.json();
     },
-    enabled: !!primaryBrandId,
+    enabled: !!id,
   });
   const bankAccounts = bankAccountsData?.bankAccounts ?? [];
+  const brandNameById = (bid: number | null | undefined) =>
+    bid == null ? undefined : brands?.find((b) => b.id === bid)?.brandName;
 
   const [expandedBrands, setExpandedBrands] = useState<Set<number>>(new Set());
   const toggleBrand = (brandId: number) =>
@@ -314,11 +337,25 @@ export function OnboardingDetail() {
   });
   const [editCompanyLoading, setEditCompanyLoading] = useState(false);
 
+  // Bank accounts (maker proposes add/edit; checker approves)
+  const [showAddBank, setShowAddBank] = useState(false);
+  const [addBankForm, setAddBankForm] = useState({
+    brandId: "", bankName: "", accountNumber: "", ifsc: "", branchName: "", accountType: "current", isPrimary: false,
+  });
+  const [addBankLoading, setAddBankLoading] = useState(false);
+
+  const [showEditBank, setShowEditBank] = useState(false);
+  const [editBankId, setEditBankId] = useState<number | null>(null);
+  const [editBankForm, setEditBankForm] = useState({
+    brandId: "", bankName: "", accountNumber: "", ifsc: "", branchName: "", accountType: "current", isPrimary: false,
+  });
+  const [editBankLoading, setEditBankLoading] = useState(false);
+
   // Locks the document-name field when uploading a fixed brand/warehouse doc through the tagging dialog
   const [lockDocLabel, setLockDocLabel] = useState(false);
 
-  // Shared reject dialog for pending brand/warehouse entities
-  const [rejectEntity, setRejectEntity] = useState<{ kind: "brand" | "warehouse"; id: number; name: string; brandId?: number; isEdit: boolean } | null>(null);
+  // Shared reject dialog for pending brand/warehouse/bank entities
+  const [rejectEntity, setRejectEntity] = useState<{ kind: "brand" | "warehouse" | "bank"; id: number; name: string; brandId?: number; isEdit: boolean } | null>(null);
   const [entityRejectNotes, setEntityRejectNotes] = useState("");
   const [entityActionLoading, setEntityActionLoading] = useState(false);
 
@@ -495,8 +532,10 @@ export function OnboardingDetail() {
     if (!rejectEntity) return;
     setEntityActionLoading(true);
     try {
-      const base = rejectEntity.kind === "brand" ? "brands" : "warehouses";
-      const r = await fetch(`/api/${base}/${rejectEntity.id}/reject`, {
+      const url = rejectEntity.kind === "bank"
+        ? `/api/onboarding/bank-account/${rejectEntity.id}/reject`
+        : `/api/${rejectEntity.kind === "brand" ? "brands" : "warehouses"}/${rejectEntity.id}/reject`;
+      const r = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ notes: entityRejectNotes }),
@@ -504,9 +543,110 @@ export function OnboardingDetail() {
       if (!r.ok) throw new Error("Failed");
       toast({ title: `${rejectEntity.name} ${rejectEntity.isEdit ? "edit rejected" : "rejected"}`, variant: "destructive" });
       if (rejectEntity.kind === "brand") refetchBrands();
-      else if (rejectEntity.brandId) loadWarehouses(rejectEntity.brandId);
+      else if (rejectEntity.kind === "warehouse" && rejectEntity.brandId) loadWarehouses(rejectEntity.brandId);
+      else if (rejectEntity.kind === "bank") refetchBank();
       setRejectEntity(null);
       setEntityRejectNotes("");
+    } catch {
+      toast({ title: "Rejection failed", variant: "destructive" });
+    } finally {
+      setEntityActionLoading(false);
+    }
+  };
+
+  // ---- Bank account governance (maker proposes; checker approves) ----
+  const handleAddBank = async () => {
+    if (!addBankForm.brandId || !addBankForm.bankName || !addBankForm.accountNumber || !addBankForm.ifsc) return;
+    setAddBankLoading(true);
+    try {
+      const r = await fetch(`/api/onboarding/bank-account`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...addBankForm, brandId: Number(addBankForm.brandId) }),
+      });
+      if (!r.ok) throw new Error("Failed");
+      toast({ title: "Bank account added — awaiting Checker approval" });
+      setShowAddBank(false);
+      setAddBankForm({ brandId: "", bankName: "", accountNumber: "", ifsc: "", branchName: "", accountType: "current", isPrimary: false });
+      refetchBank();
+    } catch {
+      toast({ title: "Failed to add bank account", variant: "destructive" });
+    } finally {
+      setAddBankLoading(false);
+    }
+  };
+
+  const openEditBank = (acc: BankAccountItem) => {
+    setEditBankId(acc.id);
+    setEditBankForm({
+      brandId: acc.brandId != null ? String(acc.brandId) : "",
+      bankName: acc.bankName ?? "",
+      accountNumber: acc.accountNumber ?? "",
+      ifsc: acc.ifsc ?? "",
+      branchName: acc.branchName ?? "",
+      accountType: acc.accountType ?? "current",
+      isPrimary: !!acc.isPrimary,
+    });
+    setShowEditBank(true);
+  };
+
+  const handleEditBank = async () => {
+    if (!editBankId || !editBankForm.bankName || !editBankForm.accountNumber || !editBankForm.ifsc) return;
+    setEditBankLoading(true);
+    try {
+      const r = await fetch(`/api/onboarding/bank-account/${editBankId}/propose-edit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...editBankForm, brandId: Number(editBankForm.brandId) }),
+      });
+      if (!r.ok) throw new Error("Failed");
+      toast({ title: "Edit submitted — awaiting Checker approval" });
+      setShowEditBank(false);
+      setEditBankId(null);
+      refetchBank();
+    } catch {
+      toast({ title: "Failed to submit edit", variant: "destructive" });
+    } finally {
+      setEditBankLoading(false);
+    }
+  };
+
+  const handleApproveBank = async (acc: BankAccountItem) => {
+    setEntityActionLoading(true);
+    try {
+      const r = await fetch(`/api/onboarding/bank-account/${acc.id}/approve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      if (!r.ok) throw new Error("Failed");
+      toast({ title: `${acc.bankName} approved` });
+      refetchBank();
+    } catch {
+      toast({ title: "Approval failed", variant: "destructive" });
+    } finally {
+      setEntityActionLoading(false);
+    }
+  };
+
+  // ---- Company / document change governance ----
+  const handleApproveCompanyChanges = async () => {
+    setEntityActionLoading(true);
+    try {
+      const r = await fetch(`/api/onboardings/${id}/approve-changes`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      if (!r.ok) throw new Error("Failed");
+      toast({ title: "Company changes approved" });
+      invalidate();
+    } catch {
+      toast({ title: "Approval failed", variant: "destructive" });
+    } finally {
+      setEntityActionLoading(false);
+    }
+  };
+
+  const handleRejectCompanyChanges = async () => {
+    setEntityActionLoading(true);
+    try {
+      const r = await fetch(`/api/onboardings/${id}/reject-changes`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      if (!r.ok) throw new Error("Failed");
+      toast({ title: "Company changes rejected", variant: "destructive" });
+      invalidate();
     } catch {
       toast({ title: "Rejection failed", variant: "destructive" });
     } finally {
@@ -531,14 +671,18 @@ export function OnboardingDetail() {
   const handleEditCompany = async () => {
     if (!editCompanyForm.companyName) return;
     setEditCompanyLoading(true);
+    const postApproval = onboarding?.status === "APPROVED" || onboarding?.status === "ACTIVE";
     try {
-      const r = await fetch(`/api/onboardings/${id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(editCompanyForm),
-      });
+      const r = await fetch(
+        postApproval ? `/api/onboardings/${id}/propose-changes` : `/api/onboardings/${id}`,
+        {
+          method: postApproval ? "POST" : "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(editCompanyForm),
+        },
+      );
       if (!r.ok) throw new Error("Failed");
-      toast({ title: "Company details updated" });
+      toast({ title: postApproval ? "Changes submitted — awaiting Checker approval" : "Company details updated" });
       setShowEditCompany(false);
       invalidate();
     } catch {
@@ -564,13 +708,17 @@ export function OnboardingDetail() {
     if (!e.target.files?.[0] || !updatingDoc) return;
     const filename = e.target.files[0].name;
     const fakeUrl = `https://docs.swasthera.in/kyb/${id}/${updatingDoc}/${filename}`;
+    const postApproval = onboarding?.status === "APPROVED" || onboarding?.status === "ACTIVE";
     try {
-      await fetch(`/api/onboardings/${id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ [updatingDoc]: fakeUrl }),
-      });
-      toast({ title: `${filename} uploaded successfully` });
+      await fetch(
+        postApproval ? `/api/onboardings/${id}/propose-changes` : `/api/onboardings/${id}`,
+        {
+          method: postApproval ? "POST" : "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ [updatingDoc]: fakeUrl }),
+        },
+      );
+      toast({ title: postApproval ? `${filename} submitted — awaiting Checker approval` : `${filename} uploaded successfully` });
       invalidate();
     } catch {
       toast({ title: "Upload failed", variant: "destructive" });
@@ -613,14 +761,18 @@ export function OnboardingDetail() {
       entry.warehouseName = w?.warehouseName;
     }
     const existing = ((onboarding as unknown as Record<string, unknown>).extraDocuments as ExtraDoc[]) ?? [];
+    const postApproval = onboarding?.status === "APPROVED" || onboarding?.status === "ACTIVE";
     try {
-      const r = await fetch(`/api/onboardings/${id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ extraDocuments: [...existing, entry] }),
-      });
+      const r = await fetch(
+        postApproval ? `/api/onboardings/${id}/propose-changes` : `/api/onboardings/${id}`,
+        {
+          method: postApproval ? "POST" : "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ extraDocuments: [...existing, entry] }),
+        },
+      );
       if (!r.ok) throw new Error("save failed");
-      toast({ title: `${entry.label} added` });
+      toast({ title: postApproval ? `${entry.label} submitted — awaiting Checker approval` : `${entry.label} added` });
       setShowAddDoc(false);
       invalidate();
     } catch {
@@ -631,12 +783,17 @@ export function OnboardingDetail() {
   const handleRemoveExtraDoc = async (idx: number) => {
     const existing = ((onboarding as unknown as Record<string, unknown>).extraDocuments as Array<{ label: string; url: string; level: string }>) ?? [];
     const next = existing.filter((_, i) => i !== idx);
+    const postApproval = onboarding?.status === "APPROVED" || onboarding?.status === "ACTIVE";
     try {
-      await fetch(`/api/onboardings/${id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ extraDocuments: next }),
-      });
+      await fetch(
+        postApproval ? `/api/onboardings/${id}/propose-changes` : `/api/onboardings/${id}`,
+        {
+          method: postApproval ? "POST" : "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ extraDocuments: next }),
+        },
+      );
+      if (postApproval) toast({ title: "Removal submitted — awaiting Checker approval" });
       invalidate();
     } catch {
       toast({ title: "Could not remove document", variant: "destructive" });
@@ -829,13 +986,43 @@ export function OnboardingDetail() {
         <Card className="shadow-sm border-slate-200/60 bg-white">
           <CardHeader className="border-b border-slate-100 bg-slate-50/50 py-4 flex flex-row items-center justify-between space-y-0">
             <CardTitle className="text-base font-semibold text-slate-800">Company & Tax Details</CardTitle>
-            {isMaker && (onboarding.status === "DRAFT" || onboarding.status === "REJECTED") && (
+            {isMaker && onboarding.status !== "SUBMITTED" && !ob.pendingChanges && (
               <Button size="sm" variant="outline" className="h-7 text-xs" onClick={openEditCompany}>
                 <Pencil className="mr-1 h-3.5 w-3.5" /> Edit
               </Button>
             )}
+            {isChecker && !!ob.pendingChanges && (
+              <div className="flex items-center gap-1.5">
+                <Button size="sm" variant="outline" className="h-7 text-xs text-red-600 border-red-200 hover:bg-red-50" disabled={entityActionLoading}
+                  onClick={handleRejectCompanyChanges}>
+                  <XCircle className="mr-1 h-3.5 w-3.5" /> Reject
+                </Button>
+                <Button size="sm" className="h-7 text-xs bg-green-600 hover:bg-green-700" disabled={entityActionLoading}
+                  onClick={handleApproveCompanyChanges}>
+                  <CheckCircle className="mr-1 h-3.5 w-3.5" /> Approve
+                </Button>
+              </div>
+            )}
           </CardHeader>
           <CardContent className="p-6 grid grid-cols-2 gap-y-4 gap-x-6">
+            {!!ob.pendingChanges && (
+              <div className="col-span-2 rounded border border-amber-200 bg-amber-50/60 p-3">
+                <p className="text-xs font-semibold text-amber-800 mb-2 flex items-center gap-1.5">
+                  <Pencil className="h-3 w-3" /> Proposed changes awaiting Checker approval
+                </p>
+                <div className="space-y-1">
+                  {Object.entries(ob.pendingChanges as Record<string, unknown>).map(([k, v]) => (
+                    <div key={k} className="grid grid-cols-[160px_1fr] gap-2 text-xs">
+                      <span className="text-slate-500">{pendingFieldLabel(k)}</span>
+                      <span className="text-slate-800">
+                        <span className="line-through text-slate-400 mr-2">{pendingFieldValue(k, ob[k])}</span>
+                        <span className="font-medium">{pendingFieldValue(k, v)}</span>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             {([
               ["Company Legal Name", onboarding.companyName || "—"],
               ["Trade Name", (ob.tradeName as string) || "—"],
@@ -895,8 +1082,13 @@ export function OnboardingDetail() {
 
         {/* Banking */}
         <Card className="shadow-sm border-slate-200/60 bg-white">
-          <CardHeader className="border-b border-slate-100 bg-slate-50/50 py-4">
+          <CardHeader className="border-b border-slate-100 bg-slate-50/50 py-4 flex flex-row items-center justify-between space-y-0">
             <CardTitle className="text-base font-semibold text-slate-800">Banking Information</CardTitle>
+            {isMaker && onboarding.status !== "SUBMITTED" && (brands?.length ?? 0) > 0 && (
+              <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => { setAddBankForm({ brandId: brands?.[0] ? String(brands[0].id) : "", bankName: "", accountNumber: "", ifsc: "", branchName: "", accountType: "current", isPrimary: false }); setShowAddBank(true); }}>
+                <Plus className="mr-1 h-3.5 w-3.5" /> Add Account
+              </Button>
+            )}
           </CardHeader>
           <CardContent className="p-6 space-y-4">
             {bankAccounts.length > 0 ? (
@@ -904,7 +1096,16 @@ export function OnboardingDetail() {
                 {bankAccounts.map((acc) => (
                   <div key={acc.id} className="rounded-lg border border-slate-200 p-4">
                     <div className="flex items-center justify-between mb-2">
-                      <p className="text-sm font-semibold text-slate-900">{acc.bankName}</p>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="text-sm font-semibold text-slate-900">{acc.bankName}</p>
+                        {brandNameById(acc.brandId) && (
+                          <Badge variant="outline" className="text-[10px] font-normal"><Tag className="mr-1 h-2.5 w-2.5" />{brandNameById(acc.brandId)}</Badge>
+                        )}
+                        <Badge className={`text-[10px] border-transparent ${entityStatusBadge(acc.status).cls}`}>{entityStatusBadge(acc.status).text}</Badge>
+                        {acc.pendingChanges && (
+                          <Badge className="text-[10px] border-transparent bg-amber-50 text-amber-700 hover:bg-amber-50"><Pencil className="mr-1 h-2.5 w-2.5" /> Edit pending</Badge>
+                        )}
+                      </div>
                       <div className="flex items-center gap-1.5">
                         <Badge variant="outline" className="text-[10px] font-normal capitalize">{acc.accountType?.toLowerCase()}</Badge>
                         {acc.isPrimary && <Badge className="bg-blue-100 text-blue-800 border-transparent text-[10px]">Primary</Badge>}
@@ -924,6 +1125,49 @@ export function OnboardingDetail() {
                           <p className="text-xs text-slate-500 font-medium uppercase tracking-wider mb-0.5">Branch</p>
                           <p className="text-sm text-slate-900">{acc.branchName}</p>
                         </div>
+                      )}
+                    </div>
+                    {/* Pending edit diff */}
+                    {acc.pendingChanges && (
+                      <div className="mt-3 rounded border border-amber-200 bg-amber-50/60 p-3">
+                        <p className="text-xs font-semibold text-amber-800 mb-2 flex items-center gap-1.5">
+                          <Pencil className="h-3 w-3" /> Proposed changes awaiting Checker approval
+                        </p>
+                        <div className="space-y-1">
+                          {Object.entries(acc.pendingChanges).map(([k, v]) => (
+                            <div key={k} className="grid grid-cols-[120px_1fr] gap-2 text-xs">
+                              <span className="text-slate-500">{k === "brandId" ? "Tagged Brand" : (FIELD_LABELS[k] ?? k)}</span>
+                              <span className="text-slate-800">
+                                <span className="line-through text-slate-400 mr-2">
+                                  {k === "brandId" ? (brandNameById(acc.brandId) ?? "—") : formatFieldValue((acc as unknown as Record<string, unknown>)[k])}
+                                </span>
+                                <span className="font-medium">
+                                  {k === "brandId" ? (brandNameById(Number(v)) ?? String(v)) : formatFieldValue(v)}
+                                </span>
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {/* Actions */}
+                    <div className="mt-3 flex items-center justify-end gap-1.5">
+                      {isChecker && acc.status === "PENDING_APPROVAL" && (
+                        <>
+                          <Button size="sm" variant="outline" className="h-7 text-xs text-red-600 border-red-200 hover:bg-red-50"
+                            onClick={() => { setRejectEntity({ kind: "bank", id: acc.id, name: acc.bankName, brandId: acc.brandId ?? undefined, isEdit: !!acc.pendingChanges }); setEntityRejectNotes(""); }}>
+                            <XCircle className="mr-1 h-3.5 w-3.5" /> Reject
+                          </Button>
+                          <Button size="sm" className="h-7 text-xs bg-green-600 hover:bg-green-700" disabled={entityActionLoading}
+                            onClick={() => handleApproveBank(acc)}>
+                            <CheckCircle className="mr-1 h-3.5 w-3.5" /> Approve
+                          </Button>
+                        </>
+                      )}
+                      {isMaker && onboarding.status !== "SUBMITTED" && acc.status !== "PENDING_APPROVAL" && (
+                        <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => openEditBank(acc)}>
+                          <Pencil className="mr-1 h-3.5 w-3.5" /> Edit
+                        </Button>
                       )}
                     </div>
                   </div>
@@ -1830,11 +2074,133 @@ export function OnboardingDetail() {
         </DialogContent>
       </Dialog>
 
+      {/* Add Bank Account Dialog */}
+      <Dialog open={showAddBank} onOpenChange={setShowAddBank}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Add Bank Account</DialogTitle>
+            <DialogDescription>The account is submitted for Checker approval before it becomes active.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-1.5">
+              <Label className="text-sm">Tag to Brand <span className="text-red-500">*</span></Label>
+              <Select value={addBankForm.brandId} onValueChange={(v) => setAddBankForm((p) => ({ ...p, brandId: v }))}>
+                <SelectTrigger><SelectValue placeholder="Select a brand" /></SelectTrigger>
+                <SelectContent>
+                  {brands?.map((b) => <SelectItem key={b.id} value={String(b.id)}>{b.brandName}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-sm">Bank Name <span className="text-red-500">*</span></Label>
+              <Input value={addBankForm.bankName} onChange={(e) => setAddBankForm((p) => ({ ...p, bankName: e.target.value }))} />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <Label className="text-sm">Account Number <span className="text-red-500">*</span></Label>
+                <Input value={addBankForm.accountNumber} onChange={(e) => setAddBankForm((p) => ({ ...p, accountNumber: e.target.value }))} />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-sm">IFSC <span className="text-red-500">*</span></Label>
+                <Input value={addBankForm.ifsc} onChange={(e) => setAddBankForm((p) => ({ ...p, ifsc: e.target.value.toUpperCase() }))} />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <Label className="text-sm">Branch</Label>
+                <Input value={addBankForm.branchName} onChange={(e) => setAddBankForm((p) => ({ ...p, branchName: e.target.value }))} />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-sm">Account Type</Label>
+                <Select value={addBankForm.accountType} onValueChange={(v) => setAddBankForm((p) => ({ ...p, accountType: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="current">Current</SelectItem>
+                    <SelectItem value="savings">Savings</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <label className="flex items-center gap-2 text-sm text-slate-600">
+              <input type="checkbox" checked={addBankForm.isPrimary} onChange={(e) => setAddBankForm((p) => ({ ...p, isPrimary: e.target.checked }))} />
+              Primary account for this brand
+            </label>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowAddBank(false)}>Cancel</Button>
+            <Button onClick={handleAddBank} disabled={addBankLoading || !addBankForm.brandId || !addBankForm.bankName || !addBankForm.accountNumber || !addBankForm.ifsc}>
+              {addBankLoading ? "Submitting..." : "Submit for Approval"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Bank Account Dialog */}
+      <Dialog open={showEditBank} onOpenChange={setShowEditBank}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Edit Bank Account</DialogTitle>
+            <DialogDescription>Changes are submitted for Checker approval before they take effect.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-1.5">
+              <Label className="text-sm">Tag to Brand</Label>
+              <Select value={editBankForm.brandId} onValueChange={(v) => setEditBankForm((p) => ({ ...p, brandId: v }))}>
+                <SelectTrigger><SelectValue placeholder="Select a brand" /></SelectTrigger>
+                <SelectContent>
+                  {brands?.map((b) => <SelectItem key={b.id} value={String(b.id)}>{b.brandName}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-sm">Bank Name <span className="text-red-500">*</span></Label>
+              <Input value={editBankForm.bankName} onChange={(e) => setEditBankForm((p) => ({ ...p, bankName: e.target.value }))} />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <Label className="text-sm">Account Number <span className="text-red-500">*</span></Label>
+                <Input value={editBankForm.accountNumber} onChange={(e) => setEditBankForm((p) => ({ ...p, accountNumber: e.target.value }))} />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-sm">IFSC <span className="text-red-500">*</span></Label>
+                <Input value={editBankForm.ifsc} onChange={(e) => setEditBankForm((p) => ({ ...p, ifsc: e.target.value.toUpperCase() }))} />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <Label className="text-sm">Branch</Label>
+                <Input value={editBankForm.branchName} onChange={(e) => setEditBankForm((p) => ({ ...p, branchName: e.target.value }))} />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-sm">Account Type</Label>
+                <Select value={editBankForm.accountType} onValueChange={(v) => setEditBankForm((p) => ({ ...p, accountType: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="current">Current</SelectItem>
+                    <SelectItem value="savings">Savings</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <label className="flex items-center gap-2 text-sm text-slate-600">
+              <input type="checkbox" checked={editBankForm.isPrimary} onChange={(e) => setEditBankForm((p) => ({ ...p, isPrimary: e.target.checked }))} />
+              Primary account for this brand
+            </label>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowEditBank(false)}>Cancel</Button>
+            <Button onClick={handleEditBank} disabled={editBankLoading || !editBankForm.bankName || !editBankForm.accountNumber || !editBankForm.ifsc}>
+              {editBankLoading ? "Submitting..." : "Submit for Approval"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Entity Reject Dialog (brand / warehouse) */}
       <Dialog open={!!rejectEntity} onOpenChange={(o) => { if (!o) setRejectEntity(null); }}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Reject {rejectEntity?.kind === "brand" ? "Brand" : "Warehouse"}{rejectEntity?.isEdit ? " Edit" : ""}</DialogTitle>
+            <DialogTitle>Reject {rejectEntity?.kind === "brand" ? "Brand" : rejectEntity?.kind === "warehouse" ? "Warehouse" : "Bank Account"}{rejectEntity?.isEdit ? " Edit" : ""}</DialogTitle>
             <DialogDescription>
               {rejectEntity?.isEdit
                 ? `Reject the proposed changes to ${rejectEntity?.name}. The entity reverts to its last approved state.`

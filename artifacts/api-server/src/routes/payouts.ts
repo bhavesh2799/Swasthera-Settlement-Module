@@ -2,6 +2,7 @@ import { Router } from "express";
 import { db } from "@workspace/db";
 import { payoutsTable, activityTable, settlementsTable } from "@workspace/db";
 import { eq, sql } from "drizzle-orm";
+import { authorize } from "../middlewares/rbac";
 
 const router = Router();
 
@@ -46,7 +47,7 @@ router.get("/payouts", async (req, res) => {
 });
 
 // Maker action: submit payout for Checker approval (PENDING_APPROVAL → INITIATED)
-router.post("/payouts/:id/initiate", async (req, res) => {
+router.post("/payouts/:id/initiate", authorize(["maker", "admin"]), async (req, res) => {
   try {
     const { initiatedBy } = req.body as { initiatedBy?: string };
     const maker = initiatedBy || "Anjali Patel";
@@ -79,7 +80,7 @@ router.post("/payouts/:id/initiate", async (req, res) => {
 });
 
 // Checker action: approve payout → auto-generate UTR → SETTLED
-router.post("/payouts/:id/approve", async (req, res) => {
+router.post("/payouts/:id/approve", authorize(["checker", "admin"]), async (req, res) => {
   try {
     const { approvedBy, payoutNotes } = req.body as { approvedBy?: string; payoutNotes?: string };
     const checker = approvedBy || "Rajesh Kumar";

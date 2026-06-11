@@ -12,10 +12,13 @@ export const onboardingsTable = pgTable("onboardings", {
   kybStatus: kybStatusEnum("kyb_status").notNull().default("NOT_STARTED"),
   // Company details
   companyName: text("company_name").notNull(),
+  tradeName: text("trade_name"),
   companyType: text("company_type").notNull(),
   pan: text("pan").notNull(),
   cin: text("cin"),
+  llpCode: text("llp_code"),
   masterGstin: text("master_gstin").notNull(),
+  gstAvailable: boolean("gst_available").notNull().default(true),
   tan: text("tan"),
   registeredAddress: text("registered_address"),
   stateCode: text("state_code"),

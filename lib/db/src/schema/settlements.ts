@@ -1,4 +1,4 @@
-import { pgTable, serial, text, integer, numeric, timestamp, pgEnum } from "drizzle-orm/pg-core";
+import { pgTable, serial, text, integer, numeric, boolean, timestamp, pgEnum } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -29,6 +29,13 @@ export const settlementsTable = pgTable("settlements", {
   mdrCharges: numeric("mdr_charges", { precision: 14, scale: 2 }).notNull().default("0"),
   penalty: numeric("penalty", { precision: 14, scale: 2 }).notNull().default("0"),
   netPayable: numeric("net_payable", { precision: 14, scale: 2 }).notNull(),
+  // Negative-net handling: if the raw net is below zero we never pay out a
+  // negative amount — net_payable is clamped to 0 and the deficit is recorded
+  // here (negative) to be carried forward into the next cycle (spec MODULE 3).
+  carryForward: numeric("carry_forward", { precision: 14, scale: 2 }).notNull().default("0"),
+  // Payout hold (stop-payout) — pauses the cycle without deleting it.
+  onHold: boolean("on_hold").notNull().default(false),
+  holdReason: text("hold_reason"),
   // Approval workflow
   status: settlementStatusEnum("status").notNull().default("COMPUTED"),
   financeNotes: text("finance_notes"),

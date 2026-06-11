@@ -62,6 +62,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
     maker: "Create & submit onboardings, initiate payouts",
     checker: "Approve/reject onboardings & payouts",
     backend: "Simulate Fynd data feeds & manage orders",
+    admin: "Manage users & configure global TDS/TCS rates",
   };
 
   return (
@@ -96,36 +97,46 @@ export function Layout({ children }: { children: React.ReactNode }) {
               {isBackend ? <Database className="h-3.5 w-3.5 text-amber-600" /> : <Users2 className="h-3.5 w-3.5" />}
               Active Role
             </div>
-            <div className="flex rounded-md overflow-hidden border border-border text-xs">
+            <div className="grid grid-cols-2 gap-1 text-xs">
               <button
                 onClick={() => setRole("maker")}
-                className={`flex-1 px-2 py-1.5 font-medium transition-colors ${
-                  role === "maker" 
-                    ? "bg-primary text-primary-foreground" 
-                    : "bg-card text-muted-foreground hover:bg-secondary"
+                className={`px-2 py-1.5 font-medium rounded-md border transition-colors ${
+                  role === "maker"
+                    ? "bg-primary text-primary-foreground border-primary"
+                    : "bg-card text-muted-foreground border-border hover:bg-secondary"
                 }`}
               >
                 Maker
               </button>
               <button
                 onClick={() => setRole("checker")}
-                className={`flex-1 px-2 py-1.5 font-medium transition-colors ${
-                  role === "checker" 
-                    ? "bg-primary text-primary-foreground" 
-                    : "bg-card text-muted-foreground hover:bg-secondary"
+                className={`px-2 py-1.5 font-medium rounded-md border transition-colors ${
+                  role === "checker"
+                    ? "bg-primary text-primary-foreground border-primary"
+                    : "bg-card text-muted-foreground border-border hover:bg-secondary"
                 }`}
               >
                 Checker
               </button>
               <button
                 onClick={() => setRole("backend")}
-                className={`flex-1 px-2 py-1.5 font-medium transition-colors ${
-                  role === "backend" 
-                    ? "bg-amber-600 text-white" 
-                    : "bg-card text-muted-foreground hover:bg-secondary"
+                className={`px-2 py-1.5 font-medium rounded-md border transition-colors ${
+                  role === "backend"
+                    ? "bg-amber-600 text-white border-amber-600"
+                    : "bg-card text-muted-foreground border-border hover:bg-secondary"
                 }`}
               >
                 Backend
+              </button>
+              <button
+                onClick={() => setRole("admin")}
+                className={`px-2 py-1.5 font-medium rounded-md border transition-colors ${
+                  role === "admin"
+                    ? "bg-violet-600 text-white border-violet-600"
+                    : "bg-card text-muted-foreground border-border hover:bg-secondary"
+                }`}
+              >
+                Admin
               </button>
             </div>
             <p className="text-[10px] text-muted-foreground leading-snug">

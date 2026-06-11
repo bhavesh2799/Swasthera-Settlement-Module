@@ -9,6 +9,9 @@ import settlementsRouter from "./settlements";
 import payoutsRouter from "./payouts";
 import commissionMasterRouter from "./commission-master";
 import brandsRouter from "./brands";
+import utilsRouter from "./utils";
+import bankAccountsRouter from "./bank-accounts";
+import transactionsRouter from "./transactions";
 
 const router: IRouter = Router();
 
@@ -22,5 +25,8 @@ router.use(settlementsRouter);
 router.use(payoutsRouter);
 router.use(commissionMasterRouter);
 router.use(brandsRouter);
+router.use(utilsRouter);
+router.use(bankAccountsRouter);
+router.use(transactionsRouter);
 
 export default router;

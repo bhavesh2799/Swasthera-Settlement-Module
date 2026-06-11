@@ -2,6 +2,9 @@ import { Router } from "express";
 import { db } from "@workspace/db";
 import { onboardingsTable, activityTable, commissionMasterTable, brandsTable, warehousesTable } from "@workspace/db";
 import { eq, like, and, SQL } from "drizzle-orm";
+import { authorize } from "../middlewares/rbac";
+import { runKyb } from "../services/kybService";
+import { writeAudit } from "../services/audit";
 
 const router = Router();
 
@@ -54,10 +57,13 @@ router.post("/onboardings", async (req, res) => {
       status: "DRAFT",
       kybStatus: "NOT_STARTED",
       companyName: body.companyName,
+      tradeName: body.tradeName,
       companyType: body.companyType,
       pan: body.pan,
       cin: body.cin,
+      llpCode: body.llpCode,
       masterGstin: body.masterGstin,
+      gstAvailable: body.gstAvailable !== false,
       tan: body.tan,
       registeredAddress: body.registeredAddress,
       stateCode: body.masterGstin ? body.masterGstin.substring(0, 2) : undefined,
@@ -208,11 +214,9 @@ router.post("/onboardings/:id/kyb-check", async (req, res) => {
     // Simulate KYB API latency
     await new Promise((resolve) => setTimeout(resolve, 600));
 
-    // BRD: KYB verifies PAN, GST, CIN, Bank — simulate by validating PAN format (AAAAA9999A)
-    const panRegex = /^[A-Z]{5}[0-9]{4}[A-Z]{1}$/i;
-    const kybPassed = panRegex.test(ob.pan);
-
-    const newStatus = kybPassed ? "PASSED" : "FAILED";
+    // Run full KYB sequence: PAN → GST → CIN → Bank (BRD §3.2)
+    const result = await runKyb(ob);
+    const newStatus = result.passed ? "PASSED" : "FAILED";
     const verifiedAt = new Date();
 
     const [updated] = await db.update(onboardingsTable)
@@ -227,19 +231,25 @@ router.post("/onboardings/:id/kyb-check", async (req, res) => {
 
     await db.insert(activityTable).values({
       user: "System (KYB Engine)",
-      action: `KYB ${newStatus} for ${ob.ref} — PAN ${ob.pan} ${kybPassed ? "verified" : "could not be verified"}`,
+      action: `KYB ${newStatus} for ${ob.ref} — ${result.summary}`,
       entityType: "onboarding",
       entityRef: ob.ref,
-      level: kybPassed ? "success" : "warning",
+      level: result.passed ? "success" : "warning",
+    });
+
+    await writeAudit(req, {
+      entityType: "Onboarding",
+      entityId: ob.id,
+      action: "kyb_check",
+      changedFields: { kybStatus: newStatus, checks: result.checks },
     });
 
     res.json({
       kybStatus: newStatus,
       verifiedAt: verifiedAt.toISOString(),
       kybAttempts: updated.kybAttempts,
-      message: kybPassed
-        ? "KYB passed — PAN, GST registration, CIN, and bank account verified successfully."
-        : "KYB failed — PAN format invalid or entity not found in GST/MCA registry. Correct details and retry.",
+      checks: result.checks,
+      message: result.summary,
     });
   } catch (err) {
     req.log.error({ err }, "kyb-check error");
@@ -247,7 +257,7 @@ router.post("/onboardings/:id/kyb-check", async (req, res) => {
   }
 });
 
-router.post("/onboardings/:id/submit", async (req, res) => {
+router.post("/onboardings/:id/submit", authorize(["maker", "admin"]), async (req, res) => {
   try {
     const submittedBy = (req.body as { submittedBy?: string } | undefined)?.submittedBy;
     const [ob] = await db.select().from(onboardingsTable).where(eq(onboardingsTable.id, parseInt(req.params.id)));
@@ -265,6 +275,7 @@ router.post("/onboardings/:id/submit", async (req, res) => {
       .returning();
     if (!row) return res.status(404).json({ error: "Not found" });
     await db.insert(activityTable).values({ user: maker, action: `Submitted ${row.ref} for Checker review`, entityType: "onboarding", entityRef: row.ref, level: "info" });
+    await writeAudit(req, { entityType: "Onboarding", entityId: row.id, action: "submit", changedFields: { status: "SUBMITTED", submittedBy: maker } });
     res.json(mapOnboarding(row));
   } catch (err) {
     req.log.error({ err }, "submit onboarding error");
@@ -272,7 +283,7 @@ router.post("/onboardings/:id/submit", async (req, res) => {
   }
 });
 
-router.post("/onboardings/:id/approve", async (req, res) => {
+router.post("/onboardings/:id/approve", authorize(["checker", "admin"]), async (req, res) => {
   try {
     const { notes, checkerName } = req.body as { notes?: string; checkerName?: string };
     const checker = checkerName || "Rajesh Kumar";
@@ -296,6 +307,7 @@ router.post("/onboardings/:id/approve", async (req, res) => {
       .where(and(eq(commissionMasterTable.onboardingId, row.id), eq(commissionMasterTable.isCurrent, true)));
 
     await db.insert(activityTable).values({ user: checker, action: `Approved onboarding ${row.ref} — Fynd sync initiated`, entityType: "onboarding", entityRef: row.ref, level: "success" });
+    await writeAudit(req, { entityType: "Onboarding", entityId: row.id, action: "approve", changedFields: { status: "APPROVED", checkerName: checker, notes } });
     res.json(mapOnboarding(row));
   } catch (err) {
     req.log.error({ err }, "approve onboarding error");
@@ -303,7 +315,7 @@ router.post("/onboardings/:id/approve", async (req, res) => {
   }
 });
 
-router.post("/onboardings/:id/reject", async (req, res) => {
+router.post("/onboardings/:id/reject", authorize(["checker", "admin"]), async (req, res) => {
   try {
     const { notes, checkerName } = req.body as { notes?: string; checkerName?: string };
     const checker = checkerName || "Rajesh Kumar";
@@ -313,9 +325,34 @@ router.post("/onboardings/:id/reject", async (req, res) => {
       .returning();
     if (!row) return res.status(404).json({ error: "Not found" });
     await db.insert(activityTable).values({ user: checker, action: `Rejected onboarding ${row.ref} — ${notes ?? "No reason"}`, entityType: "onboarding", entityRef: row.ref, level: "warning" });
+    await writeAudit(req, { entityType: "Onboarding", entityId: row.id, action: "reject", changedFields: { status: "REJECTED", checkerName: checker, notes } });
     res.json(mapOnboarding(row));
   } catch (err) {
     req.log.error({ err }, "reject onboarding error");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Checker requests edits — sends submission back to Maker as DRAFT (BRD §3.1, spec step 5)
+router.post("/onboardings/:id/request-edit", authorize(["checker", "admin"]), async (req, res) => {
+  try {
+    const { notes, checkerName } = req.body as { notes?: string; checkerName?: string };
+    const checker = checkerName || "Rajesh Kumar";
+    const [ob] = await db.select().from(onboardingsTable).where(eq(onboardingsTable.id, parseInt(req.params.id)));
+    if (!ob) return res.status(404).json({ error: "Not found" });
+    if (ob.status !== "SUBMITTED") {
+      return res.status(400).json({ error: "Only submitted onboardings can be sent back for edits." });
+    }
+    const [row] = await db.update(onboardingsTable)
+      .set({ status: "DRAFT", checkerName: checker, checkerNotes: notes, reviewedAt: new Date(), updatedAt: new Date() })
+      .where(eq(onboardingsTable.id, parseInt(req.params.id)))
+      .returning();
+    if (!row) return res.status(404).json({ error: "Not found" });
+    await db.insert(activityTable).values({ user: checker, action: `Requested edits on ${row.ref} — ${notes ?? "see notes"}`, entityType: "onboarding", entityRef: row.ref, level: "warning" });
+    await writeAudit(req, { entityType: "Onboarding", entityId: row.id, action: "request_edit", changedFields: { status: "DRAFT", checkerName: checker, notes } });
+    res.json(mapOnboarding(row));
+  } catch (err) {
+    req.log.error({ err }, "request-edit onboarding error");
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -329,10 +366,13 @@ function mapOnboarding(r: typeof onboardingsTable.$inferSelect) {
     kybVerifiedAt: r.kybVerifiedAt?.toISOString(),
     kybAttempts: r.kybAttempts,
     companyName: r.companyName,
+    tradeName: r.tradeName,
     companyType: r.companyType,
     pan: r.pan,
     cin: r.cin,
+    llpCode: r.llpCode,
     masterGstin: r.masterGstin,
+    gstAvailable: r.gstAvailable,
     tan: r.tan,
     registeredAddress: r.registeredAddress,
     stateCode: r.stateCode,

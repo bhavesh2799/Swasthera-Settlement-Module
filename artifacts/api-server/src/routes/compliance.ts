@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
-import { tcsRecordsTable, tdsRecordsTable, bagsTable, activityTable } from "@workspace/db";
-import { eq, and, sql } from "drizzle-orm";
+import { tcsRecordsTable, tdsRecordsTable, bagsTable, activityTable, settlementsTable, payoutsTable, onboardingsTable } from "@workspace/db";
+import { eq, and, sql, inArray } from "drizzle-orm";
 
 const router = Router();
 
@@ -314,6 +314,130 @@ router.get("/compliance/calendar", async (_req, res) => {
     { id: 12, obligation: "Form 27EQ — Q1 FY26-27", section: "Section 52 GST Act", dueDate: "2026-07-15", status: "Future" },
     { id: 13, obligation: "Form 26Q — Q1 FY26-27", section: "Section 194-O IT Act", dueDate: "2026-07-31", status: "Future" },
   ]);
+});
+
+// Running ledger — spec MODULE 4. Every financial line item for a brand
+// (settlement credits + payout debits) in chronological order with a running
+// balance representing the amount outstanding to the brand.
+interface LedgerEntry {
+  date: string;
+  type: "SETTLEMENT" | "PAYOUT";
+  cycle: string;
+  ref: string;
+  description: string;
+  amount: number; // signed: + credit to brand, − paid out
+  runningBalance: number;
+}
+
+async function buildLedger(
+  brandId: number,
+  opts: { from?: string; to?: string; type?: string; cycle?: string } = {},
+): Promise<{ brand: { onboardingId: number; companyName: string; brandName: string } | null; entries: LedgerEntry[]; closingBalance: number }> {
+  const [ob] = await db.select().from(onboardingsTable).where(eq(onboardingsTable.id, brandId));
+
+  const settlements = await db.select().from(settlementsTable).where(eq(settlementsTable.onboardingId, brandId));
+  const settlementIds = settlements.map((s) => s.id);
+  const payouts = settlementIds.length
+    ? await db.select().from(payoutsTable).where(inArray(payoutsTable.settlementId, settlementIds))
+    : [];
+
+  const raw: Omit<LedgerEntry, "runningBalance">[] = [];
+  for (const s of settlements) {
+    raw.push({
+      date: s.createdAt.toISOString(),
+      type: "SETTLEMENT",
+      cycle: s.cycle,
+      ref: `STMT-${s.id}`,
+      description: `Settlement computed (${s.eligibleBags} bags, net payable)`,
+      amount: parseFloat(s.netPayable),
+    });
+  }
+  for (const p of payouts) {
+    // Only post a debit once money has actually left — i.e. the payout is
+    // SETTLED (UTR generated). Pending/initiated payouts must not reduce the
+    // outstanding balance owed to the brand.
+    if (p.status !== "SETTLED") continue;
+    const when = p.settledAt ?? p.payoutApprovedAt ?? p.initiatedAt;
+    raw.push({
+      date: when.toISOString(),
+      type: "PAYOUT",
+      cycle: p.cycle,
+      ref: p.utr ?? p.paymentRef,
+      description: `Payout settled${p.utr ? ` · UTR ${p.utr}` : ""} via ${p.transferMode}`,
+      amount: -parseFloat(p.amount),
+    });
+  }
+
+  let filtered = raw;
+  if (opts.from) filtered = filtered.filter((e) => e.date >= opts.from!);
+  if (opts.to) filtered = filtered.filter((e) => e.date <= opts.to! + "T23:59:59.999Z");
+  if (opts.type && opts.type !== "ALL") filtered = filtered.filter((e) => e.type === opts.type);
+  if (opts.cycle && opts.cycle !== "ALL") filtered = filtered.filter((e) => e.cycle === opts.cycle);
+
+  // Chronological; on a tie a SETTLEMENT (credit) precedes its PAYOUT (debit).
+  const rank = (t: string) => (t === "SETTLEMENT" ? 0 : 1);
+  filtered.sort((a, b) => a.date.localeCompare(b.date) || rank(a.type) - rank(b.type));
+
+  let balance = 0;
+  const entries: LedgerEntry[] = filtered.map((e) => {
+    balance = Math.round((balance + e.amount) * 100) / 100;
+    return { ...e, runningBalance: balance };
+  });
+
+  return {
+    brand: ob ? { onboardingId: ob.id, companyName: ob.companyName, brandName: ob.brandName } : null,
+    entries,
+    closingBalance: balance,
+  };
+}
+
+router.get("/compliance/ledger/:brandId", async (req, res) => {
+  try {
+    const brandId = parseInt(String(req.params.brandId));
+    if (Number.isNaN(brandId)) return res.status(400).json({ error: "Invalid brandId" });
+    const { from, to, type, cycle } = req.query as { from?: string; to?: string; type?: string; cycle?: string };
+    const ledger = await buildLedger(brandId, { from, to, type, cycle });
+    if (!ledger.brand) return res.status(404).json({ error: "Brand not found" });
+    res.json(ledger);
+  } catch (err) {
+    req.log.error({ err }, "ledger error");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.get("/compliance/ledger/:brandId/export", async (req, res) => {
+  try {
+    const brandId = parseInt(String(req.params.brandId));
+    if (Number.isNaN(brandId)) return res.status(400).json({ error: "Invalid brandId" });
+    const { from, to, type, cycle } = req.query as { from?: string; to?: string; type?: string; cycle?: string };
+    const ledger = await buildLedger(brandId, { from, to, type, cycle });
+    if (!ledger.brand) return res.status(404).json({ error: "Brand not found" });
+
+    const header = ["Date", "Type", "Cycle", "Reference", "Description", "Amount (INR)", "Running Balance (INR)"];
+    const esc = (v: string) => `"${String(v).replace(/"/g, '""')}"`;
+    const lines = [
+      header.map(esc).join(","),
+      ...ledger.entries.map((e) =>
+        [
+          e.date.split("T")[0],
+          e.type,
+          e.cycle,
+          e.ref,
+          e.description,
+          e.amount.toFixed(2),
+          e.runningBalance.toFixed(2),
+        ].map(esc).join(","),
+      ),
+    ];
+    const csv = lines.join("\n");
+    const fname = `ledger-${ledger.brand.brandName.replace(/[^a-z0-9]+/gi, "-")}-${new Date().toISOString().split("T")[0]}.csv`;
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", `attachment; filename="${fname}"`);
+    res.send(csv);
+  } catch (err) {
+    req.log.error({ err }, "ledger export error");
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
 export default router;

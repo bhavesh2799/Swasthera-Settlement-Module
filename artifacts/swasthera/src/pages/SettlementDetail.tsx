@@ -8,7 +8,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, CheckCircle, Calculator, Download, Info, BanknoteIcon, Send, Clock, ExternalLink, FileText } from "lucide-react";
+import { ArrowLeft, CheckCircle, Calculator, Download, Info, BanknoteIcon, Send, Clock, ExternalLink, FileText, Ban, PlayCircle } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { Separator } from "@/components/ui/separator";
 import { useRole } from "@/contexts/RoleContext";
@@ -65,7 +65,8 @@ export function SettlementDetail() {
   const id = parseInt(params.id || "0", 10);
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const { isChecker } = useRole();
+  const { isChecker, isAdmin } = useRole();
+  const canSignOff = isChecker || isAdmin;
 
   const { data: settlement, isLoading } = useGetSettlement(id, {
     query: { enabled: !!id, queryKey: getGetSettlementQueryKey(id) }
@@ -122,9 +123,31 @@ export function SettlementDetail() {
   };
 
   const socUrl = `/api/settlements/${id}/soc`;
-  const canApprove = isChecker && (settlement.status === "COMPUTED" || settlement.status === "PENDING_APPROVAL");
+  const settlementExtra = settlement as { marketplacePromotions?: number; carryForward?: number; onHold?: boolean; holdReason?: string | null };
+  const carryForward = settlementExtra.carryForward ?? 0;
+  const onHold = settlementExtra.onHold ?? false;
+  const holdReason = settlementExtra.holdReason ?? null;
+  const canApprove = canSignOff && !onHold && (settlement.status === "COMPUTED" || settlement.status === "PENDING_APPROVAL");
+  const canHold = canSignOff && (settlement.status === "COMPUTED" || settlement.status === "PENDING_APPROVAL");
 
-  const marketplacePromotions = (settlement as { marketplacePromotions?: number }).marketplacePromotions ?? 0;
+  const marketplacePromotions = settlementExtra.marketplacePromotions ?? 0;
+
+  const handleHold = async (hold: boolean) => {
+    const reason = hold ? window.prompt("Reason for stopping this payout?") : undefined;
+    if (hold && reason === null) return;
+    const r = await fetch(`/api/settlements/${id}/hold`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hold, reason }),
+    });
+    if (r.ok) {
+      toast({ title: hold ? "Payout Stopped" : "Payout Resumed", description: hold ? "This settlement is on hold and cannot be approved until resumed." : "This settlement can now be approved." });
+      queryClient.invalidateQueries({ queryKey: getGetSettlementQueryKey(id) });
+    } else {
+      const err = await r.json().catch(() => ({}));
+      toast({ title: "Action Failed", description: err.error ?? "Could not update payout hold.", variant: "destructive" });
+    }
+  };
 
   return (
     <div className="flex-1 overflow-auto bg-slate-50/50 p-6 md:p-8 space-y-6">
@@ -155,18 +178,38 @@ export function SettlementDetail() {
             </Button>
           )}
 
+          {canHold && !onHold && (
+            <Button variant="outline" onClick={() => handleHold(true)} className="text-red-700 border-red-200 hover:bg-red-50">
+              <Ban className="mr-2 h-4 w-4" /> Stop Payout
+            </Button>
+          )}
+          {canHold && onHold && (
+            <Button variant="outline" onClick={() => handleHold(false)} className="text-green-700 border-green-200 hover:bg-green-50">
+              <PlayCircle className="mr-2 h-4 w-4" /> Resume Payout
+            </Button>
+          )}
           {canApprove && (
             <Button onClick={() => setShowApproveDialog(true)} className="bg-green-600 hover:bg-green-700">
               <CheckCircle className="mr-2 h-4 w-4" /> Approve Settlement
             </Button>
           )}
-          {!isChecker && (settlement.status === "COMPUTED" || settlement.status === "PENDING_APPROVAL") && (
+          {!canSignOff && (settlement.status === "COMPUTED" || settlement.status === "PENDING_APPROVAL") && (
             <Badge variant="outline" className="px-3 py-1.5 text-amber-700 border-amber-200 bg-amber-50 text-sm">
               Awaiting Finance Checker approval
             </Badge>
           )}
         </div>
       </div>
+
+      {onHold && (
+        <div className="flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 p-4">
+          <Ban className="mt-0.5 h-5 w-5 text-red-600 shrink-0" />
+          <div>
+            <p className="font-semibold text-red-800">Payout stopped</p>
+            <p className="text-sm text-red-700">{holdReason ?? "This settlement is on hold and cannot be approved until resumed."}</p>
+          </div>
+        </div>
+      )}
 
       <div className="grid gap-6 lg:grid-cols-3">
         {/* Deduction Waterfall */}
@@ -254,10 +297,24 @@ export function SettlementDetail() {
 
                 <Separator className="bg-slate-200 border-2" />
 
+                {carryForward < 0 && (
+                  <div className="flex justify-between items-center p-4 bg-amber-50 border-y border-amber-100">
+                    <div className="text-amber-800 text-sm font-medium">Net negative — deficit carried to next cycle</div>
+                    <div className="text-amber-800 font-semibold">{formatCurrency(carryForward)}</div>
+                  </div>
+                )}
+
                 <div className="flex justify-between items-center p-6 bg-slate-50">
                   <div className="text-lg font-bold text-slate-900">10. Net Payable to Brand</div>
                   <div className="text-2xl font-bold text-green-700">{formatCurrency(settlement.netPayable)}</div>
                 </div>
+
+                {carryForward < 0 && (
+                  <div className="px-6 pb-2 text-xs text-amber-700 flex items-center gap-1">
+                    <Info className="h-3 w-3" />
+                    Deductions exceeded GMV. Brand is never paid a negative amount — {formatCurrency(Math.abs(carryForward))} will be adjusted against the next cycle.
+                  </div>
+                )}
 
                 <div className="px-6 pb-4 text-xs text-slate-400 flex items-center gap-1">
                   <Info className="h-3 w-3" />

@@ -1,7 +1,10 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
 import { settlementsTable, onboardingsTable, bagsTable, payoutsTable, activityTable } from "@workspace/db";
-import { eq, and, inArray } from "drizzle-orm";
+import { eq, and, inArray, desc } from "drizzle-orm";
+import { authorize } from "../middlewares/rbac";
+import { writeAudit } from "../services/audit";
+import { calculateSettlement } from "../services/settlementCalculator";
 
 const router = Router();
 
@@ -22,6 +25,9 @@ router.get("/settlements", async (req, res) => {
       eligibleBags: r.eligibleBags,
       grossGmv: parseFloat(r.grossGmv),
       netPayable: parseFloat(r.netPayable),
+      carryForward: parseFloat(r.carryForward),
+      onHold: r.onHold,
+      holdReason: r.holdReason,
       status: r.status,
       createdAt: r.createdAt.toISOString(),
     })));
@@ -45,18 +51,18 @@ router.post("/settlements", async (req, res) => {
       return res.status(400).json({ error: `No eligible bags found for ${ob.brandName} in cycle ${cycle}. Ensure bags are marked as 'eligible' in the Orders register.` });
     }
 
-    const grossGmv = eligibleBags.reduce((s, b) => s + parseFloat(b.esp) * b.qty, 0);
-    const brandPromotions = 0;
-    const marketplacePromotions = 0;
-    const netBeforeCommission = grossGmv - brandPromotions;
-    const commissionRate = parseFloat(ob.commissionRate);
-    const commission = netBeforeCommission * commissionRate / 100;
-    const gstOnCommission = commission * 0.18;
-    const tcsAmount = eligibleBags.reduce((s, b) => s + parseFloat(b.tcsAmount), 0);
-    const tdsAmount = eligibleBags.reduce((s, b) => s + parseFloat(b.tdsAmount), 0);
-    const mdrCharges = 0;
-    const penalty = 0;
-    const netPayable = netBeforeCommission - commission - gstOnCommission - tcsAmount - tdsAmount - mdrCharges - penalty;
+    // Pull any unconsumed deficit from the brand's most recent prior settlement.
+    const [prior] = await db.select().from(settlementsTable)
+      .where(eq(settlementsTable.onboardingId, ob.id))
+      .orderBy(desc(settlementsTable.createdAt))
+      .limit(1);
+    const priorCarryForward = prior ? parseFloat(prior.carryForward) : 0;
+
+    const calc = calculateSettlement({
+      bags: eligibleBags.map((b) => ({ esp: b.esp, qty: b.qty, tcsAmount: b.tcsAmount, tdsAmount: b.tdsAmount })),
+      commissionRate: parseFloat(ob.commissionRate),
+      priorCarryForward,
+    });
 
     const [row] = await db.insert(settlementsTable).values({
       cycle,
@@ -68,22 +74,25 @@ router.post("/settlements", async (req, res) => {
       bankName: ob.bankName,
       eligibleBags: eligibleBags.length,
       bagIds: JSON.stringify(eligibleBags.map((b) => b.bagId)),
-      grossGmv: String(grossGmv.toFixed(2)),
-      brandPromotions: "0",
-      marketplacePromotions: "0",
-      netBeforeCommission: String(netBeforeCommission.toFixed(2)),
-      commission: String(commission.toFixed(2)),
+      grossGmv: calc.grossGmv.toFixed(2),
+      brandPromotions: calc.brandPromotions.toFixed(2),
+      marketplacePromotions: calc.marketplacePromotions.toFixed(2),
+      netBeforeCommission: calc.netBeforeCommission.toFixed(2),
+      commission: calc.commission.toFixed(2),
       commissionRate: ob.commissionRate,
-      gstOnCommission: String(gstOnCommission.toFixed(2)),
-      tcsAmount: String(tcsAmount.toFixed(2)),
-      tdsAmount: String(tdsAmount.toFixed(2)),
-      mdrCharges: "0",
-      penalty: "0",
-      netPayable: String(netPayable.toFixed(2)),
+      gstOnCommission: calc.gstOnCommission.toFixed(2),
+      tcsAmount: calc.tcsAmount.toFixed(2),
+      tdsAmount: calc.tdsAmount.toFixed(2),
+      mdrCharges: calc.mdrCharges.toFixed(2),
+      penalty: calc.penalty.toFixed(2),
+      netPayable: calc.netPayable.toFixed(2),
+      carryForward: calc.carryForward.toFixed(2),
       status: "PENDING_APPROVAL",
     }).returning();
 
-    await db.insert(activityTable).values({ user: "Anjali Patel", action: `Computed settlement for ${ob.brandName} — ${cycle} (${eligibleBags.length} bags, GMV ₹${grossGmv.toFixed(0)})`, entityType: "settlement", entityRef: String(row.id), level: "info" });
+    const cfNote = priorCarryForward < 0 ? ` (applied ₹${Math.abs(priorCarryForward).toFixed(0)} carry-forward)` : "";
+    const negNote = calc.carryForward < 0 ? ` — net negative, ₹${Math.abs(calc.carryForward).toFixed(0)} carried to next cycle, payout floored at ₹0` : "";
+    await db.insert(activityTable).values({ user: req.user?.name ?? "Anjali Patel", action: `Computed settlement for ${ob.brandName} — ${cycle} (${eligibleBags.length} bags, GMV ₹${calc.grossGmv.toFixed(0)})${cfNote}${negNote}`, entityType: "settlement", entityRef: String(row.id), level: calc.carryForward < 0 ? "warning" : "info" });
 
     res.status(201).json(mapSettlement(row));
   } catch (err) {
@@ -193,7 +202,7 @@ router.get("/settlements/:id/invoice", async (req, res) => {
   }
 });
 
-router.post("/settlements/:id/approve", async (req, res) => {
+router.post("/settlements/:id/approve", authorize(["checker", "admin"]), async (req, res) => {
   try {
     const { financeNotes, approvedBy } = req.body as { financeNotes?: string; approvedBy?: string };
     const checker = approvedBy || "Rajesh Kumar";
@@ -201,6 +210,9 @@ router.post("/settlements/:id/approve", async (req, res) => {
     if (!existing) return res.status(404).json({ error: "Not found" });
     if (existing.status === "APPROVED" || existing.status === "PAID") {
       return res.status(409).json({ error: `Settlement is already ${existing.status}. A payout has already been created.` });
+    }
+    if (existing.onHold) {
+      return res.status(409).json({ error: `Settlement #${existing.id} is on payout hold (${existing.holdReason ?? "stopped by finance"}). Resume it before approving.` });
     }
 
     const [row] = await db.update(settlementsTable)
@@ -299,6 +311,41 @@ router.get("/settlements/:id/soc", async (req, res) => {
   }
 });
 
+// Stop-payout (hold) / resume — spec MODULE 3. Pauses a cycle without deleting
+// it; a held settlement cannot be approved into a payout.
+router.post("/settlements/:id/hold", authorize(["checker", "admin"]), async (req, res) => {
+  try {
+    const { hold, reason } = req.body as { hold?: boolean; reason?: string };
+    const id = parseInt(String(req.params.id));
+    const [existing] = await db.select().from(settlementsTable).where(eq(settlementsTable.id, id));
+    if (!existing) return res.status(404).json({ error: "Not found" });
+    if (existing.status === "APPROVED" || existing.status === "PAID") {
+      return res.status(409).json({ error: `Settlement is already ${existing.status}; payout has been created and cannot be held.` });
+    }
+    const onHold = hold !== false;
+    const [row] = await db.update(settlementsTable)
+      .set({ onHold, holdReason: onHold ? (reason ?? "Payout stopped by finance") : null })
+      .where(eq(settlementsTable.id, id))
+      .returning();
+
+    const msg = onHold
+      ? `Stopped payout for settlement #${id} (${row.brandName})${reason ? ` — ${reason}` : ""}`
+      : `Resumed payout for settlement #${id} (${row.brandName})`;
+    await writeAudit(req, {
+      action: onHold ? "SETTLEMENT_HOLD" : "SETTLEMENT_RESUME",
+      entityType: "settlement",
+      entityId: id,
+      changedFields: { onHold, holdReason: row.holdReason },
+    });
+    await db.insert(activityTable).values({ user: req.user?.name ?? "Finance", action: msg, entityType: "settlement", entityRef: String(id), level: onHold ? "warning" : "info" });
+
+    res.json(mapSettlement(row));
+  } catch (err) {
+    req.log.error({ err }, "hold settlement error");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 function mapSettlement(r: typeof settlementsTable.$inferSelect) {
   return {
     id: r.id,
@@ -322,6 +369,9 @@ function mapSettlement(r: typeof settlementsTable.$inferSelect) {
     mdrCharges: parseFloat(r.mdrCharges),
     penalty: parseFloat(r.penalty),
     netPayable: parseFloat(r.netPayable),
+    carryForward: parseFloat(r.carryForward),
+    onHold: r.onHold,
+    holdReason: r.holdReason,
     status: r.status,
     financeNotes: r.financeNotes,
     approvedBy: r.approvedBy,

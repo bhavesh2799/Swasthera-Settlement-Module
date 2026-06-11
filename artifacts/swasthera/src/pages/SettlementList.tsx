@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { Calculator, Loader2, ArrowUpRight } from "lucide-react";
+import { Calculator, Loader2, ArrowUpRight, Ban } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
 
 function formatCurrency(amount: number) {
@@ -207,8 +207,20 @@ export function SettlementList() {
                     </TableCell>
                     <TableCell className="text-right text-slate-600">{row.eligibleBags}</TableCell>
                     <TableCell className="text-right text-slate-600">{formatCurrency(row.grossGmv)}</TableCell>
-                    <TableCell className="text-right font-medium text-slate-900">{formatCurrency(row.netPayable)}</TableCell>
-                    <TableCell className="text-center"><StatusBadge status={row.status} /></TableCell>
+                    <TableCell className="text-right font-medium text-slate-900">
+                      {formatCurrency(row.netPayable)}
+                      {((row as { carryForward?: number }).carryForward ?? 0) < 0 && (
+                        <div className="text-[10px] font-normal text-amber-700">c/f {formatCurrency((row as { carryForward?: number }).carryForward ?? 0)}</div>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-center">
+                      <div className="flex flex-col items-center gap-1">
+                        <StatusBadge status={row.status} />
+                        {(row as { onHold?: boolean }).onHold && (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-medium text-red-700"><Ban className="h-3 w-3" />On Hold</span>
+                        )}
+                      </div>
+                    </TableCell>
                     <TableCell className="text-right px-6">
                       <Button asChild variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100 transition-opacity text-primary hover:text-primary hover:bg-primary/5">
                         <Link href={`/settlements/${row.id}`}>Review <ArrowUpRight className="ml-1 h-3 w-3" /></Link>

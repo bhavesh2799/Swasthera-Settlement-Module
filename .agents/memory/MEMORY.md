@@ -1,0 +1,3 @@
+- [Cancellation & reversal rules](cancellation-reversal-rules.md) — order cancel → 3 cases → credit note + TDS/TCS reverse-vs-adjust gated on the 7th-of-next-month deposit deadline.
+- [Onboarding response mapping](onboarding-response-mapping.md) — shape notes for GET /onboardings/:id and related mappers.
+- [Ledger posting policy](ledger-posting-policy.md) — brand ledger debits only on SETTLED payouts; built from settlements+payouts only (no invoices).

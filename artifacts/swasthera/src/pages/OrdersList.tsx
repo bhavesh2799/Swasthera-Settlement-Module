@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
-import { Search, Loader2, Plus, Trash2, RefreshCw, Database, PackageSearch, Pencil, Upload, Download, RefreshCcw } from "lucide-react";
+import { Search, Loader2, Plus, Trash2, RefreshCw, Database, PackageSearch, Pencil, Upload, Download, RefreshCcw, Receipt } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useRole } from "@/contexts/RoleContext";
 
@@ -148,6 +148,7 @@ export function OrdersList() {
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [showBulkDialog, setShowBulkDialog] = useState(false);
   const [editingBag, setEditingBag] = useState<BagRow | null>(null);
+  const [invoiceBag, setInvoiceBag] = useState<BagRow | null>(null);
   const [recalcLoading, setRecalcLoading] = useState(false);
   const { isBackend } = useRole();
   const { toast } = useToast();
@@ -432,8 +433,21 @@ export function OrdersList() {
                   return (
                     <TableRow key={row.id} className="border-slate-100/50">
                       <TableCell className="px-6">
-                        <div className="font-mono text-sm font-medium text-slate-900">{row.bagId}</div>
-                        <div className="font-mono text-xs text-slate-500 mt-0.5">{row.orderId}</div>
+                        <div className="flex items-center gap-1.5">
+                          <div>
+                            <div className="font-mono text-sm font-medium text-slate-900">{row.bagId}</div>
+                            <div className="font-mono text-xs text-slate-500 mt-0.5">{row.orderId}</div>
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-6 w-6 text-slate-400 hover:text-amber-700"
+                            title="View invoice"
+                            onClick={() => setInvoiceBag(row)}
+                          >
+                            <Receipt className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
                       </TableCell>
                       <TableCell className="font-medium text-slate-900">{row.brandName}</TableCell>
                       <TableCell>
@@ -534,7 +548,145 @@ export function OrdersList() {
           isPending={updateEligibilityMutation.isPending}
         />
       )}
+
+      {/* Invoice viewer dialog */}
+      {invoiceBag && (
+        <InvoiceDialog
+          bag={invoiceBag}
+          open={!!invoiceBag}
+          onOpenChange={(open) => !open && setInvoiceBag(null)}
+          canCapture={isBackend}
+        />
+      )}
     </div>
+  );
+}
+
+// ---------- Invoice Dialog ----------
+
+interface InvoiceRow {
+  id: number;
+  invoiceNumber: string;
+  invoiceType: "INVOICE" | "CREDIT_NOTE";
+  gmv: string;
+  commissionAmount: string;
+  gstOnCommission: string;
+  tdsDeducted: string;
+  tcsCollected: string;
+  netPayable: string;
+  reason: string | null;
+  generatedAt: string;
+}
+
+function InvoiceDialog({
+  bag,
+  open,
+  onOpenChange,
+  canCapture,
+}: {
+  bag: BagRow;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  canCapture: boolean;
+}) {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const { data, isLoading, refetch } = useQuery<{ invoices: InvoiceRow[] }>({
+    queryKey: ["transaction", bag.orderId],
+    queryFn: async () => {
+      const res = await fetch(`/api/transactions/${bag.orderId}`);
+      if (!res.ok) throw new Error("failed to load invoices");
+      return res.json();
+    },
+    enabled: open,
+  });
+
+  const captureMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch("/api/transactions/capture", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ order_id: bag.orderId }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error ?? "capture failed");
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Invoice generated", description: `Tax invoice created for ${bag.orderId}.` });
+      refetch();
+      queryClient.invalidateQueries({ queryKey: ["orders"] });
+    },
+    onError: (e: Error) => toast({ title: "Could not generate invoice", description: e.message, variant: "destructive" }),
+  });
+
+  const invoices = data?.invoices ?? [];
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Receipt className="h-4 w-4" /> Invoices — {bag.orderId}
+          </DialogTitle>
+          <DialogDescription>{bag.brandName} · {bag.sku}</DialogDescription>
+        </DialogHeader>
+
+        {isLoading ? (
+          <div className="py-8 text-center text-sm text-slate-400"><Loader2 className="h-4 w-4 animate-spin inline mr-2" />Loading…</div>
+        ) : invoices.length === 0 ? (
+          <div className="py-6 text-center space-y-3">
+            <p className="text-sm text-slate-500">No invoice has been generated for this order yet.</p>
+            {canCapture && (
+              <Button onClick={() => captureMutation.mutate()} disabled={captureMutation.isPending} className="bg-amber-600 hover:bg-amber-700 text-white">
+                {captureMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Receipt className="h-4 w-4 mr-2" />}
+                Capture Payment & Generate Invoice
+              </Button>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {invoices.map((inv) => {
+              const isCn = inv.invoiceType === "CREDIT_NOTE";
+              const inr = (v: string) => `₹${parseFloat(v).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+              return (
+                <div key={inv.id} className={`rounded-lg border p-3.5 ${isCn ? "border-amber-200 bg-amber-50/40" : "border-slate-200 bg-white"}`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-sm font-semibold text-slate-900">{inv.invoiceNumber}</span>
+                      <Badge variant={isCn ? "outline" : "default"} className={isCn ? "border-amber-400 text-amber-700 text-xs" : "text-xs"}>
+                        {isCn ? "Credit Note" : "Invoice"}
+                      </Badge>
+                    </div>
+                    <a
+                      href={`/api/invoices/${inv.id}/download`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-xs text-blue-600 hover:underline flex items-center gap-1"
+                    >
+                      <Download className="h-3 w-3" /> Download
+                    </a>
+                  </div>
+                  {inv.reason && <p className="text-xs text-amber-700 italic mb-2">{inv.reason}</p>}
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+                    <span className="text-slate-500">GMV</span><span className="text-right font-mono">{inr(inv.gmv)}</span>
+                    <span className="text-slate-500">Commission</span><span className="text-right font-mono">{inr(inv.commissionAmount)}</span>
+                    <span className="text-slate-500">GST on Commission</span><span className="text-right font-mono">{inr(inv.gstOnCommission)}</span>
+                    <span className="text-slate-500">TDS Deducted</span><span className="text-right font-mono">{inr(inv.tdsDeducted)}</span>
+                    <span className="text-slate-500">TCS Collected</span><span className="text-right font-mono">{inr(inv.tcsCollected)}</span>
+                    <span className="font-semibold text-slate-900 border-t border-slate-200 pt-1 mt-0.5">Net Payable</span>
+                    <span className="text-right font-mono font-semibold text-slate-900 border-t border-slate-200 pt-1 mt-0.5">{inr(inv.netPayable)}</span>
+                  </div>
+                  <p className="text-[10px] text-slate-400 mt-2">{new Date(inv.generatedAt).toLocaleString("en-IN")}</p>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
   );
 }
 

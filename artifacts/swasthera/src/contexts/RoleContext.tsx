@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, type ReactNode } from "react";
 
-type Role = "maker" | "checker" | "backend";
+export type Role = "maker" | "checker" | "backend" | "admin";
 
 interface RoleContextType {
   role: Role;
@@ -8,6 +8,7 @@ interface RoleContextType {
   isMaker: boolean;
   isChecker: boolean;
   isBackend: boolean;
+  isAdmin: boolean;
 }
 
 const RoleContext = createContext<RoleContextType | null>(null);
@@ -29,6 +30,7 @@ export function RoleProvider({ children }: { children: ReactNode }) {
       isMaker: role === "maker",
       isChecker: role === "checker",
       isBackend: role === "backend",
+      isAdmin: role === "admin",
     }}>
       {children}
     </RoleContext.Provider>

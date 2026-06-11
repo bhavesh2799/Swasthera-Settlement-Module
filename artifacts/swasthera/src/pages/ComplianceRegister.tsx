@@ -3,7 +3,8 @@ import {
   useGetTcsTdsSummary, 
   useListTcsRecords, 
   useListTdsRecords,
-  useGetComplianceCalendar
+  useGetComplianceCalendar,
+  useListOnboardings
 } from "@workspace/api-client-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -14,7 +15,7 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
-import { Loader2, Calendar, FileText, CheckCircle2, AlertCircle, RotateCcw, ArrowDownUp, TrendingDown, CreditCard, Layers } from "lucide-react";
+import { Loader2, Calendar, FileText, CheckCircle2, AlertCircle, RotateCcw, ArrowDownUp, TrendingDown, CreditCard, Layers, BookOpen, Download } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 function formatCurrency(amount: number) {
@@ -90,9 +91,29 @@ interface OrderBreakdownRow {
   cycle: string;
 }
 
+interface LedgerEntry {
+  date: string;
+  type: "SETTLEMENT" | "PAYOUT";
+  cycle: string;
+  ref: string;
+  description: string;
+  amount: number;
+  runningBalance: number;
+}
+
+interface LedgerResponse {
+  brand: { onboardingId: number; companyName: string; brandName: string } | null;
+  entries: LedgerEntry[];
+  closingBalance: number;
+}
+
 export function ComplianceRegister() {
   const [month, setMonth] = useState("May");
   const [year, setYear] = useState("2026");
+  const [ledgerBrandId, setLedgerBrandId] = useState<string>("");
+  const [ledgerType, setLedgerType] = useState<string>("ALL");
+  const [ledgerFrom, setLedgerFrom] = useState<string>("");
+  const [ledgerTo, setLedgerTo] = useState<string>("");
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -123,6 +144,29 @@ export function ComplianceRegister() {
       return r.json();
     },
   });
+
+  const { data: onboardings } = useListOnboardings();
+
+  const ledgerQuery = new URLSearchParams();
+  if (ledgerType !== "ALL") ledgerQuery.set("type", ledgerType);
+  if (ledgerFrom) ledgerQuery.set("from", ledgerFrom);
+  if (ledgerTo) ledgerQuery.set("to", ledgerTo);
+  const ledgerQs = ledgerQuery.toString();
+
+  const { data: ledger, isLoading: isLoadingLedger } = useQuery<LedgerResponse>({
+    queryKey: ["/api/compliance/ledger", ledgerBrandId, ledgerType, ledgerFrom, ledgerTo],
+    queryFn: async () => {
+      const r = await fetch(`/api/compliance/ledger/${ledgerBrandId}${ledgerQs ? `?${ledgerQs}` : ""}`);
+      if (!r.ok) throw new Error("Failed to load ledger");
+      return r.json();
+    },
+    enabled: !!ledgerBrandId,
+  });
+
+  const downloadLedger = () => {
+    if (!ledgerBrandId) return;
+    window.open(`/api/compliance/ledger/${ledgerBrandId}/export${ledgerQs ? `?${ledgerQs}` : ""}`, "_blank");
+  };
 
   const s = summary as (typeof summary & {
     tcsReversed?: number; tcsNet?: number;
@@ -334,6 +378,9 @@ export function ComplianceRegister() {
             {returnedBags.length > 0 && (
               <Badge className="ml-2 text-[10px] h-4 bg-red-100 text-red-700 border-transparent hover:bg-red-100">{returnedBags.length} returned</Badge>
             )}
+          </TabsTrigger>
+          <TabsTrigger value="ledger" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
+            <BookOpen className="mr-1.5 h-4 w-4" /> Brand Ledger
           </TabsTrigger>
           <TabsTrigger value="calendar" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">Compliance Calendar</TabsTrigger>
         </TabsList>
@@ -578,7 +625,101 @@ export function ComplianceRegister() {
           </Card>
         </TabsContent>
 
-        {/* Compliance Calendar */}
+        {/* Brand Ledger */}
+        <TabsContent value="ledger" className="m-0 space-y-4">
+          <Card className="shadow-sm border-slate-200/60 bg-white">
+            <CardHeader className="border-b border-slate-100 py-4">
+              <div className="flex flex-col lg:flex-row lg:items-end gap-3 lg:justify-between">
+                <div className="flex flex-wrap items-end gap-3">
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-slate-500">Brand</label>
+                    <Select value={ledgerBrandId} onValueChange={setLedgerBrandId}>
+                      <SelectTrigger className="w-56 h-9"><SelectValue placeholder="Select a brand" /></SelectTrigger>
+                      <SelectContent>
+                        {onboardings?.map((o) => (
+                          <SelectItem key={o.id} value={String(o.id)}>{o.brandName} — {o.companyName}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-slate-500">Type</label>
+                    <Select value={ledgerType} onValueChange={setLedgerType}>
+                      <SelectTrigger className="w-40 h-9"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="ALL">All types</SelectItem>
+                        <SelectItem value="SETTLEMENT">Settlement (credit)</SelectItem>
+                        <SelectItem value="PAYOUT">Payout (debit)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-slate-500">From</label>
+                    <Input type="date" value={ledgerFrom} onChange={(e) => setLedgerFrom(e.target.value)} className="w-40 h-9" />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-slate-500">To</label>
+                    <Input type="date" value={ledgerTo} onChange={(e) => setLedgerTo(e.target.value)} className="w-40 h-9" />
+                  </div>
+                </div>
+                <Button variant="outline" onClick={downloadLedger} disabled={!ledgerBrandId || !ledger?.entries?.length}>
+                  <Download className="mr-2 h-4 w-4" /> Export CSV
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="p-0">
+              {!ledgerBrandId ? (
+                <div className="h-40 flex items-center justify-center text-slate-500 text-sm gap-2">
+                  <BookOpen className="h-4 w-4" /> Select a brand to view its running ledger.
+                </div>
+              ) : isLoadingLedger ? (
+                <div className="h-40 flex items-center justify-center"><Loader2 className="animate-spin text-slate-400" /></div>
+              ) : (
+                <>
+                  <Table>
+                    <TableHeader className="bg-slate-50/80">
+                      <TableRow className="border-slate-100">
+                        <TableHead className="font-medium text-slate-500 h-10 px-6">Date</TableHead>
+                        <TableHead className="font-medium text-slate-500 h-10">Type</TableHead>
+                        <TableHead className="font-medium text-slate-500 h-10">Cycle</TableHead>
+                        <TableHead className="font-medium text-slate-500 h-10">Reference</TableHead>
+                        <TableHead className="font-medium text-slate-500 h-10">Description</TableHead>
+                        <TableHead className="font-medium text-slate-500 h-10 text-right">Amount</TableHead>
+                        <TableHead className="font-medium text-slate-500 h-10 text-right px-6">Running Balance</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {ledger?.entries?.length === 0 ? (
+                        <TableRow><TableCell colSpan={7} className="h-32 text-center text-slate-500">No ledger entries for the selected filters.</TableCell></TableRow>
+                      ) : ledger?.entries?.map((e, i) => (
+                        <TableRow key={i} className="border-slate-100/50">
+                          <TableCell className="px-6 text-slate-900 whitespace-nowrap">{new Date(e.date).toLocaleDateString()}</TableCell>
+                          <TableCell>
+                            <Badge className={e.type === "SETTLEMENT" ? "bg-green-100 text-green-800 border-transparent" : "bg-blue-100 text-blue-800 border-transparent"}>{e.type}</Badge>
+                          </TableCell>
+                          <TableCell className="font-mono text-xs text-slate-600">{e.cycle}</TableCell>
+                          <TableCell className="font-mono text-xs text-slate-600">{e.ref}</TableCell>
+                          <TableCell className="text-slate-600 text-sm">{e.description}</TableCell>
+                          <TableCell className={`text-right font-medium ${e.amount < 0 ? "text-red-700" : "text-green-700"}`}>
+                            {e.amount < 0 ? "− " : "+ "}{formatCurrency(Math.abs(e.amount))}
+                          </TableCell>
+                          <TableCell className="text-right px-6 font-semibold text-slate-900">{formatCurrency(e.runningBalance)}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                  {ledger && ledger.entries.length > 0 && (
+                    <div className="flex justify-between items-center px-6 py-4 border-t border-slate-100 bg-slate-50/50">
+                      <span className="text-sm text-slate-500">Closing balance (outstanding to brand)</span>
+                      <span className="text-lg font-bold text-slate-900">{formatCurrency(ledger.closingBalance)}</span>
+                    </div>
+                  )}
+                </>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
         <TabsContent value="calendar" className="m-0">
           <Card className="shadow-sm border-slate-200/60 bg-white">
             <CardContent className="p-0">

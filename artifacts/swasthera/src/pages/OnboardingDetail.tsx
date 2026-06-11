@@ -56,8 +56,12 @@ interface WarehouseItem {
 
 interface CommissionVersion {
   id: number;
+  version?: number;
   commissionType: string;
   commissionPercent: number | null;
+  tierConfig?: string | null;
+  gmvTierType?: string | null;
+  addendumDocUrl?: string | null;
   effectiveFromDate: string;
   effectiveToDate: string | null;
   isCurrent: boolean;
@@ -65,6 +69,13 @@ interface CommissionVersion {
   agreedByMakerId: string | null;
   approvedByCheckerId: string | null;
   createdAt: string;
+}
+
+interface KybCheck {
+  key: string;
+  label: string;
+  status: "passed" | "failed" | "skipped";
+  detail: string;
 }
 
 const DOC_FIELDS = [
@@ -113,10 +124,29 @@ export function OnboardingDetail() {
 
   const [rejectNotes, setRejectNotes] = useState("");
   const [showRejectDialog, setShowRejectDialog] = useState(false);
+  const [editNotes, setEditNotes] = useState("");
+  const [showEditDialog, setShowEditDialog] = useState(false);
+  const [editLoading, setEditLoading] = useState(false);
   const [showCommissionDialog, setShowCommissionDialog] = useState(false);
   const [kybLoading, setKybLoading] = useState(false);
-  const [kybResult, setKybResult] = useState<{ kybStatus: string; message: string } | null>(null);
-  const [newCommission, setNewCommission] = useState({ commissionPercent: "", effectiveFromDate: new Date().toISOString().split("T")[0], notes: "" });
+  const [kybResult, setKybResult] = useState<{ kybStatus: string; message: string; checks?: KybCheck[] } | null>(null);
+  const [newCommission, setNewCommission] = useState<{
+    commissionType: "FLAT_PERCENT" | "SLAB" | "GMV_TIER";
+    commissionPercent: string;
+    gmvTierType: "THRESHOLD" | "CUMULATIVE";
+    slabs: Array<{ minGmv: string; maxGmv: string; rate: string }>;
+    addendumDocUrl: string;
+    effectiveFromDate: string;
+    notes: string;
+  }>({
+    commissionType: "FLAT_PERCENT",
+    commissionPercent: "",
+    gmvTierType: "THRESHOLD",
+    slabs: [{ minGmv: "0", maxGmv: "", rate: "" }],
+    addendumDocUrl: "",
+    effectiveFromDate: new Date().toISOString().split("T")[0],
+    notes: "",
+  });
   const [updatingDoc, setUpdatingDoc] = useState<DocKey | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -265,25 +295,60 @@ export function OnboardingDetail() {
   };
 
   const handleAddCommissionVersion = async () => {
-    if (!newCommission.commissionPercent || !newCommission.effectiveFromDate) return;
+    if (!newCommission.effectiveFromDate) return;
+    const { commissionType, slabs } = newCommission;
+    type CommissionPayload = {
+      commissionType: string;
+      effectiveFromDate: string;
+      notes: string;
+      addendumDocUrl?: string;
+      commissionPercent?: number;
+      tierConfig?: string;
+      gmvTierType?: string;
+    };
+    const payload: CommissionPayload = {
+      commissionType,
+      effectiveFromDate: newCommission.effectiveFromDate,
+      notes: newCommission.notes,
+    };
+    if (newCommission.addendumDocUrl) payload.addendumDocUrl = newCommission.addendumDocUrl;
+
+    if (commissionType === "FLAT_PERCENT") {
+      if (!newCommission.commissionPercent) return;
+      payload.commissionPercent = parseFloat(newCommission.commissionPercent);
+    } else {
+      // SLAB or GMV_TIER — validate contiguous, non-overlapping rows
+      const parsed = slabs.map((s) => ({ minGmv: parseFloat(s.minGmv), maxGmv: s.maxGmv === "" ? null : parseFloat(s.maxGmv), rate: parseFloat(s.rate) }));
+      for (let i = 0; i < parsed.length; i++) {
+        const s = parsed[i];
+        if (Number.isNaN(s.minGmv) || Number.isNaN(s.rate)) { toast({ title: "Each slab needs a 'from' value and a rate", variant: "destructive" }); return; }
+        if (s.maxGmv !== null && s.maxGmv <= s.minGmv) { toast({ title: `Slab ${i + 1}: 'to' must be greater than 'from'`, variant: "destructive" }); return; }
+        if (i > 0) {
+          const prev = parsed[i - 1];
+          if (prev.maxGmv === null || prev.maxGmv !== s.minGmv) { toast({ title: `Slab ${i + 1} must start where slab ${i} ends (contiguous)`, variant: "destructive" }); return; }
+        }
+      }
+      payload.tierConfig = JSON.stringify(parsed);
+      if (commissionType === "GMV_TIER") payload.gmvTierType = newCommission.gmvTierType;
+    }
+
     try {
-      await fetch(`/api/commission-master/${id}`, {
+      const r = await fetch(`/api/commission-master/${id}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          commissionType: "FLAT_PERCENT",
-          commissionPercent: parseFloat(newCommission.commissionPercent),
-          effectiveFromDate: newCommission.effectiveFromDate,
-          notes: newCommission.notes,
-        }),
+        body: JSON.stringify(payload),
       });
-      toast({ title: "Commission rate updated and versioned" });
+      if (!r.ok) {
+        const e = await r.json().catch(() => ({}));
+        throw new Error(e.error || "Failed");
+      }
+      toast({ title: "Commercial terms versioned" });
       setShowCommissionDialog(false);
-      setNewCommission({ commissionPercent: "", effectiveFromDate: new Date().toISOString().split("T")[0], notes: "" });
+      setNewCommission({ commissionType: "FLAT_PERCENT", commissionPercent: "", gmvTierType: "THRESHOLD", slabs: [{ minGmv: "0", maxGmv: "", rate: "" }], addendumDocUrl: "", effectiveFromDate: new Date().toISOString().split("T")[0], notes: "" });
       refetchCommission();
       invalidate();
-    } catch {
-      toast({ title: "Failed to update commission", variant: "destructive" });
+    } catch (err) {
+      toast({ title: "Failed to update commercial terms", description: err instanceof Error ? err.message : undefined, variant: "destructive" });
     }
   };
 
@@ -307,6 +372,29 @@ export function OnboardingDetail() {
     rejectMutation.mutate({ id, data: { rejectionReason: rejectNotes } }, {
       onSuccess: () => { toast({ title: "Onboarding rejected", variant: "destructive" }); setShowRejectDialog(false); invalidate(); }
     });
+  };
+
+  const handleRequestEdit = async () => {
+    setEditLoading(true);
+    try {
+      const r = await fetch(`/api/onboardings/${id}/request-edit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ notes: editNotes }),
+      });
+      if (!r.ok) {
+        const e = await r.json().catch(() => ({}));
+        throw new Error(e.error || "Request failed");
+      }
+      toast({ title: "Sent back to Maker for edits" });
+      setShowEditDialog(false);
+      setEditNotes("");
+      invalidate();
+    } catch (err) {
+      toast({ title: "Could not request edits", description: err instanceof Error ? err.message : undefined, variant: "destructive" });
+    } finally {
+      setEditLoading(false);
+    }
   };
 
   if (isLoading) return <div className="p-8 text-center text-slate-500">Loading...</div>;
@@ -353,6 +441,9 @@ export function OnboardingDetail() {
           )}
           {isChecker && onboarding.status === "SUBMITTED" && (
             <>
+              <Button variant="outline" onClick={() => setShowEditDialog(true)}>
+                <RefreshCw className="mr-2 h-4 w-4" /> Request Edits
+              </Button>
               <Button variant="destructive" onClick={() => setShowRejectDialog(true)}>
                 <XCircle className="mr-2 h-4 w-4" /> Reject
               </Button>
@@ -391,9 +482,29 @@ export function OnboardingDetail() {
               <p className="text-xs text-slate-500">Last checked: {new Date((onboarding as unknown as Record<string, unknown>).kybVerifiedAt as string).toLocaleString()} · Attempts: {(onboarding as unknown as Record<string, unknown>).kybAttempts as number}</p>
             )}
             {kybResult && (
-              <p className={`text-sm font-medium mt-1 ${kybResult.kybStatus === "PASSED" ? "text-green-700" : "text-red-700"}`}>
-                {kybResult.message}
-              </p>
+              <>
+                <p className={`text-sm font-medium mt-1 ${kybResult.kybStatus === "PASSED" ? "text-green-700" : "text-red-700"}`}>
+                  {kybResult.message}
+                </p>
+                {kybResult.checks && (
+                  <ul className="mt-2 space-y-1.5">
+                    {kybResult.checks.map((c) => (
+                      <li key={c.key} className="flex items-start gap-2 text-sm">
+                        {c.status === "passed" ? (
+                          <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-green-600" />
+                        ) : c.status === "failed" ? (
+                          <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-red-600" />
+                        ) : (
+                          <Shield className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" />
+                        )}
+                        <span className={c.status === "failed" ? "text-red-700" : c.status === "skipped" ? "text-slate-500" : "text-slate-700"}>
+                          <span className="font-medium">{c.label}:</span> {c.detail}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </>
             )}
           </div>
           {isMaker && onboarding.status === "DRAFT" && (
@@ -582,13 +693,28 @@ export function OnboardingDetail() {
                 <div key={v.id} className={`flex items-center justify-between px-6 py-3.5 ${v.isCurrent ? "bg-green-50/30" : ""}`}>
                   <div className="space-y-0.5">
                     <div className="flex items-center gap-2">
-                      <span className="font-semibold text-slate-900">{v.commissionPercent}% {v.commissionType === "FLAT_PERCENT" ? "Flat" : "Tiered"}</span>
+                      {typeof v.version === "number" && <Badge variant="outline" className="text-xs">v{v.version}</Badge>}
+                      <span className="font-semibold text-slate-900">
+                        {v.commissionType === "FLAT_PERCENT"
+                          ? `${v.commissionPercent}% Flat`
+                          : v.commissionType === "SLAB"
+                            ? "Slab Based"
+                            : v.commissionType === "GMV_TIER"
+                              ? `GMV Tier${v.gmvTierType ? ` · ${v.gmvTierType.charAt(0) + v.gmvTierType.slice(1).toLowerCase()}` : ""}`
+                              : "Tiered"}
+                      </span>
                       {v.isCurrent && <Badge className="bg-green-100 text-green-800 border-transparent text-xs hover:bg-green-100">Current</Badge>}
                     </div>
+                    {v.commissionType !== "FLAT_PERCENT" && v.tierConfig && (
+                      <p className="text-xs text-slate-500 font-mono">
+                        {(() => { try { return (JSON.parse(v.tierConfig) as Array<{ minGmv: number; maxGmv: number | null; rate: number }>).map((b) => `₹${b.minGmv.toLocaleString("en-IN")}–${b.maxGmv != null ? `₹${b.maxGmv.toLocaleString("en-IN")}` : "∞"} @ ${b.rate}%`).join("  ·  "); } catch { return null; } })()}
+                      </p>
+                    )}
                     <p className="text-xs text-slate-500">
                       Effective: {v.effectiveFromDate}{v.effectiveToDate ? ` → ${v.effectiveToDate}` : " (no end date)"}
                     </p>
                     {v.notes && <p className="text-xs text-slate-400 italic">{v.notes}</p>}
+                    {v.addendumDocUrl && <a href={v.addendumDocUrl} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:underline">View addendum →</a>}
                     {v.approvedByCheckerId && <p className="text-xs text-slate-400">Approved by {v.approvedByCheckerId}</p>}
                   </div>
                   <span className="text-xs text-slate-400">{new Date(v.createdAt).toLocaleDateString()}</span>
@@ -963,46 +1089,139 @@ export function OnboardingDetail() {
         </DialogContent>
       </Dialog>
 
+      {/* Request Edits Dialog */}
+      <Dialog open={showEditDialog} onOpenChange={setShowEditDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Request Edits</DialogTitle>
+            <DialogDescription>Send this submission back to the Maker as a draft with notes on what needs correcting.</DialogDescription>
+          </DialogHeader>
+          <Textarea
+            placeholder="Update GSTIN to match PAN state, re-upload signed agreement..."
+            value={editNotes}
+            onChange={(e) => setEditNotes(e.target.value)}
+            className="min-h-[100px]"
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowEditDialog(false)}>Cancel</Button>
+            <Button onClick={handleRequestEdit} disabled={editLoading || !editNotes.trim()}>
+              {editLoading ? "Sending..." : "Send Back to Maker"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Commission Version Dialog */}
       <Dialog open={showCommissionDialog} onOpenChange={setShowCommissionDialog}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Add Commission Rate Version</DialogTitle>
-            <DialogDescription>A new version archives the current rate. All orders are settled at the rate effective on their order date (BRD §3.4).</DialogDescription>
+            <DialogTitle>Configure Commercial Terms</DialogTitle>
+            <DialogDescription>A new version archives the current terms. Orders settle at the rate effective on their order date (BRD §3.4). An addendum document is required from version 2 onward.</DialogDescription>
           </DialogHeader>
-          <div className="space-y-4 py-2">
+          <div className="space-y-4 py-2 max-h-[60vh] overflow-y-auto pr-1">
+            {/* Commission model selector */}
             <div className="space-y-1.5">
-              <label className="text-sm font-medium">New Rate (%)</label>
-              <Input
-                type="number"
-                step="0.01"
-                min="0"
-                max="100"
-                value={newCommission.commissionPercent}
-                onChange={(e) => setNewCommission((p) => ({ ...p, commissionPercent: e.target.value }))}
-                placeholder="e.g. 12.50"
-              />
+              <label className="text-sm font-medium">Commission Model</label>
+              <div className="grid grid-cols-3 gap-2">
+                {([
+                  { key: "FLAT_PERCENT", label: "Flat Rate" },
+                  { key: "SLAB", label: "Slab Based" },
+                  { key: "GMV_TIER", label: "GMV Tier" },
+                ] as const).map((m) => (
+                  <button
+                    key={m.key}
+                    type="button"
+                    onClick={() => setNewCommission((p) => ({ ...p, commissionType: m.key }))}
+                    className={`rounded-md border px-3 py-2 text-sm font-medium transition ${newCommission.commissionType === m.key ? "border-slate-900 bg-slate-900 text-white" : "border-slate-200 bg-white text-slate-700 hover:border-slate-300"}`}
+                  >
+                    {m.label}
+                  </button>
+                ))}
+              </div>
             </div>
+
+            {newCommission.commissionType === "FLAT_PERCENT" && (
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Commission Rate (%)</label>
+                <Input
+                  type="number" step="0.01" min="0" max="100"
+                  value={newCommission.commissionPercent}
+                  onChange={(e) => setNewCommission((p) => ({ ...p, commissionPercent: e.target.value }))}
+                  placeholder="e.g. 12.50"
+                />
+              </div>
+            )}
+
+            {newCommission.commissionType === "GMV_TIER" && (
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Tier Model</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {([
+                    { key: "THRESHOLD", label: "Threshold", hint: "Whole GMV charged at the band it lands in" },
+                    { key: "CUMULATIVE", label: "Cumulative", hint: "Each band charged on the GMV within it" },
+                  ] as const).map((t) => (
+                    <button
+                      key={t.key}
+                      type="button"
+                      onClick={() => setNewCommission((p) => ({ ...p, gmvTierType: t.key }))}
+                      className={`rounded-md border p-2.5 text-left transition ${newCommission.gmvTierType === t.key ? "border-slate-900 bg-slate-50" : "border-slate-200 bg-white hover:border-slate-300"}`}
+                    >
+                      <p className="text-sm font-medium">{t.label}</p>
+                      <p className="text-xs text-slate-500 mt-0.5">{t.hint}</p>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {(newCommission.commissionType === "SLAB" || newCommission.commissionType === "GMV_TIER") && (
+              <div className="space-y-2">
+                <label className="text-sm font-medium">{newCommission.commissionType === "SLAB" ? "Slabs" : "GMV Bands"}</label>
+                <div className="space-y-2">
+                  <div className="grid grid-cols-[1fr_1fr_1fr_auto] gap-2 text-xs text-slate-500 font-medium px-1">
+                    <span>GMV From (₹)</span><span>GMV To (₹)</span><span>Rate %</span><span></span>
+                  </div>
+                  {newCommission.slabs.map((s, i) => (
+                    <div key={i} className="grid grid-cols-[1fr_1fr_1fr_auto] gap-2 items-center">
+                      <Input type="number" min="0" value={s.minGmv} onChange={(e) => setNewCommission((p) => ({ ...p, slabs: p.slabs.map((x, j) => j === i ? { ...x, minGmv: e.target.value } : x) }))} />
+                      <Input type="number" min="0" placeholder="∞" value={s.maxGmv} onChange={(e) => setNewCommission((p) => ({ ...p, slabs: p.slabs.map((x, j) => j === i ? { ...x, maxGmv: e.target.value } : x) }))} />
+                      <Input type="number" step="0.01" min="0" max="100" value={s.rate} onChange={(e) => setNewCommission((p) => ({ ...p, slabs: p.slabs.map((x, j) => j === i ? { ...x, rate: e.target.value } : x) }))} />
+                      <Button type="button" variant="ghost" size="icon" disabled={newCommission.slabs.length === 1} onClick={() => setNewCommission((p) => ({ ...p, slabs: p.slabs.filter((_, j) => j !== i) }))}>
+                        <XCircle className="h-4 w-4 text-slate-400" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+                <Button
+                  type="button" variant="outline" size="sm"
+                  onClick={() => setNewCommission((p) => {
+                    const last = p.slabs[p.slabs.length - 1];
+                    return { ...p, slabs: [...p.slabs, { minGmv: last?.maxGmv || "", maxGmv: "", rate: "" }] };
+                  })}
+                >
+                  + Add {newCommission.commissionType === "SLAB" ? "slab" : "band"}
+                </Button>
+                <p className="text-xs text-slate-400">Bands must be contiguous (each starts where the previous ends). Leave the final "to" blank for ∞.</p>
+              </div>
+            )}
+
             <div className="space-y-1.5">
               <label className="text-sm font-medium">Effective From Date</label>
-              <Input
-                type="date"
-                value={newCommission.effectiveFromDate}
-                onChange={(e) => setNewCommission((p) => ({ ...p, effectiveFromDate: e.target.value }))}
-              />
+              <Input type="date" value={newCommission.effectiveFromDate} onChange={(e) => setNewCommission((p) => ({ ...p, effectiveFromDate: e.target.value }))} />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">Addendum Document URL {(commissionHistory?.length ?? 0) >= 1 && <span className="text-red-500">*</span>}</label>
+              <Input value={newCommission.addendumDocUrl} onChange={(e) => setNewCommission((p) => ({ ...p, addendumDocUrl: e.target.value }))} placeholder="https://docs.../addendum.pdf" />
+              {(commissionHistory?.length ?? 0) >= 1 && <p className="text-xs text-slate-400">Required when revising existing commercial terms.</p>}
             </div>
             <div className="space-y-1.5">
               <label className="text-sm font-medium">Notes (optional)</label>
-              <Input
-                value={newCommission.notes}
-                onChange={(e) => setNewCommission((p) => ({ ...p, notes: e.target.value }))}
-                placeholder="Rate revision for FY 2026-27"
-              />
+              <Input value={newCommission.notes} onChange={(e) => setNewCommission((p) => ({ ...p, notes: e.target.value }))} placeholder="Rate revision for FY 2026-27" />
             </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowCommissionDialog(false)}>Cancel</Button>
-            <Button onClick={handleAddCommissionVersion} disabled={!newCommission.commissionPercent}>
+            <Button onClick={handleAddCommissionVersion}>
               Save Version
             </Button>
           </DialogFooter>

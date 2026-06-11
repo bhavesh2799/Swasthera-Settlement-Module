@@ -15,10 +15,13 @@ import { ArrowLeft, Info, Plus, Trash2 } from "lucide-react";
 
 const onboardingSchema = z.object({
   companyName: z.string().min(1, "Required"),
+  tradeName: z.string().optional(),
   companyType: z.string().min(1, "Required"),
   pan: z.string().regex(/^[A-Z]{5}[0-9]{4}[A-Z]{1}$/i, "PAN must be 10 chars e.g. AAAPL1234C"),
   cin: z.string().optional(),
-  masterGstin: z.string().min(15, "GSTIN must be 15 characters"),
+  llpCode: z.string().optional(),
+  gstAvailable: z.boolean().optional(),
+  masterGstin: z.string().optional(),
   tan: z.string().optional(),
   registeredAddress: z.string().min(1, "Required"),
   bankAccount: z.string().min(8, "Required"),
@@ -64,9 +67,12 @@ export function OnboardingForm() {
     resolver: zodResolver(onboardingSchema),
     defaultValues: {
       companyName: "",
+      tradeName: "",
       companyType: "",
       pan: "",
       cin: "",
+      llpCode: "",
+      gstAvailable: true,
       masterGstin: "",
       tan: "",
       registeredAddress: "",
@@ -93,6 +99,75 @@ export function OnboardingForm() {
   });
 
   const commissionType = form.watch("commissionType");
+  const companyType = form.watch("companyType");
+  const gstAvailable = form.watch("gstAvailable");
+
+  const [ifscLoading, setIfscLoading] = useState(false);
+  const [gstLoading, setGstLoading] = useState(false);
+
+  // Entity-type-driven mandatory field hints (mirrors backend validationRules)
+  const entityRequires = (field: "cin" | "llpCode" | "gstn") => {
+    const t = companyType;
+    if (field === "cin") return t === "PRIVATE_LIMITED" || t === "PUBLIC_LIMITED" || t === "LLP";
+    if (field === "llpCode") return t === "LLP";
+    if (field === "gstn") return !(t === "PROPRIETORSHIP" && gstAvailable === false);
+    return false;
+  };
+
+  const lookupIfsc = async (code: string) => {
+    if (!/^[A-Z]{4}0[A-Z0-9]{6}$/i.test(code)) return;
+    setIfscLoading(true);
+    try {
+      const r = await fetch(`/api/utils/ifsc/${code.toUpperCase()}`);
+      if (!r.ok) {
+        toast({ title: "IFSC not found", description: "Check the code and try again", variant: "destructive" });
+        return;
+      }
+      const d = await r.json();
+      form.setValue("bankName", d.bank || "");
+      toast({ title: "Bank details fetched", description: `${d.bank} — ${d.branch}` });
+    } catch {
+      toast({ title: "IFSC lookup failed", variant: "destructive" });
+    } finally {
+      setIfscLoading(false);
+    }
+  };
+
+  const lookupGst = async (code: string) => {
+    if (!code || code.length < 15) return;
+    setGstLoading(true);
+    try {
+      const r = await fetch(`/api/utils/gst-lookup`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ gstn: code.toUpperCase() }),
+      });
+      if (!r.ok) {
+        toast({ title: "GST lookup failed", description: "Invalid GSTIN format", variant: "destructive" });
+        return;
+      }
+      const d = await r.json();
+      if (!form.getValues("tradeName")) form.setValue("tradeName", d.tradeName || "");
+      if (!form.getValues("registeredAddress")) form.setValue("registeredAddress", d.registeredAddress || "");
+      toast({ title: "GST verified (simulated)", description: `${d.state} • Status: ${d.status}` });
+    } catch {
+      toast({ title: "GST lookup failed", variant: "destructive" });
+    } finally {
+      setGstLoading(false);
+    }
+  };
+
+  const lookupWarehousePin = async (pin: string) => {
+    if (!/^\d{6}$/.test(pin)) return;
+    try {
+      const r = await fetch(`/api/utils/pincode/${pin}`);
+      if (!r.ok) return;
+      const d = await r.json();
+      if (d.state) form.setValue("warehouseState", d.state);
+    } catch {
+      /* non-blocking */
+    }
+  };
 
   const updateSlab = (i: number, key: keyof TierSlab, value: number | null) => {
     setTierSlabs((prev) => {
@@ -122,12 +197,12 @@ export function OnboardingForm() {
   };
 
   const onSubmit = (data: OnboardingFormValues) => {
-    const payload: Record<string, unknown> = { ...data };
+    const payload: Record<string, unknown> = { ...data, masterGstin: data.masterGstin ?? "" };
     if (data.commissionType === "TIERED") {
       payload.tierConfig = JSON.stringify(tierSlabs);
       payload.commissionRate = 0;
     }
-    createMutation.mutate({ data: payload as typeof data }, {
+    createMutation.mutate({ data: payload as unknown as Parameters<typeof createMutation.mutate>[0]["data"] }, {
       onSuccess: (res) => {
         toast({ title: "Draft created — run KYB verification next", description: `Ref: ${res.ref}` });
         setLocation(`/onboarding/${res.id}`);
@@ -177,6 +252,7 @@ export function OnboardingForm() {
               </CardHeader>
               <CardContent className="p-6 grid grid-cols-2 gap-4">
                 <Field name="companyName" label="Company Legal Name" placeholder="Zara Fashions Pvt Ltd" />
+                <Field name="tradeName" label="Trade Name" placeholder="Zara" description="Brand/trade name (auto-filled from GST)" />
                 <FormField control={form.control} name="companyType" render={({ field }) => (
                   <FormItem>
                     <FormLabel>Company Type</FormLabel>
@@ -190,13 +266,58 @@ export function OnboardingForm() {
                         <SelectItem value="PROPRIETORSHIP">Proprietorship</SelectItem>
                       </SelectContent>
                     </Select>
+                    <FormDescription className="text-xs">Determines mandatory documents &amp; identifiers</FormDescription>
                     <FormMessage />
                   </FormItem>
                 )} />
                 <Field name="pan" label="PAN" placeholder="AAAPL1234C" description="10-char PAN — KYB will verify this" />
-                <Field name="masterGstin" label="Master GSTIN" placeholder="27AABCZ1234D1Z5" description="Primary GSTIN for commission invoicing" />
-                <Field name="cin" label="CIN" placeholder="U74120DL2020PTC123456" description="Optional for LLP / Proprietorship" />
+
+                {/* GSTIN with auto-fetch */}
+                <FormField control={form.control} name="masterGstin" render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Master GSTIN {entityRequires("gstn") ? <span className="text-red-500">*</span> : <span className="text-slate-400 text-xs">(optional)</span>}</FormLabel>
+                    <div className="flex gap-2">
+                      <FormControl>
+                        <Input
+                          placeholder="27AABCZ1234D1Z5"
+                          {...field}
+                          value={field.value as string}
+                          onBlur={(e) => { field.onBlur(); lookupGst(e.target.value); }}
+                        />
+                      </FormControl>
+                      <Button type="button" variant="outline" size="sm" disabled={gstLoading} onClick={() => lookupGst(form.getValues("masterGstin") ?? "")}>
+                        {gstLoading ? "..." : "Fetch"}
+                      </Button>
+                    </div>
+                    <FormDescription className="text-xs">Auto-fills trade name &amp; address (simulated GSTN)</FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )} />
+
+                {entityRequires("cin") && (
+                  <Field name="cin" label="CIN" placeholder="U74120DL2020PTC123456" description="Corporate Identity Number" />
+                )}
+                {entityRequires("llpCode") && (
+                  <Field name="llpCode" label="LLP Identification No." placeholder="AAB-1234" description="Required for LLP entities" />
+                )}
                 <Field name="tan" label="TAN" placeholder="DELN00000A" description="Required for TDS credit back to brand" />
+
+                {companyType === "PROPRIETORSHIP" && (
+                  <FormField control={form.control} name="gstAvailable" render={({ field }) => (
+                    <FormItem className="flex flex-row items-center gap-3 rounded-md border border-slate-200 px-3 py-2 col-span-2 bg-slate-50/50">
+                      <FormControl>
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4 accent-slate-900"
+                          checked={field.value ?? true}
+                          onChange={(e) => field.onChange(e.target.checked)}
+                        />
+                      </FormControl>
+                      <FormLabel className="!mt-0 text-sm font-normal text-slate-600">GST registered (uncheck if proprietorship is below the GST threshold)</FormLabel>
+                    </FormItem>
+                  )} />
+                )}
+
                 <div className="col-span-2">
                   <Field name="registeredAddress" label="Registered Address" placeholder="123 Business Park, Mumbai, Maharashtra 400001" />
                 </div>
@@ -236,9 +357,31 @@ export function OnboardingForm() {
                 <CardTitle className="text-base">Banking Information</CardTitle>
               </CardHeader>
               <CardContent className="p-6 grid grid-cols-2 gap-4">
-                <Field name="bankName" label="Bank Name" placeholder="HDFC Bank" />
                 <Field name="bankAccount" label="Account Number" placeholder="50100123456789" />
-                <Field name="bankIfsc" label="IFSC Code" placeholder="HDFC0001234" />
+                {/* IFSC with auto-populate */}
+                <FormField control={form.control} name="bankIfsc" render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>IFSC Code</FormLabel>
+                    <div className="flex gap-2">
+                      <FormControl>
+                        <Input
+                          placeholder="HDFC0001234"
+                          {...field}
+                          value={field.value as string}
+                          onBlur={(e) => { field.onBlur(); lookupIfsc(e.target.value); }}
+                        />
+                      </FormControl>
+                      <Button type="button" variant="outline" size="sm" disabled={ifscLoading} onClick={() => lookupIfsc(form.getValues("bankIfsc"))}>
+                        {ifscLoading ? "..." : "Verify"}
+                      </Button>
+                    </div>
+                    <FormDescription className="text-xs">Bank name auto-fills from IFSC (live lookup)</FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )} />
+                <div className="col-span-2">
+                  <Field name="bankName" label="Bank Name" placeholder="HDFC Bank" description="Auto-populated from IFSC verification" />
+                </div>
               </CardContent>
             </Card>
 
@@ -261,6 +404,15 @@ export function OnboardingForm() {
               </CardHeader>
               <CardContent className="p-6 grid grid-cols-2 gap-4">
                 <Field name="warehouseName" label="Warehouse Name" placeholder="Mumbai FC" />
+                <div className="space-y-2">
+                  <Label>PIN Code</Label>
+                  <Input
+                    placeholder="400604"
+                    maxLength={6}
+                    onBlur={(e) => lookupWarehousePin(e.target.value)}
+                  />
+                  <p className="text-xs text-slate-500">Auto-fills state (India Post lookup)</p>
+                </div>
                 <Field name="warehouseState" label="State" placeholder="Maharashtra" description="Drives TCS state-wise filing" />
                 <Field name="warehouseGstin" label="Warehouse GSTIN" placeholder="27AABCZ1234D1Z5" description="State GSTIN for TCS accrual (Section 52)" />
                 <div className="col-span-2">

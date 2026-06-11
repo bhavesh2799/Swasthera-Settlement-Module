@@ -123,6 +123,7 @@ export function SettlementDetail() {
   };
 
   const socUrl = `/api/settlements/${id}/soc`;
+  const pdfUrl = `/api/settlements/${id}/invoice-pdf`;
   const settlementExtra = settlement as { marketplacePromotions?: number; carryForward?: number; onHold?: boolean; holdReason?: string | null };
   const carryForward = settlementExtra.carryForward ?? 0;
   const onHold = settlementExtra.onHold ?? false;
@@ -169,6 +170,12 @@ export function SettlementDetail() {
           <a href={socUrl} download>
             <Button variant="outline">
               <Download className="mr-2 h-4 w-4" /> Download SoC
+            </Button>
+          </a>
+
+          <a href={pdfUrl} download>
+            <Button variant="outline">
+              <FileText className="mr-2 h-4 w-4" /> Download PDF
             </Button>
           </a>
 
@@ -428,6 +435,11 @@ export function SettlementDetail() {
               <a href={socUrl} download>
                 <Button variant="outline" size="sm" className="w-full">
                   <Download className="mr-2 h-3.5 w-3.5" /> Download SoC CSV
+                </Button>
+              </a>
+              <a href={pdfUrl} download>
+                <Button variant="outline" size="sm" className="w-full">
+                  <FileText className="mr-2 h-3.5 w-3.5" /> Download Settlement Invoice PDF
                 </Button>
               </a>
               <p className="text-xs text-slate-400 text-center">{settlement.eligibleBags} bag{settlement.eligibleBags !== 1 ? "s" : ""} · {settlement.cycle}</p>

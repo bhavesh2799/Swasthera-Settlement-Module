@@ -1,11 +1,51 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
-import { settlementsTable, onboardingsTable, bagsTable, payoutsTable, activityTable } from "@workspace/db";
-import { eq, and, inArray, desc } from "drizzle-orm";
+import { settlementsTable, onboardingsTable, bagsTable, payoutsTable, activityTable, brandsTable, invoicesTable } from "@workspace/db";
+import { eq, and, inArray, desc, like, sql } from "drizzle-orm";
 import { authorize } from "../middlewares/rbac";
 import { writeAudit } from "../services/audit";
 import { calculateSettlement } from "../services/settlementCalculator";
 import { notify } from "../services/notify";
+import { generateInvoicePdf, formatINR, groupINR, type InvoiceDocument, type PdfRow } from "../services/pdfService";
+
+/**
+ * Atomically assigns (once) and returns a stable per-brand sequential
+ * settlement-invoice number, BRANDCODE-STL-YYYY-NNNN, mirroring invoiceService's
+ * scheme. Runs in a transaction holding a per-brand advisory lock so concurrent
+ * first-downloads cannot mint duplicate sequence numbers, and re-checks inside
+ * the lock so an already-assigned number is never overwritten by a stale read.
+ */
+async function assignSettlementInvoiceNumber(settlementId: number, brandCode: string): Promise<string> {
+  const year = new Date().getFullYear();
+  const prefix = `${brandCode}-STL-${year}-`;
+  return await db.transaction(async (tx) => {
+    // Serialize number generation per brand for the duration of this txn.
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`stl-invno:${brandCode}`}))`);
+
+    // Another concurrent request may have already assigned a number; reuse it.
+    const [current] = await tx
+      .select({ invoiceNumber: settlementsTable.invoiceNumber })
+      .from(settlementsTable)
+      .where(eq(settlementsTable.id, settlementId))
+      .limit(1);
+    if (current?.invoiceNumber) return current.invoiceNumber;
+
+    const [last] = await tx
+      .select({ invoiceNumber: settlementsTable.invoiceNumber })
+      .from(settlementsTable)
+      .where(like(settlementsTable.invoiceNumber, `${prefix}%`))
+      .orderBy(desc(settlementsTable.invoiceNumber))
+      .limit(1);
+    let next = 1;
+    if (last?.invoiceNumber) {
+      const parsed = parseInt(last.invoiceNumber.slice(prefix.length), 10);
+      if (!Number.isNaN(parsed)) next = parsed + 1;
+    }
+    const invoiceNumber = `${prefix}${String(next).padStart(4, "0")}`;
+    await tx.update(settlementsTable).set({ invoiceNumber }).where(eq(settlementsTable.id, settlementId));
+    return invoiceNumber;
+  });
+}
 
 const router = Router();
 
@@ -328,6 +368,226 @@ router.get("/settlements/:id/soc", async (req, res) => {
   }
 });
 
+// Brand settlement invoice PDF — formatted per-order breakdown + summary.
+// Not role-gated (downloaded via a plain anchor that cannot carry the X-Role
+// header), matching the SoC CSV endpoint.
+router.get("/settlements/:id/invoice-pdf", async (req, res) => {
+  try {
+    const settlementId = parseInt(req.params.id);
+    const [settlement] = await db.select().from(settlementsTable).where(eq(settlementsTable.id, settlementId));
+    if (!settlement) return res.status(404).json({ error: "Not found" });
+
+    const [ob] = await db.select().from(onboardingsTable).where(eq(onboardingsTable.id, settlement.onboardingId));
+    const [brand] = await db.select().from(brandsTable).where(eq(brandsTable.onboardingId, settlement.onboardingId)).limit(1);
+    const [payout] = await db.select().from(payoutsTable).where(eq(payoutsTable.settlementId, settlementId));
+
+    const bagIdList: string[] = JSON.parse(settlement.bagIds);
+    const bags = bagIdList.length > 0
+      ? await db.select().from(bagsTable).where(inArray(bagsTable.bagId, bagIdList))
+      : [];
+    const orderIds = bags.map((b) => b.orderId);
+
+    // Per-order invoice numbers + credit notes for the orders in this settlement.
+    const relatedInvoices = orderIds.length > 0
+      ? await db.select().from(invoicesTable).where(inArray(invoicesTable.orderId, orderIds))
+      : [];
+    const invoiceNoByOrder = new Map<string, string>();
+    const creditNotes = relatedInvoices.filter((i) => i.invoiceType === "CREDIT_NOTE");
+    relatedInvoices
+      .filter((i) => i.invoiceType === "INVOICE")
+      .forEach((i) => invoiceNoByOrder.set(i.orderId, i.invoiceNumber));
+
+    // Prior cycle's carried-forward deficit (if any) applied into this settlement.
+    // The predecessor is this brand's most recent settlement created before this one.
+    const predecessor = (await db.select().from(settlementsTable)
+      .where(eq(settlementsTable.onboardingId, settlement.onboardingId))
+      .orderBy(desc(settlementsTable.createdAt)))
+      .find((s) => s.id !== settlement.id && s.createdAt <= settlement.createdAt);
+    const priorCarryForward = predecessor ? parseFloat(predecessor.carryForward) : 0;
+
+    // Assign + persist a stable settlement-invoice number on first download.
+    let invoiceNumber = settlement.invoiceNumber;
+    if (!invoiceNumber) {
+      const brandCode = brand?.brandCode ?? `BR-${String(settlement.onboardingId).padStart(5, "0")}`;
+      invoiceNumber = await assignSettlementInvoiceNumber(settlementId, brandCode);
+    }
+
+    const commRate = parseFloat(settlement.commissionRate);
+    const mdrRate = parseFloat(settlement.mdrRate) || 0;
+
+    // Settlement period from the bag invoice-date range; falls back to the cycle.
+    const dates = bags.map((b) => b.invoiceDate).filter((d): d is string => !!d).sort();
+    const periodFrom = dates[0] ?? settlement.cycle;
+    const periodTo = dates[dates.length - 1] ?? settlement.cycle;
+
+    // ---- Line items: one row per eligible bag (mirrors the SoC per-bag math) ----
+    const rows: PdfRow[] = bags.map((b) => {
+      const gmv = parseFloat(b.esp) * b.qty;
+      const commission = gmv * commRate / 100;
+      const gstOnCommission = commission * 0.18;
+      const tcs = parseFloat(b.tcsAmount);
+      const tds = parseFloat(b.tdsAmount);
+      const mdr = gmv * mdrRate / 100;
+      const net = gmv - commission - gstOnCommission - tcs - tds - mdr;
+      return {
+        cells: {
+          orderId: b.orderId,
+          invoiceNo: invoiceNoByOrder.get(b.orderId) ?? "—",
+          orderDate: b.invoiceDate ?? "—",
+          gmv: groupINR(gmv),
+          commission: `${groupINR(commission)} (${commRate.toFixed(2)}%)`,
+          mdr: `${groupINR(mdr)} (${mdrRate.toFixed(2)}%)`,
+          tds: groupINR(tds),
+          tcs: groupINR(tcs),
+          net: groupINR(net),
+        },
+      };
+    });
+
+    // ---- Credit notes / cancellations as negative line items ----
+    for (const cn of creditNotes) {
+      rows.push({
+        negative: true,
+        cells: {
+          orderId: cn.orderId,
+          invoiceNo: cn.invoiceNumber,
+          orderDate: "Credit Note",
+          gmv: groupINR(parseFloat(cn.gmv)),
+          commission: groupINR(parseFloat(cn.commissionAmount)),
+          mdr: "—",
+          tds: groupINR(parseFloat(cn.tdsDeducted)),
+          tcs: groupINR(parseFloat(cn.tcsCollected)),
+          net: groupINR(parseFloat(cn.netPayable)),
+        },
+      });
+    }
+
+    // ---- Carry-forward adjustment line ----
+    if (priorCarryForward < 0 && predecessor) {
+      rows.push({
+        emphasis: true,
+        cells: {
+          orderId: "—",
+          invoiceNo: "",
+          orderDate: "",
+          gmv: "",
+          commission: `Adjustment carried forward from ${predecessor.cycle}`,
+          mdr: "",
+          tds: "",
+          tcs: "",
+          net: groupINR(priorCarryForward),
+        },
+      });
+    }
+
+    const grossGmv = parseFloat(settlement.grossGmv);
+    const brandPromotions = parseFloat(settlement.brandPromotions);
+    const commission = parseFloat(settlement.commission);
+    const gstOnCommission = parseFloat(settlement.gstOnCommission);
+    const tcsAmount = parseFloat(settlement.tcsAmount);
+    const tdsAmount = parseFloat(settlement.tdsAmount);
+    const mdrCharges = parseFloat(settlement.mdrCharges);
+    const penalty = parseFloat(settlement.penalty);
+    const netPayable = parseFloat(settlement.netPayable);
+    const carryForward = parseFloat(settlement.carryForward);
+
+    const summary = [
+      { label: "Gross Merchandise Value", value: formatINR(grossGmv) },
+      ...(brandPromotions > 0 ? [{ label: "Less: Brand-funded Promotions", value: formatINR(-brandPromotions), negative: true }] : []),
+      { label: `Less: Commission (${commRate.toFixed(2)}%)`, value: formatINR(-commission), negative: true },
+      { label: "Less: GST on Commission (18%)", value: formatINR(-gstOnCommission), negative: true },
+      { label: "Less: TCS (Sec. 52 GST)", value: formatINR(-tcsAmount), negative: true },
+      { label: "Less: TDS (Sec. 194-O)", value: formatINR(-tdsAmount), negative: true },
+      { label: `Less: MDR (${mdrRate.toFixed(2)}%)`, value: formatINR(-mdrCharges), negative: true },
+      ...(penalty > 0 ? [{ label: "Less: Penalty / Adjustments", value: formatINR(-penalty), negative: true }] : []),
+      ...(priorCarryForward < 0 && predecessor
+        ? [{ label: `Adjustment carried forward from ${predecessor.cycle}`, value: formatINR(priorCarryForward), negative: true }]
+        : []),
+    ];
+
+    const footerNotes = [
+      "All amounts in INR. This is a system-generated settlement invoice and does not require a physical signature.",
+      ...(carryForward < 0
+        ? [`Net negative cycle — ${formatINR(Math.abs(carryForward))} carried forward to the next settlement cycle; payout floored at INR 0.00.`]
+        : []),
+      "Net payable is transferred via NEFT/RTGS to the credited bank account. Statement of Claim (SoC) is shared alongside this invoice.",
+    ];
+
+    const brandLegal = brand?.brandLegalName ?? ob?.brandLegalName ?? settlement.companyName;
+    const last4 = settlement.bankAccount.slice(-4);
+
+    const doc: InvoiceDocument = {
+      brandHeading: "Swasthera",
+      docTitle: "Settlement Invoice",
+      invoiceNumber,
+      metaItems: [
+        { label: "Settlement Cycle", value: settlement.cycle },
+        { label: "Period", value: periodFrom === periodTo ? periodFrom : `${periodFrom} to ${periodTo}` },
+        { label: "Status", value: settlement.status },
+        { label: "Payout Date", value: payout?.settledAt?.toISOString().split("T")[0] ?? "—" },
+      ],
+      parties: [
+        {
+          heading: "From",
+          name: "Swasthera Marketplace Pvt. Ltd.",
+          lines: [
+            "Legal: Swasthera Marketplace Pvt. Ltd.",
+            "GSTIN: 27AABCS1234A1Z5",
+            "Unit 4B, Bandra-Kurla Complex, Mumbai 400051",
+          ],
+        },
+        {
+          heading: "Billed To",
+          name: settlement.brandName,
+          lines: [
+            `Legal: ${brandLegal}`,
+            `GSTIN: ${ob?.masterGstin ?? "—"}`,
+            `PAN: ${ob?.pan ?? "—"}`,
+            `TAN: ${ob?.tan ?? "—"}`,
+          ],
+        },
+      ],
+      bankBlock: {
+        heading: "Credited Bank Account",
+        lines: [
+          settlement.bankName,
+          `IFSC: ${settlement.bankIfsc}`,
+          `A/c: ****${last4}`,
+        ],
+      },
+      columns: [
+        { key: "orderId", header: "Order ID", width: 1.6 },
+        { key: "invoiceNo", header: "Invoice No", width: 1.7 },
+        { key: "orderDate", header: "Order Date", width: 1.3 },
+        { key: "gmv", header: "GMV", width: 1.1, align: "right" },
+        { key: "commission", header: "Commission", width: 1.7, align: "right" },
+        { key: "mdr", header: "MDR", width: 1.4, align: "right" },
+        { key: "tds", header: "TDS", width: 1.0, align: "right" },
+        { key: "tcs", header: "TCS", width: 1.0, align: "right" },
+        { key: "net", header: "Net Payable", width: 1.3, align: "right" },
+      ],
+      rows,
+      summary,
+      netLabel: "Net Settlement Amount",
+      netValue: formatINR(netPayable),
+      footerNotes,
+      signatory: {
+        heading: "Authorised Signatory",
+        lines: ["For Swasthera Marketplace Pvt. Ltd.", "Finance & Settlements"],
+      },
+    };
+
+    const pdfBytes = await generateInvoicePdf(doc);
+    const filename = `Settlement-Invoice-${invoiceNumber}.pdf`;
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    return res.send(Buffer.from(pdfBytes));
+  } catch (err) {
+    req.log.error({ err }, "settlement invoice pdf error");
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 // Stop-payout (hold) / resume — spec MODULE 3. Pauses a cycle without deleting
 // it; a held settlement cannot be approved into a payout.
 router.post("/settlements/:id/hold", authorize(["checker", "admin"]), async (req, res) => {
@@ -367,6 +627,7 @@ function mapSettlement(r: typeof settlementsTable.$inferSelect) {
   return {
     id: r.id,
     cycle: r.cycle,
+    invoiceNumber: r.invoiceNumber,
     companyName: r.companyName,
     brandName: r.brandName,
     bankAccount: r.bankAccount,

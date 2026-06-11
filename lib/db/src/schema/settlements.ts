@@ -16,6 +16,10 @@ export const settlementsTable = pgTable("settlements", {
   bankName: text("bank_name").notNull(),
   eligibleBags: integer("eligible_bags").notNull(),
   bagIds: text("bag_ids").notNull().default("[]"),
+  // Sequential per-brand settlement-invoice number (BRANDCODE-STL-YYYY-NNNN),
+  // assigned on first PDF download and persisted so re-downloads are stable.
+  // Uniqueness is guaranteed by the sequential per-brand generator.
+  invoiceNumber: text("invoice_number"),
   // Waterfall fields
   grossGmv: numeric("gross_gmv", { precision: 14, scale: 2 }).notNull(),
   brandPromotions: numeric("brand_promotions", { precision: 14, scale: 2 }).notNull().default("0"),

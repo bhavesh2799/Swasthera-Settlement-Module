@@ -1,0 +1,487 @@
+# Swasthera Platform — Replit Enhancement Prompt
+**Stack: React (frontend) + Node.js/Express (backend)**
+
+---
+
+## CONTEXT
+
+You are enhancing a B2B brand onboarding and settlement compliance platform called **Swasthera**.
+The stack is React on the frontend and Node.js/Express on the backend. Use the folder structure,
+naming conventions, and patterns already present in the project. Where no pattern exists,
+default to: React functional components with hooks, Express Router for API grouping,
+and a RESTful API design.
+
+Apply all changes incrementally — do not rewrite files unless necessary. Add new routes,
+components, and services as separate files and import them into existing entry points.
+
+---
+
+## ROLE-BASED ACCESS CONTROL (FOUNDATION — BUILD THIS FIRST)
+
+### Roles
+- `maker` — creates and submits onboarding drafts; views own submissions
+- `checker` — Finance role; approves/rejects/requests edits; accesses compliance reports
+- `admin` — manages users; configures global TDS/TCS rates; views all modules
+
+### Backend
+Create `middleware/rbac.js`:
+```js
+// Usage: router.get('/route', authenticate, authorize(['checker', 'admin']), handler)
+```
+- `authenticate` middleware: verify JWT from `Authorization: Bearer <token>` header
+- `authorize(roles)` middleware: check `req.user.role` against allowed roles array
+- Attach `req.user = { id, role, name }` after token verification
+
+### Frontend
+Create `context/AuthContext.jsx`:
+- Store `{ user, token, login, logout }` in context
+- `useAuth()` hook for component access
+- `<ProtectedRoute roles={['checker']} />` wrapper component that redirects if role not allowed
+- Show/hide UI elements based on `user.role` — never rely on frontend role checks for data security
+
+---
+
+## MODULE 1: BRAND ONBOARDING
+
+### Data Model
+Add these Mongoose schemas (or SQL tables if using SQL) in `models/`:
+
+**Company**
+```
+id, legal_name, trade_name, entity_type (enum: private_limited | public_limited |
+llp | partnership | proprietorship), pan, gstn, tan, cin, llp_code,
+registered_address { line1, line2, city, state, state_code, pin },
+status (enum: draft | pending_review | active | rejected | suspended),
+created_by (ref: User), created_at, updated_at
+```
+
+**Brand** (belongs to Company)
+```
+id, company_id, brand_name, brand_legal_name, category, brand_type
+(enum: primary | franchise | authorized), parent_brand_id (nullable),
+authorization_doc_url, status, created_at
+```
+
+**BankAccount** (belongs to Brand)
+```
+id, brand_id, account_number, ifsc, bank_name, branch_name,
+account_type (enum: current | savings), is_primary (bool)
+```
+
+**Warehouse** (belongs to Brand)
+```
+id, brand_id, warehouse_name, gstn, state, state_code,
+address { line1, city, pin }, warehouse_type (enum: primary | secondary)
+```
+
+**OnboardingDraft** (tracks maker progress)
+```
+id, company_id, section_completed { company: bool, brand: bool, warehouse: bool,
+kyb: bool, documents: bool, commercials: bool }, submitted_at, reviewed_by,
+reviewed_at, review_status (enum: draft|pending|approved|rejected|edit_requested),
+rejection_reason, version (int, default 1)
+```
+
+**AuditLog**
+```
+id, entity_type, entity_id, action, changed_by, changed_fields (JSON), timestamp
+```
+
+---
+
+### Backend Routes — `routes/onboarding.js`
+
+```
+POST   /api/onboarding/company              — create/update company draft (maker)
+GET    /api/onboarding/company/:id          — get company details
+POST   /api/onboarding/brand               — create brand under company
+PUT    /api/onboarding/brand/:id           — update brand
+POST   /api/onboarding/warehouse           — create warehouse under brand
+PUT    /api/onboarding/warehouse/:id       — update warehouse
+POST   /api/onboarding/bank-account        — add bank account to brand
+DELETE /api/onboarding/bank-account/:id    — remove bank account
+POST   /api/onboarding/kyb/trigger/:companyId  — trigger KYB verification
+GET    /api/onboarding/kyb/status/:companyId   — get KYB result
+POST   /api/onboarding/submit/:companyId   — submit draft for checker review (maker)
+GET    /api/onboarding/queue               — get pending review list (checker only)
+POST   /api/onboarding/review/:companyId   — approve/reject/request-edit (checker only)
+GET    /api/onboarding/draft/:companyId    — get full draft summary
+POST   /api/onboarding/documents/upload    — upload document (multipart/form-data)
+GET    /api/onboarding/documents/:companyId — list all documents
+```
+
+**Mandatory field validation per entity type** — create `services/validationRules.js`:
+```js
+const mandatoryFields = {
+  private_limited:  ['pan', 'gstn', 'tan', 'cin'],
+  public_limited:   ['pan', 'gstn', 'tan', 'cin'],
+  llp:              ['pan', 'gstn', 'tan', 'cin', 'llp_code'],
+  partnership:      ['pan', 'gstn', 'tan'],
+  proprietorship:   ['pan', 'tan'],  // cin optional, gstn optional with toggle
+};
+```
+
+**IFSC lookup** — `GET /api/utils/ifsc/:code`
+- Call `https://ifsc.razorpay.com/:ifscCode` (or equivalent)
+- Return `{ bank, branch, city, state }` for auto-populate
+
+**GST auto-fetch** — `POST /api/utils/gst-lookup`
+- Accept `{ gstn }`, call GST verification API
+- Return `{ registered_address, trade_name, status }`
+
+**KYB service** — `services/kybService.js`
+- Cross-validate CIN ↔ PAN ↔ GST via third-party API
+- On success: update company `kyb_verified: true, kyb_verified_at`
+- On failure: return `{ mismatched_fields: [] }`
+
+**Auto-save** — all `POST /api/onboarding/*` routes should upsert (not 409 on re-save).
+Return the full updated draft on every save.
+
+---
+
+### Frontend Components — `src/components/onboarding/`
+
+**`OnboardingLayout.jsx`** — sidebar stepper showing sections:
+1. Company Details
+2. Brand Details
+3. Warehouse Details
+4. KYB Verification
+5. Documents
+6. Commercials
+7. Review & Submit
+
+Mark each step: `complete (✓) | active | locked`. Lock steps 4–7 until earlier steps pass validation.
+
+**`CompanyDetailsForm.jsx`**
+- Entity type dropdown → dynamically show/hide fields based on `mandatoryFields` map
+- GST field: toggle radio "Available / Not Available" — if Not Available, disable GST input
+- On valid GST: call IFSC-style auto-fetch, populate address fields
+- On valid PAN: auto-fetch company name
+- Inline validation on blur; show error beneath each field (not a toast)
+- Auto-save on every field change (debounced 2s)
+
+**`BrandDetailsForm.jsx`**
+- "Is brand same as company?" toggle → if yes, inherit company fields (still editable)
+- `BrandCategorySelect.jsx` — searchable dropdown of brand categories
+- "Add another brand" button to support multiple brands under one company
+- Authorization doc upload shown only for franchise/authorized brand types
+
+**`BankAccountForm.jsx`**
+- IFSC input → on valid IFSC: auto-populate Bank Name and Branch Name fields
+- "Set as primary" radio per account
+- "Add another bank account" button
+- Show warning if no primary account is set
+
+**`WarehouseForm.jsx`**
+- Pin code input → auto-fetch city and state
+- State code auto-populated from state name
+- "Add another warehouse" button
+
+**`KYBPanel.jsx`**
+- Show "Run KYB Check" button (disabled until company + bank details complete)
+- Loading state while KYB runs
+- On success: green verified badge + timestamp
+- On failure: list mismatched fields with "Fix & Re-run" CTA
+
+**`DocumentUpload.jsx`**
+- Three sections: Company Docs | Brand Docs | Warehouse Docs
+- Each document slot: label, required/optional badge, upload button, preview link after upload
+- Required company docs: CoI, PAN copy, TAN copy, GST certificate, signed agreement
+- Optional: MSME certificate, LLP/Partnership deed (shown only for relevant entity types)
+
+**`MakerSubmitPanel.jsx`**
+- Checklist summary: all sections with ✓ / ✗ status
+- Disabled submit button until all mandatory sections are complete
+- Confirmation modal before final submission
+- Post-submit: show "Submitted for review" state with timestamp
+
+**`CheckerReviewPanel.jsx`** (checker role only)
+- Tabbed view of all company/brand details (read-only)
+- Shows: submitted by, submitted at, version number
+- Action buttons: "Approve" | "Reject" | "Request Edit"
+- Reject/Edit: require reason text (min 20 chars) before confirming
+- Approve: confirmation modal → calls review API → brand goes active
+
+**`CheckerQueue.jsx`** (checker role only)
+- Table: Brand Name | Company | Submitted By | Submitted At | Status | Action
+- Filter by status; sort by submitted date
+- Click row to open CheckerReviewPanel in a side drawer
+
+---
+
+## MODULE 2: COMMERCIALS CONFIGURATION
+
+### Data Model — `models/CommercialTerms.js`
+```
+id, company_id, brand_id (nullable — null means company-level),
+commission_type (enum: flat | slab | gmv_tier),
+flat_rate (decimal, nullable),
+slabs: [{ from_gmv, to_gmv, rate }] (array, nullable),
+gmv_tier_type (enum: threshold | cumulative),
+tds_rate (decimal), tds_tan, tds_limit (default 180000),
+tcs_rate (decimal),
+return_window_days (int),
+settlement_hold_days (int),
+effective_from (date),
+version (int, auto-increment per brand),
+addendum_doc_url (nullable),
+created_by, created_at, is_active (bool)
+```
+
+### Backend Routes — `routes/commercials.js`
+```
+GET    /api/commercials/:brandId            — get active commercial terms
+GET    /api/commercials/:brandId/history    — get all versions
+POST   /api/commercials/:brandId            — create new version (checker/admin only)
+PUT    /api/commercials/:brandId/tds        — update TDS config
+PUT    /api/commercials/:brandId/tcs        — update TCS config
+```
+
+On every `POST` to create: auto-increment version, set previous version `is_active: false`,
+require `addendum_doc_url` if version > 1.
+
+### Frontend Components — `src/components/commercials/`
+
+**`CommissionConfigurator.jsx`**
+- Radio group: Flat Rate | Slab Based | GMV Tier
+- `FlatRateForm.jsx` — single percentage input
+- `SlabForm.jsx` — dynamic slab rows: GMV From | GMV To | Rate %; "Add slab" button;
+  validate slabs are contiguous and non-overlapping
+- `GMVTierForm.jsx` — toggle: Threshold model vs Cumulative model; explain difference
+  inline with a small tooltip/example
+- Preview panel: given a sample GMV (user-input), show calculated commission live
+
+**`TDSTCSForm.jsx`**
+- TAN input (mandatory for TDS activation)
+- TDS Rate % + applicable limit amount
+- TCS Rate %
+- Warning banner: "TDS applies independent of warehouse state/geography"
+- Show TDS + TCS side by side in a summary card
+
+**`CommercialVersionHistory.jsx`**
+- Timeline of versions: v1 → v2 → v3 (current)
+- Each version: effective date, rate summary, addendum doc link, created by
+
+---
+
+## MODULE 3: TRANSACTION & SETTLEMENT ENGINE
+
+### Data Model
+
+**Order**
+```
+id, bag_id, brand_id, warehouse_id, gmv, status (77-state enum), 
+payment_gateway_txn_id, payment_captured_at, delivered_at, 
+return_window_expires_at (= delivered_at + return_window_days),
+session_expires_at (= created_at + 30min), created_at
+```
+
+**Invoice**
+```
+id, order_id, brand_id, invoice_number (series: BRANDCODE-INV-YYYY-NNNN),
+invoice_type (enum: invoice | credit_note), gmv, commission_amount,
+tds_deducted, tcs_collected, net_payable, generated_at,
+pdf_url, html_url
+```
+
+**SettlementCycle**
+```
+id, brand_id, cycle_type (enum: daily|weekly|biweekly|monthly),
+period_start, period_end, total_gmv, total_commission, total_tds,
+total_tcs, total_mdr, net_payout, status (enum: pending|processing|paid|on_hold),
+bank_account_id, paid_at
+```
+
+**SettlementLineItem**
+```
+id, settlement_cycle_id, order_id, invoice_id, line_type 
+(enum: invoice|credit_note|tds|tcs|mdr|adjustment), amount, description
+```
+
+### Backend Routes — `routes/transactions.js` and `routes/settlements.js`
+
+```
+POST   /api/transactions/capture           — record payment capture (webhook from PG)
+GET    /api/transactions/:orderId          — get order + invoice details
+POST   /api/transactions/:orderId/cancel   — trigger cancellation flow
+POST   /api/transactions/:orderId/return   — trigger return flow
+GET    /api/invoices/:invoiceId            — get invoice detail
+GET    /api/invoices/:invoiceId/download   — download PDF/HTML
+
+POST   /api/settlements/run               — trigger settlement cycle for brand (admin)
+GET    /api/settlements/:brandId          — list settlement cycles
+GET    /api/settlements/:brandId/:cycleId — settlement detail + line items
+GET    /api/settlements/:brandId/:cycleId/report — download settlement report CSV
+POST   /api/settlements/:brandId/stop-payout    — set payout on hold
+```
+
+### Services — `services/`
+
+**`invoiceService.js`**
+- `generateInvoice(orderId)` — called on order confirmation
+- `generateCreditNote(orderId)` — called on cancellation/return approval
+- Invoice number: query last invoice for brand → increment NNNN with zero-pad
+
+**`tdsReversalService.js`**
+```js
+// Core reversal eligibility logic:
+function canReverseTDS(originalTransactionDate, reversalRequestDate) {
+  const filing7th = new Date(originalTransactionDate);
+  filing7th.setMonth(filing7th.getMonth() + 1);
+  filing7th.setDate(7);
+  return reversalRequestDate < filing7th;
+  // If false: log as adjustment entry, do NOT reverse
+}
+```
+
+**`settlementCalculator.js`**
+```js
+// For each order in cycle:
+// net = gmv - commission - tds_deducted + tcs_collected - mdr
+// If net < 0: generate negative adjustment entry, carry forward to next cycle
+// Never initiate a negative bank transfer
+function calculateSettlement(orders, commercialTerms) { ... }
+```
+
+**`cancellationHandler.js`**
+- Case 1 (pre-delivery cancel): void invoice → credit note → reverse TDS/TCS if eligible
+- Case 2 (post-delivery, within return window): return journey → brand accepts/rejects →
+  on accept: credit note + reversal
+- Case 3 (past return window): no credit note, no reversal
+- All cases: write to AuditLog
+
+---
+
+### Frontend Components — `src/components/transactions/`
+
+**`OrderStatusBadge.jsx`** — color-coded badge for all 77 order states (group into
+macro states: Placed | Confirmed | In Transit | Delivered | Returned | Cancelled | Settled)
+
+**`InvoiceViewer.jsx`**
+- Shows all invoice fields in a clean printable layout
+- Download buttons: PDF | HTML
+- For credit notes: show original invoice reference + reason
+
+**`SettlementDashboard.jsx`** (per brand)
+- Cycle selector + date range filter
+- Summary cards: Total GMV | Commission | TDS | TCS | Net Payout
+- Line items table with type badges (Invoice / Credit Note / TDS / TCS / MDR / Adjustment)
+- Download report button
+
+**`CancellationFlow.jsx`**
+- Step 1: show cancellation reason select
+- Step 2: show TDS reversal eligibility warning if past 7th of next month
+- Step 3: confirm → call cancel API → show updated invoice/credit note
+
+---
+
+## MODULE 4: COMPLIANCE & REPORTING
+
+### Backend Routes — `routes/compliance.js`
+
+```
+GET  /api/compliance/tds-report/:brandId?period=YYYY-MM    — TDS report for period
+GET  /api/compliance/tcs-report/:brandId?period=YYYY-MM    — TCS report for period
+GET  /api/compliance/tds-report/:brandId/export            — CSV export
+GET  /api/compliance/reversal-log/:brandId                 — all TDS/TCS reversals
+GET  /api/compliance/soc/:brandId?cycleId=                 — Statement of Commission
+GET  /api/compliance/soc/:brandId/download                 — SOC PDF download
+GET  /api/compliance/ledger/:brandId                       — running ledger
+```
+
+### Frontend Components — `src/components/compliance/`
+
+**`TDSReport.jsx`**
+- Filter: Brand | Period (month-year picker)
+- Table: TAN | Brand | Order Count | Total GMV | TDS Rate | Total TDS | Filing Deadline
+- Flag rows where `filing_deadline < today` in red with tooltip "Reversal no longer possible"
+- Export CSV button
+
+**`TCSReport.jsx`**
+- Table: Brand | Period | TCS Collected | TCS Reversed | Net TCS Payable
+- Reversal log sub-table: Order ID | Original TCS | Reversal Amount | Date | Reason
+
+**`SOCViewer.jsx`** (Statement of Commission)
+- Per brand, per settlement cycle
+- Fields: Period | Total Orders | Total GMV | Commission Rate | Commission Amount |
+  TDS | TCS | MDR | Net Settlement
+- Download as PDF button (generate client-side or call backend PDF service)
+
+**`LedgerView.jsx`**
+- Table of every financial line item: Date | Type | Order/Invoice ID | Amount (+/−) | Running Balance
+- Filter by: date range | transaction type | settlement cycle
+- Export CSV
+
+---
+
+## SHARED INFRASTRUCTURE
+
+### Auto-save Pattern (Frontend)
+Create `hooks/useAutoSave.js`:
+```js
+// Debounce form state → call API every 2 seconds on change
+// Show "Saving..." / "Saved ✓" / "Save failed ✗" indicator in form header
+// On unmount: flush pending save immediately
+```
+
+### Audit Log Middleware (Backend)
+Create `middleware/auditLogger.js`:
+```js
+// After any mutating route (POST/PUT/DELETE) on onboarding, commercials, settlements:
+// Write to AuditLog: { entity_type, entity_id, action, changed_by, changed_fields, timestamp }
+// Attach as: router.post('/route', authenticate, auditLogger('Company', 'update'), handler)
+```
+
+### Document Storage
+- Use `multer` for multipart upload handling
+- Store in `/uploads/` locally in Replit (or swap to S3-compatible if configured)
+- Return signed URL or direct path for download
+- Validate: file type (pdf/jpg/png), max size 10MB
+
+### Error Response Standard
+All API errors return:
+```json
+{ "success": false, "error": { "code": "VALIDATION_ERROR", "message": "...", "fields": {} } }
+```
+All success responses return:
+```json
+{ "success": true, "data": { ... } }
+```
+
+### Environment Variables Needed
+```
+JWT_SECRET=
+MONGODB_URI= (or DATABASE_URL for SQL)
+IFSC_API_URL=https://ifsc.razorpay.com
+GST_API_KEY=
+KYB_API_URL=
+KYB_API_KEY=
+UPLOAD_DIR=./uploads
+```
+
+---
+
+## SUGGESTED BUILD ORDER
+
+1. RBAC middleware + AuthContext (foundation for all protected routes)
+2. Company/Brand/Warehouse models + onboarding CRUD routes
+3. CompanyDetailsForm + BrandDetailsForm + IFSC auto-populate
+4. KYB service + KYB panel
+5. Document upload + checker queue + maker/checker workflow
+6. Commercials model + CommissionConfigurator + version history
+7. Transaction capture + invoice generation service
+8. Cancellation handler + TDS reversal logic
+9. Settlement calculator + SettlementDashboard
+10. Compliance reports (TDS, TCS, SOC, Ledger)
+
+---
+
+## NOTES FOR REPLIT AGENT
+
+- Do not install unnecessary packages. Prefer packages already in package.json.
+- For PDF generation use `pdfkit` (backend) or `html2canvas + jspdf` (frontend).
+- For date math use `date-fns` (already common) — avoid moment.js.
+- Keep all business logic (commission calc, TDS reversal eligibility, settlement calc)
+  in `services/` files — not in route handlers — so they are unit-testable.
+- All monetary values: store as integers (paise/cents), display as formatted currency.
+- All dates: store as UTC ISO strings, display in IST (Asia/Kolkata, UTC+5:30).

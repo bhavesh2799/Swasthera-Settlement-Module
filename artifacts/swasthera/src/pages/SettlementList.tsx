@@ -251,11 +251,11 @@ export function SettlementList() {
       const res = await fetch("/api/settlements/bulk/approve", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ settlementIds: Array.from(checkedApprove), approvedBy: "Checker" }),
+        body: JSON.stringify({ ids: Array.from(checkedApprove), approvedBy: "Checker" }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Bulk approve failed");
-      toast({ title: "Settlements approved", description: `${data.approved ?? checkedApprove.size} settlement(s) approved successfully.` });
+      toast({ title: "Settlements approved", description: `${data.processed ?? checkedApprove.size} settlement(s) approved successfully.` });
       setCheckedApprove(new Set());
       refetch();
     } catch (err) {
@@ -376,7 +376,25 @@ export function SettlementList() {
               <Table>
                 <TableHeader className="bg-slate-50/80">
                   <TableRow className="border-slate-100">
-                    {isChecker && <TableHead className="w-10 px-3" />}
+                    {isChecker && (
+                      <TableHead className="w-10 px-3">
+                        {(() => {
+                          const pendingIds = (settlements ?? []).filter((s) => s.status === "PENDING_APPROVAL").map((s) => s.id);
+                          if (pendingIds.length === 0) return null;
+                          const allChecked = pendingIds.every((id) => checkedApprove.has(id));
+                          return (
+                            <Checkbox
+                              checked={allChecked}
+                              onCheckedChange={() =>
+                                setCheckedApprove(allChecked ? new Set() : new Set(pendingIds))
+                              }
+                              className="border-amber-400"
+                              aria-label="Select all pending settlements"
+                            />
+                          );
+                        })()}
+                      </TableHead>
+                    )}
                     <TableHead className="font-medium text-slate-500 h-10 px-6">Cycle</TableHead>
                     <TableHead className="font-medium text-slate-500 h-10">Brand</TableHead>
                     <TableHead className="font-medium text-slate-500 h-10 text-right">Bags</TableHead>

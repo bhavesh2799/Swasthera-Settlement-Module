@@ -96,11 +96,11 @@ export function PayoutList() {
       const res = await fetch("/api/payouts/bulk/initiate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ payoutIds: Array.from(checkedPayouts), initiatedBy: "Anjali Patel" }),
+        body: JSON.stringify({ ids: Array.from(checkedPayouts), initiatedBy: "Anjali Patel" }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Bulk initiate failed");
-      toast({ title: "Payouts initiated", description: `${data.initiated ?? checkedPayouts.size} payout(s) sent to Checker for approval.` });
+      toast({ title: "Payouts initiated", description: `${data.processed ?? checkedPayouts.size} payout(s) sent to Checker for approval.` });
       setCheckedPayouts(new Set());
       refetch();
       queryClient.invalidateQueries({ queryKey: ["/api/activity"] });
@@ -118,11 +118,11 @@ export function PayoutList() {
       const res = await fetch("/api/payouts/bulk/approve", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ payoutIds: Array.from(checkedPayouts), approvedBy: "Rajesh Kumar" }),
+        body: JSON.stringify({ ids: Array.from(checkedPayouts), approvedBy: "Rajesh Kumar" }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Bulk approve failed");
-      toast({ title: "Payouts approved & settled", description: `${data.approved ?? checkedPayouts.size} payout(s) settled with auto-generated UTRs.` });
+      toast({ title: "Payouts approved & settled", description: `${data.processed ?? checkedPayouts.size} payout(s) settled with auto-generated UTRs.` });
       setCheckedPayouts(new Set());
       refetch();
       queryClient.invalidateQueries({ queryKey: ["/api/activity"] });
@@ -265,7 +265,25 @@ export function PayoutList() {
           <Table>
             <TableHeader className="bg-slate-50/80">
               <TableRow className="border-slate-100">
-                <TableHead className="w-10 px-3" />
+                <TableHead className="w-10 px-3">
+                  {(() => {
+                    const selectableIds = (rows ?? [])
+                      .filter((r) => (r.status === "PENDING_APPROVAL" && isMaker) || (r.status === "INITIATED" && isChecker))
+                      .map((r) => r.id);
+                    if (selectableIds.length === 0) return null;
+                    const allChecked = selectableIds.every((id) => checkedPayouts.has(id));
+                    return (
+                      <Checkbox
+                        checked={allChecked}
+                        onCheckedChange={() =>
+                          setCheckedPayouts(allChecked ? new Set() : new Set(selectableIds))
+                        }
+                        className={isChecker ? "border-green-400" : "border-amber-400"}
+                        aria-label="Select all eligible payouts"
+                      />
+                    );
+                  })()}
+                </TableHead>
                 <TableHead className="font-medium text-slate-500 h-10 px-6">Payment Ref</TableHead>
                 <TableHead className="font-medium text-slate-500 h-10">Brand / Cycle</TableHead>
                 <TableHead className="font-medium text-slate-500 h-10">Beneficiary</TableHead>

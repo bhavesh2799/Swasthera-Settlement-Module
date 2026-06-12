@@ -30,6 +30,11 @@ export const bagsTable = pgTable("bags", {
   customerState: text("customer_state"),
   paymentMethod: text("payment_method"),
   settledAt: timestamp("settled_at"),
+  // Order-reversal lifecycle (Task #7). null = no reversal action taken.
+  // CANCELLED (pre-delivery void), RETURN_INITIATED / RETURNED / RETURN_REJECTED
+  // (after-delivery return journey), WINDOW_EXPIRED_REJECTED (past return window).
+  reversalStatus: text("reversal_status"),
+  reversalReason: text("reversal_reason"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 

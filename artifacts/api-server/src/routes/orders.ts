@@ -3,6 +3,7 @@ import { db } from "@workspace/db";
 import { bagsTable, onboardingsTable, brandsTable, warehousesTable } from "@workspace/db";
 import { eq, and, like, lt, inArray, SQL } from "drizzle-orm";
 import { sql } from "drizzle-orm";
+import { reversalDeadline, isPastReversalDeadline } from "../services/tdsReversalService";
 
 const router = Router();
 
@@ -345,6 +346,7 @@ router.delete("/bags/:id", async (req, res) => {
 });
 
 function mapBag(b: typeof bagsTable.$inferSelect) {
+  const txnDate = b.invoiceDate ? new Date(b.invoiceDate) : new Date(b.createdAt);
   return {
     id: b.id,
     bagId: b.bagId,
@@ -364,6 +366,10 @@ function mapBag(b: typeof bagsTable.$inferSelect) {
     cycle: b.cycle,
     stateCode: b.stateCode,
     stateGstin: b.stateGstin,
+    reversalStatus: b.reversalStatus ?? null,
+    reversalReason: b.reversalReason ?? null,
+    reversalDeadline: reversalDeadline(txnDate),
+    reversalDeadlinePast: isPastReversalDeadline(txnDate),
   };
 }
 

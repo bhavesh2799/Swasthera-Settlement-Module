@@ -2,6 +2,7 @@ import { Router } from "express";
 import { db } from "@workspace/db";
 import { tcsRecordsTable, tdsRecordsTable, bagsTable, activityTable, settlementsTable, payoutsTable, onboardingsTable } from "@workspace/db";
 import { eq, and, sql, inArray } from "drizzle-orm";
+import { reversalDeadline, isPastReversalDeadline } from "../services/tdsReversalService";
 
 const router = Router();
 
@@ -188,22 +189,28 @@ router.get("/compliance/order-breakdown", async (req, res) => {
       return d.startsWith(`${yearStr}-${monthNum}`);
     });
 
-    const result = filteredBags.map((b) => ({
-      bagId: b.bagId,
-      orderId: b.orderId,
-      brandId: b.brandId,
-      brandName: b.brandName,
-      sku: b.sku,
-      esp: parseFloat(b.esp) * b.qty,
-      deliveryDate: b.deliveryDate ?? "",
-      windowExpiryDate: b.windowExpiryDate ?? "",
-      tcsAmount: parseFloat(b.tcsAmount),
-      tdsAmount: parseFloat(b.tdsAmount),
-      eligibility: b.eligibility,
-      omsState: b.omsState,
-      isReturned: b.eligibility === "on_hold" || b.omsState?.includes("return"),
-      cycle: b.cycle,
-    }));
+    const result = filteredBags.map((b) => {
+      const txnDate = b.invoiceDate ? new Date(b.invoiceDate) : new Date(b.createdAt);
+      return {
+        bagId: b.bagId,
+        orderId: b.orderId,
+        brandId: b.brandId,
+        brandName: b.brandName,
+        sku: b.sku,
+        esp: parseFloat(b.esp) * b.qty,
+        deliveryDate: b.deliveryDate ?? "",
+        windowExpiryDate: b.windowExpiryDate ?? "",
+        tcsAmount: parseFloat(b.tcsAmount),
+        tdsAmount: parseFloat(b.tdsAmount),
+        eligibility: b.eligibility,
+        omsState: b.omsState,
+        isReturned: b.eligibility === "on_hold" || b.omsState?.includes("return"),
+        cycle: b.cycle,
+        reversalStatus: b.reversalStatus ?? null,
+        reversalDeadline: reversalDeadline(txnDate),
+        reversalDeadlinePast: isPastReversalDeadline(txnDate),
+      };
+    });
 
     res.json(result);
   } catch (err) {

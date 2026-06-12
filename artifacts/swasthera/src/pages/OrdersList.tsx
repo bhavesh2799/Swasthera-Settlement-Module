@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
-import { Search, Loader2, Plus, Trash2, RefreshCw, Database, PackageSearch, Pencil, Upload, Download, RefreshCcw, Receipt } from "lucide-react";
+import { Search, Loader2, Plus, Trash2, RefreshCw, Database, PackageSearch, Pencil, Upload, Download, RefreshCcw, Receipt, RotateCcw, AlertTriangle, Check, X } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useRole } from "@/contexts/RoleContext";
 
@@ -64,6 +64,24 @@ interface BagRow {
   cycle: string;
   stateCode?: string;
   stateGstin?: string;
+  reversalStatus?: string | null;
+  reversalReason?: string | null;
+  reversalDeadline?: string;
+  reversalDeadlinePast?: boolean;
+}
+
+const REVERSAL_STATUS_META: Record<string, { label: string; className: string }> = {
+  CANCELLED: { label: "Cancelled", className: "bg-red-100 text-red-800" },
+  RETURN_INITIATED: { label: "Return Initiated", className: "bg-amber-100 text-amber-800" },
+  RETURNED: { label: "Returned", className: "bg-purple-100 text-purple-800" },
+  RETURN_REJECTED: { label: "Return Rejected", className: "bg-slate-100 text-slate-700" },
+  WINDOW_EXPIRED_REJECTED: { label: "Cancellation Rejected — Window Expired", className: "bg-slate-100 text-slate-700" },
+};
+
+function ReversalStatusBadge({ status }: { status: string }) {
+  const meta = REVERSAL_STATUS_META[status];
+  if (!meta) return null;
+  return <Badge className={`${meta.className} hover:opacity-90 border-transparent text-[10px] mt-1`}>{meta.label}</Badge>;
 }
 
 const OMS_STATES = [
@@ -149,6 +167,7 @@ export function OrdersList() {
   const [showBulkDialog, setShowBulkDialog] = useState(false);
   const [editingBag, setEditingBag] = useState<BagRow | null>(null);
   const [invoiceBag, setInvoiceBag] = useState<BagRow | null>(null);
+  const [reversalBag, setReversalBag] = useState<BagRow | null>(null);
   const [recalcLoading, setRecalcLoading] = useState(false);
   const { isBackend } = useRole();
   const { toast } = useToast();
@@ -453,6 +472,7 @@ export function OrdersList() {
                       <TableCell>
                         <div className="font-mono text-xs text-slate-700">{row.sku}</div>
                         <div className="text-xs font-medium text-slate-500 mt-0.5">{row.omsState}</div>
+                        {row.reversalStatus && <div><ReversalStatusBadge status={row.reversalStatus} /></div>}
                       </TableCell>
                       <TableCell>
                         <span className="text-xs font-mono bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded">{row.cycle}</span>
@@ -480,6 +500,12 @@ export function OrdersList() {
                             <div className="text-[10px] text-slate-400">{row.windowExpiryDate}</div>
                           </div>
                         ) : <span className="text-xs text-slate-400">—</span>}
+                        {row.reversalDeadline && (
+                          <div className={`text-[10px] mt-1 flex items-center gap-0.5 ${row.reversalDeadlinePast ? "text-red-600 font-medium" : "text-slate-400"}`}>
+                            {row.reversalDeadlinePast && <AlertTriangle className="h-2.5 w-2.5" />}
+                            Reversal by {row.reversalDeadline}
+                          </div>
+                        )}
                       </TableCell>
                       <TableCell className="px-6">
                         <EligibilityBadge status={displayEligibility} />
@@ -487,6 +513,15 @@ export function OrdersList() {
                       {isBackend && (
                         <TableCell className="px-4 text-right">
                           <div className="flex gap-1 justify-end">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7 text-slate-500 hover:text-amber-700"
+                              title="Reverse / cancel order"
+                              onClick={() => setReversalBag(row)}
+                            >
+                              <RotateCcw className="h-3.5 w-3.5" />
+                            </Button>
                             <Button
                               variant="ghost"
                               size="icon"
@@ -556,6 +591,16 @@ export function OrdersList() {
           open={!!invoiceBag}
           onOpenChange={(open) => !open && setInvoiceBag(null)}
           canCapture={isBackend}
+        />
+      )}
+
+      {/* Reversal / cancellation dialog */}
+      {reversalBag && (
+        <ReversalDialog
+          bag={reversalBag}
+          open={!!reversalBag}
+          onOpenChange={(open) => !open && setReversalBag(null)}
+          onDone={() => queryClient.invalidateQueries({ queryKey: ["listOrders"] })}
         />
       )}
     </div>
@@ -1086,6 +1131,214 @@ function EditEligibilityDialog({ bag, open, onOpenChange, onSubmit, isPending }:
             {isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
             Update
           </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---------- Reversal / Cancellation Dialog ----------
+
+interface ReversalPreview {
+  order_id: string;
+  case: "PRE_DELIVERY" | "WITHIN_RETURN_WINDOW" | "PAST_RETURN_WINDOW";
+  scenario: 1 | 2 | 3;
+  title: string;
+  description: string;
+  reversalStatus: string | null;
+  reversalReason: string | null;
+  deadline: string;
+  pastDeadline: boolean;
+  reversalEligible: boolean;
+  tcsAmount: number;
+  tdsAmount: number;
+}
+
+function ReversalDialog({
+  bag,
+  open,
+  onOpenChange,
+  onDone,
+}: {
+  bag: BagRow;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onDone: () => void;
+}) {
+  const { toast } = useToast();
+  const [reason, setReason] = useState("");
+
+  const { data: preview, isLoading, refetch } = useQuery<ReversalPreview>({
+    queryKey: ["reversal-preview", bag.orderId],
+    queryFn: async () => {
+      const r = await fetch(`/api/transactions/${bag.orderId}/reversal-preview`);
+      if (!r.ok) throw new Error("failed to load reversal preview");
+      return r.json();
+    },
+    enabled: open,
+  });
+
+  const post = async (path: string, body?: object) => {
+    const r = await fetch(`/api/transactions/${bag.orderId}/${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body ?? {}),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error ?? "Action failed");
+    return data;
+  };
+
+  const confirmMutation = useMutation({
+    mutationFn: () => post("cancel", { reason: reason || undefined }),
+    onSuccess: (data: { message?: string; scenario?: number; reversalEligible?: boolean }) => {
+      toast({
+        title:
+          data.scenario === 1 ? "Order cancelled"
+          : data.scenario === 2 ? "Return journey initiated"
+          : "Cancellation rejected",
+        description:
+          data.message ??
+          (data.scenario === 1
+            ? data.reversalEligible
+              ? "Invoice voided, credit note issued and TDS/TCS reversed."
+              : "Invoice voided and credit note issued. TDS/TCS already deposited — logged as adjustment."
+            : undefined),
+      });
+      onDone();
+      refetch();
+    },
+    onError: (e: Error) => toast({ title: "Action failed", description: e.message, variant: "destructive" }),
+  });
+
+  const acceptMutation = useMutation({
+    mutationFn: () => post("return/accept"),
+    onSuccess: (data: { reversalEligible?: boolean }) => {
+      toast({
+        title: "Return accepted",
+        description: data.reversalEligible
+          ? "Credit note issued and TDS/TCS reversed."
+          : "Credit note issued. TDS/TCS already deposited — logged as adjustment.",
+      });
+      onDone();
+      refetch();
+    },
+    onError: (e: Error) => toast({ title: "Accept failed", description: e.message, variant: "destructive" }),
+  });
+
+  const rejectMutation = useMutation({
+    mutationFn: () => post("return/reject", { reason: reason || undefined }),
+    onSuccess: () => {
+      toast({ title: "Return rejected", description: "Order remains Delivered — no credit note or reversal issued." });
+      onDone();
+      refetch();
+    },
+    onError: (e: Error) => toast({ title: "Reject failed", description: e.message, variant: "destructive" }),
+  });
+
+  const inr = (v: number) => formatCurrency(v);
+  const busy = confirmMutation.isPending || acceptMutation.isPending || rejectMutation.isPending;
+  const isReturnInitiated = preview?.reversalStatus === "RETURN_INITIATED";
+  const isTerminal =
+    preview?.reversalStatus === "CANCELLED" ||
+    preview?.reversalStatus === "RETURNED" ||
+    preview?.reversalStatus === "RETURN_REJECTED" ||
+    preview?.reversalStatus === "WINDOW_EXPIRED_REJECTED";
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <RotateCcw className="h-4 w-4 text-amber-600" /> Reverse Order — {bag.orderId}
+          </DialogTitle>
+          <DialogDescription>{bag.brandName} · {bag.sku}</DialogDescription>
+        </DialogHeader>
+
+        {isLoading || !preview ? (
+          <div className="py-8 text-center text-sm text-slate-400"><Loader2 className="h-4 w-4 animate-spin inline mr-2" />Evaluating reversal scenario…</div>
+        ) : (
+          <div className="space-y-4 py-1">
+            {/* Scenario summary */}
+            <div className={`rounded-lg border p-3.5 ${preview.scenario === 3 ? "border-slate-200 bg-slate-50" : "border-amber-200 bg-amber-50/50"}`}>
+              <div className="flex items-center gap-2 mb-1">
+                <Badge variant="outline" className="text-[10px]">Scenario {preview.scenario}</Badge>
+                <span className="text-sm font-semibold text-slate-900">{preview.title}</span>
+              </div>
+              <p className="text-xs text-slate-600">{preview.description}</p>
+            </div>
+
+            {/* Deadline */}
+            <div className={`rounded-md px-3 py-2 text-xs flex items-center justify-between ${preview.pastDeadline ? "bg-red-50 text-red-700 border border-red-100" : "bg-slate-50 text-slate-600 border border-slate-100"}`}>
+              <span className="flex items-center gap-1.5">
+                {preview.pastDeadline && <AlertTriangle className="h-3.5 w-3.5" />}
+                TDS/TCS reversal deadline: <strong>{preview.deadline}</strong>
+              </span>
+              <span>{preview.reversalEligible ? "Reversible" : "Past deadline — adjustment only"}</span>
+            </div>
+
+            {/* Tax summary */}
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs bg-white border border-slate-100 rounded-md p-3">
+              <span className="text-slate-500">TCS accrued</span><span className="text-right font-mono">{inr(preview.tcsAmount)}</span>
+              <span className="text-slate-500">TDS accrued</span><span className="text-right font-mono">{inr(preview.tdsAmount)}</span>
+            </div>
+
+            {/* Current status (if any) */}
+            {preview.reversalStatus && (
+              <div className="text-xs text-slate-600">
+                Current reversal status: <ReversalStatusBadge status={preview.reversalStatus} />
+                {preview.reversalReason && <span className="italic text-slate-400 ml-1">— {preview.reversalReason}</span>}
+              </div>
+            )}
+
+            {/* Reason input (only when an action is available) */}
+            {!isTerminal && (
+              <div className="space-y-1.5">
+                <Label className="text-xs">Reason {isReturnInitiated ? "(for rejection)" : "(optional)"}</Label>
+                <Input placeholder="e.g. Customer requested cancellation" value={reason} onChange={(e) => setReason(e.target.value)} />
+              </div>
+            )}
+
+            {isTerminal && (
+              <p className="text-xs text-slate-500 italic">This order has already been processed — no further reversal action is available.</p>
+            )}
+          </div>
+        )}
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Close</Button>
+          {preview && !isTerminal && (
+            isReturnInitiated ? (
+              <>
+                <Button
+                  variant="outline"
+                  className="border-slate-300 text-slate-700"
+                  disabled={busy}
+                  onClick={() => rejectMutation.mutate()}
+                >
+                  {rejectMutation.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <X className="h-4 w-4 mr-2" />}
+                  Brand Rejects
+                </Button>
+                <Button
+                  className="bg-purple-600 hover:bg-purple-700 text-white"
+                  disabled={busy}
+                  onClick={() => acceptMutation.mutate()}
+                >
+                  {acceptMutation.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Check className="h-4 w-4 mr-2" />}
+                  Brand Accepts
+                </Button>
+              </>
+            ) : (
+              <Button
+                className={preview.scenario === 3 ? "bg-slate-600 hover:bg-slate-700 text-white" : "bg-amber-600 hover:bg-amber-700 text-white"}
+                disabled={busy}
+                onClick={() => confirmMutation.mutate()}
+              >
+                {confirmMutation.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <RotateCcw className="h-4 w-4 mr-2" />}
+                {preview.scenario === 1 ? "Confirm Cancellation" : preview.scenario === 2 ? "Initiate Return" : "Log Rejected Request"}
+              </Button>
+            )
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

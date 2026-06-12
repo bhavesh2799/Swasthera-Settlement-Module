@@ -15,7 +15,7 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
-import { Loader2, Calendar, FileText, CheckCircle2, AlertCircle, RotateCcw, ArrowDownUp, TrendingDown, CreditCard, Layers, BookOpen, Download } from "lucide-react";
+import { Loader2, Calendar, FileText, CheckCircle2, AlertCircle, RotateCcw, ArrowDownUp, TrendingDown, CreditCard, Layers, BookOpen, Download, AlertTriangle } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 function formatCurrency(amount: number) {
@@ -89,6 +89,9 @@ interface OrderBreakdownRow {
   omsState: string;
   isReturned: boolean;
   cycle: string;
+  reversalStatus?: string | null;
+  reversalDeadline?: string;
+  reversalDeadlinePast?: boolean;
 }
 
 interface LedgerEntry {
@@ -564,14 +567,15 @@ export function ComplianceRegister() {
                     <TableHead className="font-medium text-slate-500 h-10 text-right">TCS</TableHead>
                     <TableHead className="font-medium text-slate-500 h-10 text-right">TDS</TableHead>
                     <TableHead className="font-medium text-slate-500 h-10">Delivery</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10">Reversal Deadline</TableHead>
                     <TableHead className="font-medium text-slate-500 h-10 text-center">Status</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {isLoadingBreakdown ? (
-                    <TableRow><TableCell colSpan={8} className="h-32 text-center"><Loader2 className="animate-spin mx-auto text-slate-400" /></TableCell></TableRow>
+                    <TableRow><TableCell colSpan={9} className="h-32 text-center"><Loader2 className="animate-spin mx-auto text-slate-400" /></TableCell></TableRow>
                   ) : breakdownRows.length === 0 ? (
-                    <TableRow><TableCell colSpan={8} className="h-24 text-center text-slate-400 text-sm">No bags delivered in {month} {year}</TableCell></TableRow>
+                    <TableRow><TableCell colSpan={9} className="h-24 text-center text-slate-400 text-sm">No bags delivered in {month} {year}</TableCell></TableRow>
                   ) : breakdownRows.map((row) => (
                     <TableRow key={row.bagId} className={`border-slate-100/50 ${row.isReturned ? "bg-red-50/40" : ""}`}>
                       <TableCell className="px-6">
@@ -593,6 +597,14 @@ export function ComplianceRegister() {
                         {formatCurrency(row.tdsAmount)}
                       </TableCell>
                       <TableCell className="text-xs text-slate-600">{row.deliveryDate}</TableCell>
+                      <TableCell className="text-xs">
+                        {row.reversalDeadline ? (
+                          <span className={`flex items-center gap-1 ${row.reversalDeadlinePast ? "text-red-600 font-medium" : "text-slate-500"}`}>
+                            {row.reversalDeadlinePast && <AlertTriangle className="h-3 w-3" />}
+                            {row.reversalDeadline}
+                          </span>
+                        ) : <span className="text-slate-400">—</span>}
+                      </TableCell>
                       <TableCell className="text-center">
                         {row.isReturned ? (
                           <Badge className="bg-red-100 text-red-700 border-transparent hover:bg-red-100 text-xs">

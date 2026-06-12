@@ -115,6 +115,73 @@ router.get("/invoices/export.zip", async (req, res) => {
   }
 });
 
+/** GET /invoices/bulk.zip — selected invoices by ID as ZIP (docType=customer|brand). */
+router.get("/invoices/bulk.zip", async (req, res) => {
+  try {
+    const idsRaw = typeof req.query.ids === "string" ? req.query.ids : "";
+    const ids = idsRaw.split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !Number.isNaN(n));
+    if (!ids.length) return res.status(400).json({ error: "ids query param required (comma-separated invoice IDs)" });
+
+    const docType = typeof req.query.docType === "string" && req.query.docType === "brand" ? "brand" : "customer";
+    const rows = await db.select().from(invoicesTable).where(inArray(invoicesTable.id, ids));
+    if (!rows.length) return res.status(404).json({ error: "No invoices found for given IDs" });
+
+    const zip = new JSZip();
+    for (const inv of rows) {
+      const pdf = docType === "brand" ? await renderBrandInvoicePdf(inv) : await renderInvoicePdf(inv);
+      const suffix = docType === "brand" ? "-commission" : "";
+      zip.file(`${inv.invoiceNumber}${suffix}.pdf`, pdf);
+    }
+    const buffer = await zip.generateAsync({ type: "nodebuffer" });
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", `attachment; filename="invoices-selected-${Date.now()}.zip"`);
+    return res.send(buffer);
+  } catch (err) {
+    req.log.error({ err }, "bulk zip failed");
+    return res.status(500).json({ error: "failed to export zip" });
+  }
+});
+
+/** GET /invoices/bulk.csv — selected invoices by ID as CSV (includes brand financials). */
+router.get("/invoices/bulk.csv", async (req, res) => {
+  try {
+    const idsRaw = typeof req.query.ids === "string" ? req.query.ids : "";
+    const ids = idsRaw.split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !Number.isNaN(n));
+    if (!ids.length) return res.status(400).json({ error: "ids query param required (comma-separated invoice IDs)" });
+
+    const rows = await db.select().from(invoicesTable).where(inArray(invoicesTable.id, ids));
+    const headers = [
+      "Invoice Number", "Type", "Invoice Date", "Order ID", "Bag ID", "Brand",
+      "Customer", "Place of Supply", "State Code", "Warehouse", "Warehouse GSTIN",
+      "Seller GSTIN", "Product", "HSN", "Qty", "Unit Price", "Taxable Value",
+      "GST Type", "CGST", "SGST", "IGST", "TCS Collected", "Total Invoice Value",
+      "Payment Method", "Order Status", "Settlement Period",
+      "Commission Amount", "GST on Commission", "TDS Deducted", "Net Payable to Brand",
+    ];
+    const esc = (v: unknown) => {
+      const s = v === null || v === undefined ? "" : String(v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const lines = [headers.join(",")];
+    for (const r of rows) {
+      lines.push([
+        r.invoiceNumber, r.invoiceType, r.invoiceDate, r.orderId, r.bagId, r.brandName,
+        r.customerName, r.customerState, r.customerStateCode, r.warehouseName, r.warehouseGstin,
+        r.sellerGstin, r.productName, r.hsnCode, r.quantity, r.unitPrice, r.taxableValue,
+        r.gstType, r.cgstAmount, r.sgstAmount, r.igstAmount, r.tcsCollected, r.totalInvoiceValue,
+        r.paymentMethod, r.orderStatus, r.settlementCycle,
+        r.commissionAmount, r.gstOnCommission, r.tdsDeducted, r.netPayable,
+      ].map(esc).join(","));
+    }
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="invoices-selected-${Date.now()}.csv"`);
+    return res.send(lines.join("\n"));
+  } catch (err) {
+    req.log.error({ err }, "bulk csv failed");
+    return res.status(500).json({ error: "failed to export csv" });
+  }
+});
+
 /** GET /invoices/:invoiceId/pdf — single customer invoice / credit note as PDF. */
 router.get("/invoices/:invoiceId/pdf", async (req, res) => {
   try {

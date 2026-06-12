@@ -79,6 +79,8 @@ export function InvoiceRepository() {
   const [stateCode, setStateCode] = useState("all");
   const [type, setType] = useState("all");
   const [search, setSearch] = useState("");
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [docKind, setDocKind] = useState<"customer" | "brand">("customer");
 
   // Unfiltered list — used to populate filter option lists (brands, cycles, states).
   const { data: allRows } = useQuery<InvoiceRow[]>({
@@ -150,9 +152,23 @@ export function InvoiceRepository() {
     return { count: list.length, taxable, total, credits };
   }, [rows]);
 
+  const toggleSelect = (id: number) =>
+    setSelectedIds((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const allSelected = filtered.length > 0 && filtered.every((r) => selectedIds.has(r.id));
+  const someSelected = !allSelected && filtered.some((r) => selectedIds.has(r.id));
+  const toggleSelectAll = () =>
+    setSelectedIds(allSelected ? new Set() : new Set(filtered.map((r) => r.id)));
+  const clearSelection = () => setSelectedIds(new Set());
+
+  const bulkZipHref = (kind: "customer" | "brand") =>
+    `/api/invoices/bulk.zip?ids=${[...selectedIds].join(",")}&docType=${kind}`;
+  const bulkCsvHref = () =>
+    `/api/invoices/bulk.csv?ids=${[...selectedIds].join(",")}`;
+
   const resetFilters = () => {
     setBrandIds([]); setDateFrom(""); setDateTo(""); setCycle("all");
     setOrderStatus("all"); setStateCode("all"); setType("all"); setSearch("");
+    clearSelection();
   };
 
   return (
@@ -212,7 +228,7 @@ export function InvoiceRepository() {
             </div>
             <Button variant="ghost" size="sm" className="text-slate-500" onClick={resetFilters}>Clear filters</Button>
           </div>
-          <div className="grid gap-3 md:grid-cols-3 lg:grid-cols-6">
+          <div className="grid gap-3 md:grid-cols-3 lg:grid-cols-7">
             <div className="space-y-1">
               <Label className="text-xs text-slate-500">Brand</Label>
               <Popover>
@@ -276,6 +292,16 @@ export function InvoiceRepository() {
                 </SelectContent>
               </Select>
             </div>
+            <div className="space-y-1">
+              <Label className="text-xs text-slate-500">Bulk Download As</Label>
+              <Select value={docKind} onValueChange={(v) => setDocKind(v as "customer" | "brand")}>
+                <SelectTrigger className="bg-white border-slate-200"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="customer">Customer Tax Invoice</SelectItem>
+                  <SelectItem value="brand">Commission Invoice</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
             <div className="grid grid-cols-2 gap-2">
               <div className="space-y-1">
                 <Label className="text-xs text-slate-500">From</Label>
@@ -292,6 +318,13 @@ export function InvoiceRepository() {
           <Table>
             <TableHeader className="bg-slate-50/80">
               <TableRow className="border-slate-100">
+                <TableHead className="w-10 px-4">
+                  <Checkbox
+                    checked={allSelected ? true : someSelected ? "indeterminate" : false}
+                    onCheckedChange={toggleSelectAll}
+                    aria-label="Select all"
+                  />
+                </TableHead>
                 <TableHead className="font-medium text-slate-500 h-10 px-6">Invoice # / Date</TableHead>
                 <TableHead className="font-medium text-slate-500 h-10">Brand / Order</TableHead>
                 <TableHead className="font-medium text-slate-500 h-10">Customer / Place of Supply</TableHead>
@@ -305,10 +338,10 @@ export function InvoiceRepository() {
             </TableHeader>
             <TableBody>
               {isLoading ? (
-                <TableRow><TableCell colSpan={9} className="h-32 text-center"><Loader2 className="h-6 w-6 animate-spin mx-auto text-slate-400" /></TableCell></TableRow>
+                <TableRow><TableCell colSpan={10} className="h-32 text-center"><Loader2 className="h-6 w-6 animate-spin mx-auto text-slate-400" /></TableCell></TableRow>
               ) : filtered.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={9} className="h-40 text-center">
+                  <TableCell colSpan={10} className="h-40 text-center">
                     <div className="flex flex-col items-center gap-2 text-slate-400">
                       <Receipt className="h-8 w-8" />
                       <p className="text-sm">No invoices match the current filters.</p>
@@ -322,7 +355,14 @@ export function InvoiceRepository() {
                     ? (parseFloat(r.cgstAmount) || 0) + (parseFloat(r.sgstAmount) || 0)
                     : (parseFloat(r.igstAmount) || 0);
                   return (
-                    <TableRow key={r.id} className="border-slate-100/50">
+                    <TableRow key={r.id} className={`border-slate-100/50 ${selectedIds.has(r.id) ? "bg-amber-50/40" : ""}`}>
+                      <TableCell className="px-4">
+                        <Checkbox
+                          checked={selectedIds.has(r.id)}
+                          onCheckedChange={() => toggleSelect(r.id)}
+                          aria-label={`Select ${r.invoiceNumber}`}
+                        />
+                      </TableCell>
                       <TableCell className="px-6">
                         <div className="flex items-center gap-2">
                           <FileText className={`h-3.5 w-3.5 shrink-0 ${isCn ? "text-red-500" : "text-slate-400"}`} />
@@ -376,6 +416,30 @@ export function InvoiceRepository() {
           )}
         </CardContent>
       </Card>
+
+      {/* Floating bulk action bar — appears when rows are selected */}
+      {selectedIds.size > 0 && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-slate-900 text-white px-5 py-3 rounded-full shadow-2xl flex items-center gap-3 text-sm whitespace-nowrap">
+          <span className="text-slate-300 text-xs font-medium">{selectedIds.size} selected</span>
+          <div className="h-4 w-px bg-slate-600" />
+          <a href={bulkZipHref("customer")} download>
+            <Button size="sm" className="bg-amber-600 hover:bg-amber-700 text-white rounded-full text-xs h-7 px-3">
+              <FileArchive className="h-3.5 w-3.5 mr-1.5" /> Customer Invoice ZIP
+            </Button>
+          </a>
+          <a href={bulkZipHref("brand")} download>
+            <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white rounded-full text-xs h-7 px-3">
+              <Building2 className="h-3.5 w-3.5 mr-1.5" /> Commission Invoice ZIP
+            </Button>
+          </a>
+          <a href={bulkCsvHref()} download>
+            <Button size="sm" variant="outline" className="border-slate-600 text-slate-200 hover:bg-slate-800 rounded-full text-xs h-7 px-3">
+              <FileSpreadsheet className="h-3.5 w-3.5 mr-1.5" /> Export CSV
+            </Button>
+          </a>
+          <button onClick={clearSelection} className="ml-1 text-slate-400 hover:text-white text-base leading-none">✕</button>
+        </div>
+      )}
     </div>
   );
 }

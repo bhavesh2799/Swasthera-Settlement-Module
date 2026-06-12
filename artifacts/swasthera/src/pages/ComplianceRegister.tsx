@@ -49,6 +49,8 @@ interface TcsBag {
   stateCode: string;
   customerStateCode: string;
   omsState: string;
+  deliveryDate?: string | null;
+  isReturnPending?: boolean;
 }
 
 // Brand + state group — one row per brand × state per month
@@ -81,6 +83,9 @@ interface TdsBag {
   esp: number;
   tdsAmount: number;
   omsState: string;
+  deliveryDate?: string | null;
+  isReturnPending?: boolean;
+  hasReversal?: boolean;
   reversalDeadline?: string | null;
   reversalDeadlinePast?: boolean;
 }
@@ -89,6 +94,8 @@ interface TdsReversal {
   tdsAmount: number;
   bagId?: string | null;
   reason?: string | null;
+  month?: string | null;
+  year?: number | null;
 }
 
 // Brand group — one row per brand per month with reversal aggregation
@@ -211,13 +218,7 @@ export function ComplianceRegister() {
   const [markForm, setMarkForm] = useState({ ref: "", date: new Date().toISOString().split("T")[0] });
   const [markLoading, setMarkLoading] = useState(false);
 
-  // Expandable drill-down state
-  const [expandedTcs, setExpandedTcs] = useState<Set<string>>(new Set());
-  const [expandedTds, setExpandedTds] = useState<Set<number>>(new Set());
   const [gstBrandFilter, setGstBrandFilter] = useState<string>("all");
-
-  const toggleTcs = (key: string) => setExpandedTcs((prev) => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; });
-  const toggleTds = (id: number) => setExpandedTds((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
   const params = { month, year: parseInt(year) };
   const summaryKey = ["/api/compliance/tcs-tds", params];
@@ -543,7 +544,7 @@ export function ComplianceRegister() {
           </TabsTrigger>
         </TabsList>
 
-        {/* TCS Register — brand + state groups with per-bag drill-down */}
+        {/* TCS Register — flat bag-level view grouped by brand × state */}
         <TabsContent value="tcs" className="m-0">
           <Card className="shadow-sm border-slate-200/60 bg-white">
             <div className="px-6 py-3 border-b border-slate-100 bg-blue-50/40 flex items-start gap-2">
@@ -557,89 +558,74 @@ export function ComplianceRegister() {
               <Table>
                 <TableHeader className="bg-slate-50/80">
                   <TableRow className="border-slate-100">
-                    <TableHead className="w-8 px-3" />
-                    <TableHead className="font-medium text-slate-500 h-10 px-4">Brand / State</TableHead>
-                    <TableHead className="font-medium text-slate-500 h-10 text-center">Total Bags</TableHead>
-                    <TableHead className="font-medium text-slate-500 h-10 text-center">IGST Bags</TableHead>
-                    <TableHead className="font-medium text-slate-500 h-10 text-center">Intra Bags</TableHead>
-                    <TableHead className="font-medium text-slate-500 h-10 text-right">Gross GMV</TableHead>
-                    <TableHead className="font-medium text-slate-500 h-10 text-right">IGST TCS</TableHead>
-                    <TableHead className="font-medium text-slate-500 h-10 text-right">Intra TCS</TableHead>
-                    <TableHead className="font-medium text-slate-500 h-10 text-right">Total TCS</TableHead>
-                    <TableHead className="font-medium text-slate-500 h-10 text-center">Status</TableHead>
-                    <TableHead className="font-medium text-slate-500 h-10 text-center">Action</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10 px-4 w-36">Bag ID</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10">Order ID</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10">Ship-from State</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10">Customer State</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10 text-center">GST Type</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10 text-right">ESP / GMV</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10 text-right">TCS @1%</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {isLoadingTcs ? (
-                    <TableRow><TableCell colSpan={11} className="h-32 text-center"><Loader2 className="animate-spin mx-auto text-slate-400" /></TableCell></TableRow>
+                    <TableRow><TableCell colSpan={7} className="h-32 text-center"><Loader2 className="animate-spin mx-auto text-slate-400" /></TableCell></TableRow>
                   ) : tcsEntries.length === 0 ? (
-                    <TableRow><TableCell colSpan={11} className="h-24 text-center text-slate-400 text-sm">No TCS records for {month} {year}</TableCell></TableRow>
-                  ) : tcsEntries.map((row) => {
-                    const key = `${row.brandId}-${row.stateCode}`;
-                    const isOpen = expandedTcs.has(key);
-                    return (
-                      <React.Fragment key={key}>
-                        <TableRow className="border-slate-100/50 cursor-pointer hover:bg-slate-50/60" onClick={() => toggleTcs(key)}>
-                          <TableCell className="px-3 text-slate-400">
-                            {isOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-                          </TableCell>
-                          <TableCell className="px-4">
-                            <div className="font-medium text-slate-900">{row.brandName}</div>
-                            <div className="text-xs text-slate-500">{row.stateName} <span className="font-mono text-slate-400">({row.stateCode})</span></div>
-                            {row.paymentRef && (
-                              <div className="text-[10px] text-green-600 mt-0.5">Ref: {row.paymentRef} · {row.paymentDate}</div>
-                            )}
-                          </TableCell>
-                          <TableCell className="text-center text-sm font-medium text-slate-700">{row.bagCount}</TableCell>
-                          <TableCell className="text-center">
-                            <span className="text-xs font-medium bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded">{row.igstBagCount}</span>
-                          </TableCell>
-                          <TableCell className="text-center">
-                            <span className="text-xs font-medium bg-sky-100 text-sky-700 px-1.5 py-0.5 rounded">{row.intrastateBagCount}</span>
-                          </TableCell>
-                          <TableCell className="text-right text-slate-600 text-sm">{fmt(row.grossGmv)}</TableCell>
-                          <TableCell className="text-right text-purple-700 text-sm font-medium">{fmt(row.igstTcsAmount)}</TableCell>
-                          <TableCell className="text-right text-sky-700 text-sm font-medium">{fmt(row.intrastateTcsAmount)}</TableCell>
-                          <TableCell className="text-right">
-                            <span className="font-semibold text-slate-900">{fmt(row.totalTcsAmount)}</span>
-                            <span className="text-xs text-slate-400 font-normal ml-1">@{row.tcsRate}%</span>
-                          </TableCell>
-                          <TableCell className="text-center" onClick={(e) => e.stopPropagation()}><StatusBadge status={row.status} /></TableCell>
-                          <TableCell className="text-center" onClick={(e) => e.stopPropagation()}>
-                            {row.status === "Accrued" ? (
-                              <Button size="sm" variant="outline" className="h-7 text-[11px] border-green-300 text-green-700 hover:bg-green-50"
-                                onClick={() => { setTcsMarkDialog(row); setMarkForm({ ref: "", date: new Date().toISOString().split("T")[0] }); }}>
+                    <TableRow><TableCell colSpan={7} className="h-24 text-center text-slate-400 text-sm">No TCS records for {month} {year}</TableCell></TableRow>
+                  ) : tcsEntries.map((group) => (
+                    <React.Fragment key={`${group.brandId}-${group.stateCode}`}>
+                      {/* Brand × state group header row */}
+                      <TableRow className="bg-slate-100/70 border-slate-200/70">
+                        <TableCell colSpan={4} className="px-4 py-2">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-semibold text-slate-800 text-sm">{group.brandName}</span>
+                            <span className="text-slate-400">·</span>
+                            <span className="text-sm text-slate-600">{group.stateName} <span className="font-mono text-slate-400">({group.stateCode})</span></span>
+                            <span className="text-[11px] text-slate-400">{group.bagCount} bag(s)</span>
+                            <span className="text-[10px] font-medium bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded">IGST: {group.igstBagCount}</span>
+                            <span className="text-[10px] font-medium bg-sky-100 text-sky-700 px-1.5 py-0.5 rounded">Intra: {group.intrastateBagCount}</span>
+                            {group.paymentRef && <span className="text-[10px] text-green-600">Ref: {group.paymentRef} · {group.paymentDate}</span>}
+                          </div>
+                        </TableCell>
+                        <TableCell className="py-2 text-center"><StatusBadge status={group.status} /></TableCell>
+                        <TableCell className="py-2 text-right text-sm text-slate-600 font-medium">{fmt(group.grossGmv)}</TableCell>
+                        <TableCell className="py-2 text-right pr-4">
+                          <div className="flex items-center justify-end gap-2">
+                            <span className="font-bold text-slate-900">{fmt(group.totalTcsAmount)}</span>
+                            <span className="text-[10px] text-slate-400">@{group.tcsRate}%</span>
+                            {group.status === "Accrued" ? (
+                              <Button size="sm" variant="outline" className="h-6 text-[11px] border-green-300 text-green-700 hover:bg-green-50"
+                                onClick={() => { setTcsMarkDialog(group); setMarkForm({ ref: "", date: new Date().toISOString().split("T")[0] }); }}>
                                 <CreditCard className="h-3 w-3 mr-1" /> Mark Paid
                               </Button>
-                            ) : <span className="text-xs text-green-600">✓ {row.status}</span>}
+                            ) : <span className="text-xs text-green-600">✓</span>}
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                      {/* Per-bag rows — always visible */}
+                      {group.bags?.map((bag) => (
+                        <TableRow key={bag.bagId} className="border-slate-100/50 hover:bg-slate-50/40">
+                          <TableCell className="px-4 py-2">
+                            <span className="font-mono text-xs text-slate-700">{bag.bagId}</span>
+                            {bag.isReturnPending && <Badge className="ml-1.5 text-[9px] h-3.5 bg-amber-100 text-amber-700 border-transparent">Return Pending</Badge>}
                           </TableCell>
+                          <TableCell className="py-2 font-mono text-xs text-slate-500">{bag.orderId}</TableCell>
+                          <TableCell className="py-2 text-xs text-slate-600">
+                            {bag.stateCode || group.stateCode}
+                            {bag.deliveryDate && <div className="text-[10px] text-slate-400">Del: {bag.deliveryDate}</div>}
+                          </TableCell>
+                          <TableCell className="py-2 text-xs text-slate-600">{bag.customerStateCode || "—"}</TableCell>
+                          <TableCell className="py-2 text-center">
+                            <Badge className={`text-[10px] h-4 border-transparent ${bag.gstType === "IGST" ? "bg-purple-100 text-purple-700" : "bg-sky-100 text-sky-700"}`}>
+                              {bag.gstType === "IGST" ? "IGST" : "Intra"}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="py-2 text-right text-xs text-slate-600">{fmt(bag.esp)}</TableCell>
+                          <TableCell className="py-2 text-right pr-4 text-sm font-medium text-slate-900">{fmt(bag.tcsAmount)}</TableCell>
                         </TableRow>
-                        {isOpen && row.bags?.map((bag) => (
-                          <TableRow key={bag.bagId} className="bg-slate-50/50 border-slate-100/30">
-                            <TableCell />
-                            <TableCell colSpan={2} className="px-4 py-2">
-                              <div className="flex items-center gap-2">
-                                <span className="font-mono text-xs text-slate-700">{bag.bagId}</span>
-                                <Badge className={`text-[10px] h-4 border-transparent ${bag.gstType === "INTER" ? "bg-purple-100 text-purple-700" : "bg-sky-100 text-sky-700"}`}>
-                                  {bag.gstType === "INTER" ? "IGST" : "Intra"}
-                                </Badge>
-                              </div>
-                              <div className="font-mono text-[10px] text-slate-400">{bag.orderId}</div>
-                            </TableCell>
-                            <TableCell colSpan={3} className="text-xs text-slate-500 py-2">
-                              ESP: <span className="text-slate-700 font-medium">{fmt(bag.esp)}</span>
-                              <span className="mx-2 text-slate-300">|</span>
-                              Wh: {bag.stateCode} → Cust: {bag.customerStateCode}
-                            </TableCell>
-                            <TableCell colSpan={2} className="text-right py-2" />
-                            <TableCell className="text-right py-2 font-medium text-slate-900 text-sm">{fmt(bag.tcsAmount)}</TableCell>
-                            <TableCell colSpan={2} />
-                          </TableRow>
-                        ))}
-                      </React.Fragment>
-                    );
-                  })}
+                      ))}
+                    </React.Fragment>
+                  ))}
                 </TableBody>
               </Table>
               {tcsEntries.length > 0 && (
@@ -656,129 +642,111 @@ export function ComplianceRegister() {
           </Card>
         </TabsContent>
 
-        {/* TDS Register — brand groups with per-bag drill-down and reversals */}
+        {/* TDS Register — flat bag-level view grouped by brand */}
         <TabsContent value="tds" className="m-0">
           <Card className="shadow-sm border-slate-200/60 bg-white">
             <CardContent className="p-0">
               <Table>
                 <TableHeader className="bg-slate-50/80">
                   <TableRow className="border-slate-100">
-                    <TableHead className="w-8 px-3" />
-                    <TableHead className="font-medium text-slate-500 h-10 px-4">Brand</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10 px-4 w-36">Bag ID</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10">Order ID</TableHead>
                     <TableHead className="font-medium text-slate-500 h-10">Company / TAN</TableHead>
-                    <TableHead className="font-medium text-slate-500 h-10 text-center">Bags</TableHead>
-                    <TableHead className="font-medium text-slate-500 h-10 text-right">Gross Payment</TableHead>
-                    <TableHead className="font-medium text-slate-500 h-10 text-right">TDS Deducted</TableHead>
-                    <TableHead className="font-medium text-slate-500 h-10 text-right">Reversed</TableHead>
-                    <TableHead className="font-medium text-slate-500 h-10 text-right">Net TDS</TableHead>
-                    <TableHead className="font-medium text-slate-500 h-10 text-center">Status</TableHead>
-                    <TableHead className="font-medium text-slate-500 h-10 text-center">Action</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10 text-right">ESP / GMV</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10 text-right">TDS @1%</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10 text-center">Reversal</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {isLoadingTds ? (
-                    <TableRow><TableCell colSpan={10} className="h-32 text-center"><Loader2 className="animate-spin mx-auto text-slate-400" /></TableCell></TableRow>
+                    <TableRow><TableCell colSpan={6} className="h-32 text-center"><Loader2 className="animate-spin mx-auto text-slate-400" /></TableCell></TableRow>
                   ) : tdsEntries.length === 0 ? (
-                    <TableRow><TableCell colSpan={10} className="h-24 text-center text-slate-400 text-sm">No TDS records for {month} {year}</TableCell></TableRow>
-                  ) : tdsEntries.map((row) => {
-                    const isOpen = expandedTds.has(row.brandId);
-                    return (
-                      <React.Fragment key={row.brandId}>
-                        <TableRow className={`border-slate-100/50 cursor-pointer hover:bg-slate-50/60 ${row.reversalCount > 0 ? "bg-amber-50/20" : ""}`} onClick={() => toggleTds(row.brandId)}>
-                          <TableCell className="px-3 text-slate-400">
-                            {isOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-                          </TableCell>
-                          <TableCell className="px-4">
-                            <div className="font-medium text-slate-900">{row.brandName}</div>
-                            {row.depositRef && (
-                              <div className="text-[10px] text-green-600 mt-0.5">Ref: {row.depositRef} · {row.depositDate}</div>
-                            )}
-                          </TableCell>
-                          <TableCell>
-                            <div className="text-sm text-slate-600">{row.companyName}</div>
-                            <div className="font-mono text-[10px] text-slate-400">{row.tan}</div>
-                          </TableCell>
-                          <TableCell className="text-center text-sm font-medium text-slate-700">{row.bagCount}</TableCell>
-                          <TableCell className="text-right text-slate-600 text-sm">{fmt(row.grossPayment)}</TableCell>
-                          <TableCell className="text-right">
-                            <span className="font-semibold text-slate-900">{fmt(row.tdsAmount)}</span>
-                            <span className="text-xs text-slate-400 font-normal ml-1">@{row.tdsRate}%</span>
-                          </TableCell>
-                          <TableCell className="text-right">
-                            {row.tdsReversed > 0 ? (
-                              <span className="text-red-600 font-medium flex items-center justify-end gap-1">
-                                <RotateCcw className="h-3 w-3" />−{fmt(row.tdsReversed)}
-                              </span>
-                            ) : <span className="text-slate-400 text-xs">—</span>}
-                          </TableCell>
-                          <TableCell className="text-right">
-                            <span className={`font-semibold ${row.tdsReversed > 0 ? "text-green-700" : "text-slate-900"}`}>{fmt(row.netTds)}</span>
-                          </TableCell>
-                          <TableCell className="text-center" onClick={(e) => e.stopPropagation()}><StatusBadge status={row.status} /></TableCell>
-                          <TableCell className="text-center" onClick={(e) => e.stopPropagation()}>
-                            {row.status === "Pending" ? (
-                              <Button size="sm" variant="outline" className="h-7 text-[11px] border-green-300 text-green-700 hover:bg-green-50"
-                                onClick={() => { setTdsMarkDialog(row); setMarkForm({ ref: "", date: new Date().toISOString().split("T")[0] }); }}>
+                    <TableRow><TableCell colSpan={6} className="h-24 text-center text-slate-400 text-sm">No TDS records for {month} {year}</TableCell></TableRow>
+                  ) : tdsEntries.map((group) => (
+                    <React.Fragment key={group.brandId}>
+                      {/* Brand group header row */}
+                      <TableRow className={`bg-slate-100/70 border-slate-200/70 ${group.reversalCount > 0 ? "border-l-2 border-l-amber-400" : ""}`}>
+                        <TableCell colSpan={3} className="px-4 py-2">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-semibold text-slate-800 text-sm">{group.brandName}</span>
+                            <span className="text-slate-400">·</span>
+                            <span className="text-sm text-slate-600">{group.companyName}</span>
+                            <span className="font-mono text-[10px] text-slate-400">{group.tan}</span>
+                            <span className="text-[11px] text-slate-400">{group.bagCount} bag(s)</span>
+                            {group.depositRef && <span className="text-[10px] text-green-600">Ref: {group.depositRef} · {group.depositDate}</span>}
+                          </div>
+                        </TableCell>
+                        <TableCell className="py-2 text-right text-sm text-slate-600 font-medium">{fmt(group.grossPayment)}</TableCell>
+                        <TableCell className="py-2 text-right pr-2">
+                          <div className="flex items-center justify-end gap-2">
+                            <div>
+                              <span className="font-bold text-slate-900">{fmt(group.tdsAmount)}</span>
+                              <span className="text-[10px] text-slate-400 ml-1">@{group.tdsRate}%</span>
+                              {group.tdsReversed > 0 && <div className="text-xs text-red-600">−{fmt(group.tdsReversed)} → Net: {fmt(group.netTds)}</div>}
+                            </div>
+                            <StatusBadge status={group.status} />
+                            {group.status === "Pending" ? (
+                              <Button size="sm" variant="outline" className="h-6 text-[11px] border-green-300 text-green-700 hover:bg-green-50"
+                                onClick={() => { setTdsMarkDialog(group); setMarkForm({ ref: "", date: new Date().toISOString().split("T")[0] }); }}>
                                 <CreditCard className="h-3 w-3 mr-1" /> Mark Deposited
                               </Button>
-                            ) : <span className="text-xs text-green-600">✓ {row.status}</span>}
+                            ) : <span className="text-xs text-green-600">✓</span>}
+                          </div>
+                        </TableCell>
+                        <TableCell className="py-2 text-center">
+                          {group.reversalCount > 0 && (
+                            <Badge className="text-[10px] bg-amber-100 text-amber-700 border-transparent">{group.reversalCount} reversal(s)</Badge>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                      {/* Per-bag rows — always visible */}
+                      {group.bags?.map((bag) => (
+                        <TableRow key={bag.bagId} className={`border-slate-100/50 hover:bg-slate-50/40 ${bag.hasReversal ? "bg-amber-50/20" : ""}`}>
+                          <TableCell className="px-4 py-2">
+                            <span className="font-mono text-xs text-slate-700">{bag.bagId}</span>
+                            {bag.isReturnPending && <Badge className="ml-1.5 text-[9px] h-3.5 bg-amber-100 text-amber-700 border-transparent">Return Pending</Badge>}
+                          </TableCell>
+                          <TableCell className="py-2">
+                            <span className="font-mono text-xs text-slate-500">{bag.orderId}</span>
+                            {bag.deliveryDate && <div className="text-[10px] text-slate-400">Del: {bag.deliveryDate}</div>}
+                          </TableCell>
+                          <TableCell className="py-2 text-xs text-slate-500">{group.companyName}</TableCell>
+                          <TableCell className="py-2 text-right text-xs text-slate-600">{fmt(bag.esp)}</TableCell>
+                          <TableCell className="py-2 text-right pr-2 text-sm font-medium text-slate-900">{fmt(bag.tdsAmount)}</TableCell>
+                          <TableCell className="py-2 text-center">
+                            {bag.hasReversal && (
+                              <span className="text-[10px] flex items-center justify-center gap-1 text-red-600">
+                                <RotateCcw className="h-3 w-3" /> Reversed
+                              </span>
+                            )}
                           </TableCell>
                         </TableRow>
-                        {isOpen && (
-                          <>
-                            {row.bags?.map((bag) => (
-                              <TableRow key={bag.bagId} className="bg-slate-50/50 border-slate-100/30">
-                                <TableCell />
-                                <TableCell colSpan={2} className="px-4 py-2">
-                                  <div className="font-mono text-xs text-slate-700">{bag.bagId}</div>
-                                  <div className="font-mono text-[10px] text-slate-400">{bag.orderId}</div>
-                                </TableCell>
-                                <TableCell className="text-center text-xs text-slate-500 py-2">1</TableCell>
-                                <TableCell className="text-right text-xs text-slate-600 py-2">{fmt(bag.esp)}</TableCell>
-                                <TableCell className="text-right text-xs font-medium text-slate-900 py-2">{fmt(bag.tdsAmount)}</TableCell>
-                                <TableCell className="py-2" />
-                                <TableCell className="text-right text-xs font-medium text-slate-900 py-2">{fmt(bag.tdsAmount)}</TableCell>
-                                <TableCell colSpan={2} className="py-2">
-                                  {bag.reversalDeadline && (
-                                    <span className={`text-[10px] flex items-center gap-1 ${bag.reversalDeadlinePast ? "text-red-600" : "text-slate-400"}`}>
-                                      {bag.reversalDeadlinePast && <AlertTriangle className="h-3 w-3" />}
-                                      Rev by {bag.reversalDeadline}
-                                    </span>
-                                  )}
-                                </TableCell>
-                              </TableRow>
-                            ))}
-                            {row.reversals?.map((rev, i) => (
-                              <TableRow key={`rev-${i}`} className="bg-red-50/40 border-slate-100/30">
-                                <TableCell />
-                                <TableCell colSpan={2} className="px-4 py-2">
-                                  <div className="flex items-center gap-1.5 text-red-700 text-xs">
-                                    <RotateCcw className="h-3 w-3" />
-                                    Reversal {rev.bagId ? `· Bag ${rev.bagId}` : "(manual)"}
-                                  </div>
-                                  {rev.reason && <div className="text-[10px] text-slate-400 mt-0.5">{rev.reason}</div>}
-                                </TableCell>
-                                <TableCell className="text-center text-xs py-2">—</TableCell>
-                                <TableCell className="py-2" />
-                                <TableCell className="text-right text-xs py-2" />
-                                <TableCell className="text-right text-xs text-red-600 font-medium py-2">−{fmt(Math.abs(rev.tdsAmount))}</TableCell>
-                                <TableCell className="py-2" />
-                                <TableCell colSpan={2} className="py-2" />
-                              </TableRow>
-                            ))}
-                          </>
-                        )}
-                      </React.Fragment>
-                    );
-                  })}
+                      ))}
+                      {/* Reversal entry rows */}
+                      {group.reversals?.map((rev, i) => (
+                        <TableRow key={`rev-${i}`} className="bg-red-50/40 border-slate-100/30">
+                          <TableCell className="px-4 py-2">
+                            <div className="flex items-center gap-1.5 text-red-700 text-xs">
+                              <RotateCcw className="h-3 w-3 flex-shrink-0" />
+                              <span className="font-mono">{rev.bagId || "—"}</span>
+                            </div>
+                            <Badge className="text-[9px] h-3.5 mt-1 bg-red-100 text-red-700 border-transparent">Reversal</Badge>
+                          </TableCell>
+                          <TableCell className="py-2 text-[10px] text-slate-400">{rev.reason}</TableCell>
+                          <TableCell className="py-2 text-xs text-slate-500">{group.companyName}</TableCell>
+                          <TableCell className="py-2" />
+                          <TableCell className="py-2 text-right pr-2 text-xs text-red-600 font-medium">−{fmt(Math.abs(rev.tdsAmount))}</TableCell>
+                          <TableCell className="py-2 text-center text-[10px] text-slate-400">{rev.month} {rev.year}</TableCell>
+                        </TableRow>
+                      ))}
+                    </React.Fragment>
+                  ))}
                 </TableBody>
               </Table>
               {tdsEntries.length > 0 && (
                 <div className="px-6 py-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
                   <span>{tdsEntries.length} brand(s) · {tdsEntries.reduce((s, r) => s + r.bagCount, 0)} bags · {totalTdsReversals} reversal(s)</span>
-                  <span className="font-medium text-slate-700">
-                    Net TDS payable: {fmt(tdsEntries.reduce((s, r) => s + r.netTds, 0))}
-                  </span>
+                  <span className="font-medium text-slate-700">Net TDS payable: {fmt(tdsEntries.reduce((s, r) => s + r.netTds, 0))}</span>
                 </div>
               )}
               {totalTdsReversals > 0 && (

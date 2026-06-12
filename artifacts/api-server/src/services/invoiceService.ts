@@ -64,6 +64,19 @@ function money(n: number): string {
   return n.toFixed(2);
 }
 
+/** Format a settlement cycle string to a human-readable period label.
+ *  "MAY-2026-C1" → "May 2026" */
+function formatCyclePeriod(cycle: string): string {
+  const MAP: Record<string, string> = {
+    JAN: "January", FEB: "February", MAR: "March", APR: "April",
+    MAY: "May", JUN: "June", JUL: "July", AUG: "August",
+    SEP: "September", OCT: "October", NOV: "November", DEC: "December",
+  };
+  const parts = cycle.split("-");
+  if (parts.length >= 2 && MAP[parts[0]]) return `${MAP[parts[0]]} ${parts[1]}`;
+  return cycle;
+}
+
 /**
  * Generates the next invoice number for a brand in the series
  * BRANDCODE-INV-YYYY-NNNN (or BRANDCODE-CN-YYYY-NNNN for credit notes).
@@ -424,76 +437,108 @@ export async function renderInvoicePdf(inv: Invoice): Promise<Uint8Array> {
 }
 
 /**
- * Builds a brand-facing settlement invoice document — the deduction waterfall
- * (GMV → commission → GST on commission → TDS → TCS → net payable to brand) that
- * the marketplace operator raises against the brand. This is distinct from the
- * customer GST tax invoice produced by `buildCustomerInvoiceDocument`.
+ * Builds a commission tax invoice that the marketplace raises against the brand
+ * for platform commission on sales (SAC 998599). Matches the TAX INVOICE format
+ * used by marketplace operators (e.g. AP/M/Jun26/004).
+ *
+ * GST type (IGST vs CGST+SGST) is determined by comparing the marketplace's
+ * registered state (PLATFORM_GSTIN prefix "27" = Maharashtra) against the brand's
+ * registered GSTIN state code. All commission invoices are at 18% GST.
+ *
+ * The customer tax invoice (GMV-level) is produced by `buildCustomerInvoiceDocument`.
  */
 export function buildBrandInvoiceDocument(inv: Invoice): InvoiceDocument {
   const isCn = inv.invoiceType === "CREDIT_NOTE";
 
+  const commissionAmt = num(inv.commissionAmount);
+  const gstOnComm = num(inv.gstOnCommission);
+  const totalAmt = commissionAmt + gstOnComm;
+
+  // GST type: marketplace is in Maharashtra (27); compare with brand's GSTIN state.
+  const marketplaceStateCode = (inv.platformGstin ?? PLATFORM_GSTIN).slice(0, 2); // "27"
+  const brandStateCode = (inv.sellerGstin ?? "").slice(0, 2);
+  const isIntra = !!brandStateCode && marketplaceStateCode === brandStateCode;
+  const gstRate = 18;
+  const marketplaceStateName = STATE_NAMES[marketplaceStateCode] ?? "Maharashtra";
+  const brandStateName = STATE_NAMES[brandStateCode] ?? brandStateCode;
+  const periodLabel = inv.settlementCycle ? formatCyclePeriod(inv.settlementCycle) : (inv.invoiceDate ?? "");
+
+  const summary: InvoiceDocument["summary"] = [
+    { label: "Taxable Value", value: formatINR(commissionAmt), negative: isCn },
+  ];
+  if (isIntra) {
+    const half = gstRate / 2;
+    summary.push({ label: `CGST @ ${half}%`, value: formatINR(gstOnComm / 2), negative: isCn });
+    summary.push({ label: `SGST @ ${half}%`, value: formatINR(gstOnComm / 2), negative: isCn });
+  } else {
+    summary.push({ label: `IGST @ ${gstRate}%`, value: formatINR(gstOnComm), negative: isCn });
+  }
+
   return {
-    brandHeading: inv.brandName ?? "Brand",
-    docTitle: isCn ? "Brand Settlement Credit Note" : "Brand Settlement Invoice",
+    brandHeading: inv.platformName ?? PLATFORM_NAME,
+    docTitle: isCn ? "Commission Credit Note" : "Commission Tax Invoice",
     invoiceNumber: inv.invoiceNumber,
     metaItems: [
       { label: "Invoice Date", value: inv.invoiceDate ?? "" },
       { label: "Order ID", value: inv.orderId },
-      { label: "Order Status", value: (inv.orderStatus ?? "").toUpperCase() },
-      { label: "Payment", value: inv.paymentMethod ?? "" },
       { label: "Settlement Period", value: inv.settlementCycle ?? "" },
+      { label: "SAC Code", value: "998599" },
+      { label: "Reverse Charge", value: "No" },
     ],
     parties: [
       {
-        heading: "Raised By (Marketplace Operator)",
+        heading: "Billed From (Marketplace Operator)",
         name: inv.platformName ?? PLATFORM_NAME,
-        lines: [`GSTIN: ${inv.platformGstin ?? PLATFORM_GSTIN}`],
+        lines: [
+          `GSTIN: ${inv.platformGstin ?? PLATFORM_GSTIN}`,
+          `State: ${marketplaceStateName} (${marketplaceStateCode})`,
+        ],
       },
       {
         heading: "Billed To (Brand / Seller)",
         name: inv.brandName ?? "",
         lines: [
-          `Seller GSTIN: ${inv.sellerGstin ?? "-"}`,
-          inv.warehouseName ? `Warehouse: ${inv.warehouseName}` : "",
+          `GSTIN: ${inv.sellerGstin ?? "-"}`,
+          `State: ${brandStateName} (${brandStateCode || "-"})`,
+          `POS: ${brandStateName} (${brandStateCode || "-"})`,
+          ...(inv.warehouseName ? [`Warehouse: ${inv.warehouseName}`] : []),
         ].filter(Boolean),
       },
     ],
     columns: [
-      { key: "product", header: "Product", width: 4 },
-      { key: "hsn", header: "HSN", width: 1.4 },
-      { key: "qty", header: "Qty", width: 1, align: "right" },
-      { key: "gmv", header: "GMV", width: 2, align: "right" },
+      { key: "no", header: "#", width: 0.6, align: "right" },
+      { key: "desc", header: "Description of Service", width: 5.2 },
+      { key: "sac", header: "SAC", width: 1.2 },
+      { key: "taxable", header: "Taxable Value", width: 2.0, align: "right" },
     ],
     rows: [
       {
         negative: isCn,
         cells: {
-          product: inv.productName ?? "",
-          hsn: inv.hsnCode ?? "",
-          qty: String(inv.quantity ?? 1),
-          gmv: formatINR(num(inv.gmv)),
+          no: "01",
+          desc: `Platform Commission on Sales\nPeriod: ${periodLabel}`,
+          sac: "998599",
+          taxable: formatINR(commissionAmt),
         },
       },
     ],
-    summary: [
-      { label: "Gross Merchandise Value (GMV)", value: formatINR(num(inv.gmv)), negative: isCn },
-      { label: "Less: Commission", value: formatINR(num(inv.commissionAmount)), negative: isCn },
-      { label: "Less: GST on Commission @ 18%", value: formatINR(num(inv.gstOnCommission)), negative: isCn },
-      { label: "Less: TDS Deducted (Sec 194-O)", value: formatINR(num(inv.tdsDeducted)), negative: isCn },
-      { label: "Less: TCS Collected (Sec 52)", value: formatINR(num(inv.tcsCollected)), negative: isCn },
-    ],
-    netLabel: isCn ? "Net Reversal to Brand" : "Net Payable to Brand",
-    netValue: formatINR(num(inv.netPayable)),
+    summary,
+    netLabel: isCn ? "Total Credit Amount" : "Total Invoice Amount",
+    netValue: formatINR(totalAmt),
     footerNotes: [
-      "Commission and 18% GST on commission are charged by the marketplace operator on the GMV.",
-      "TDS is deducted under Section 194-O of the IT Act; TCS is collected at source under Section 52 of the CGST Act.",
+      "SAC 998599 — Platform / Marketplace Services.",
+      isIntra
+        ? "Intra-state supply — CGST + SGST levied."
+        : "Inter-state supply — IGST levied (marketplace and brand are in different states).",
+      `Order ${inv.orderId}: GMV ${formatINR(num(inv.gmv))} · TDS ₹${num(inv.tdsDeducted).toFixed(2)} deducted (§194-O) · TCS ₹${num(inv.tcsCollected).toFixed(2)} collected (§52 GST) · Net payable to brand: ${formatINR(num(inv.netPayable))}.`,
       ...(inv.reason ? [`Reason: ${inv.reason}`] : []),
-      "This is a system-generated settlement document and does not require a physical signature.",
+      "This is a system-generated tax invoice and does not require a physical signature.",
     ],
     signatory: {
       heading: `For ${inv.platformName ?? PLATFORM_NAME}`,
       lines: ["Authorised Signatory"],
     },
+    digitalSignature: true,
   };
 }
 

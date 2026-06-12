@@ -242,14 +242,14 @@ router.post("/compliance/reversal", authorize(["backend", "admin"]), async (req,
       return res.status(400).json({ error: "No TCS/TDS accrual found for this bag to reverse" });
     }
 
-    // Reconstruct the transaction date from the request body (first of the month is
-    // sufficient — only the month/year affect the deadline calculation).
-    const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
-    const monthIndex = MONTHS.indexOf(month);
-    if (monthIndex === -1) return res.status(400).json({ error: `Unrecognised month: ${month}` });
-    const txnDate = new Date(year, monthIndex, 1);
+    // Derive the transaction date strictly from bag data — non-overridable by the caller.
+    // client-supplied month/year are ignored for eligibility; only used for display.
+    // This mirrors bagTxnDate() in transactions.ts so both paths share the same rule.
+    const txnDate = bag.invoiceDate ? new Date(bag.invoiceDate) : new Date(bag.createdAt);
     const deadline = reversalDeadline(txnDate);
     const reversalEligible = canReverseTDS(txnDate, new Date());
+    // Authoritative period derived server-side; overrides any client-supplied month/year.
+    const { month: txnMonth, year: txnYear } = transactionPeriod(txnDate);
 
     if (!reversalEligible) {
       // Deposit deadline has passed — cannot reverse. Write carry-forward adjustment
@@ -293,8 +293,6 @@ router.post("/compliance/reversal", authorize(["backend", "admin"]), async (req,
     }
 
     // Deadline has not passed — proceed with the full reversal.
-    const { month: txnMonth, year: txnYear } = transactionPeriod(txnDate);
-
     const [origTcs] = await db.select().from(tcsRecordsTable)
       .where(and(eq(tcsRecordsTable.month, txnMonth), eq(tcsRecordsTable.year, txnYear), eq(tcsRecordsTable.brandName, bag.brandName)));
 

@@ -1,8 +1,9 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
-import { tcsRecordsTable, tdsRecordsTable, bagsTable, activityTable, settlementsTable, payoutsTable, onboardingsTable } from "@workspace/db";
+import { tcsRecordsTable, tdsRecordsTable, bagsTable, activityTable, settlementsTable, payoutsTable, onboardingsTable, settlementAdjustmentsTable } from "@workspace/db";
 import { eq, and, sql, inArray } from "drizzle-orm";
-import { reversalDeadline, isPastReversalDeadline } from "../services/tdsReversalService";
+import { reversalDeadline, isPastReversalDeadline, canReverseTDS, transactionPeriod } from "../services/tdsReversalService";
+import { authorize } from "../middlewares/rbac";
 
 const router = Router();
 
@@ -220,7 +221,12 @@ router.get("/compliance/order-breakdown", async (req, res) => {
 });
 
 // TCS/TDS reversal — BRD §5.4
-router.post("/compliance/reversal", async (req, res) => {
+// Requires backend or admin role; enforces the statutory deadline non-overridably.
+// If the 7th-of-following-month deposit deadline has passed the amount cannot be
+// reversed; a carry-forward adjustment row is written instead and the caller is
+// informed with a 422. This mirrors the identical enforcement in transactions.ts so
+// there is only one authoritative financial rule, just two entry points.
+router.post("/compliance/reversal", authorize(["backend", "admin"]), async (req, res) => {
   try {
     const { bagId, reason, month, year } = req.body as { bagId: string; reason: string; month: string; year: number };
     if (!bagId || !reason || !month || !year) {
@@ -230,32 +236,80 @@ router.post("/compliance/reversal", async (req, res) => {
     const [bag] = await db.select().from(bagsTable).where(eq(bagsTable.bagId, bagId));
     if (!bag) return res.status(404).json({ error: "Bag not found" });
 
-    if (parseFloat(bag.tcsAmount) === 0 && parseFloat(bag.tdsAmount) === 0) {
+    const tcsAmt = parseFloat(bag.tcsAmount);
+    const tdsAmt = parseFloat(bag.tdsAmount);
+    if (tcsAmt === 0 && tdsAmt === 0) {
       return res.status(400).json({ error: "No TCS/TDS accrual found for this bag to reverse" });
     }
 
-    const paymentDueDate = (() => {
-      const monthIndex = ["January","February","March","April","May","June","July","August","September","October","November","December"].indexOf(month);
-      const dueYear = monthIndex === 11 ? year + 1 : year;
-      const dueMonth = (monthIndex + 2).toString().padStart(2, "0");
-      return `${dueYear}-${dueMonth}-07`;
-    })();
+    // Reconstruct the transaction date from the request body (first of the month is
+    // sufficient — only the month/year affect the deadline calculation).
+    const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+    const monthIndex = MONTHS.indexOf(month);
+    if (monthIndex === -1) return res.status(400).json({ error: `Unrecognised month: ${month}` });
+    const txnDate = new Date(year, monthIndex, 1);
+    const deadline = reversalDeadline(txnDate);
+    const reversalEligible = canReverseTDS(txnDate, new Date());
+
+    if (!reversalEligible) {
+      // Deposit deadline has passed — cannot reverse. Write carry-forward adjustment
+      // records (consumable by the next settlement compute run) and return 422 so the
+      // caller knows no reversal entries were inserted.
+      if (tdsAmt > 0) {
+        await db.insert(settlementAdjustmentsTable).values({
+          onboardingId: bag.brandId,
+          cycle: bag.cycle,
+          bagId: bag.bagId,
+          adjustmentType: "TDS_CARRY_FORWARD",
+          amount: tdsAmt.toFixed(2),
+          reason: `TDS deposit deadline ${deadline} passed — carried forward from compliance reversal (${reason})`,
+        });
+      }
+      if (tcsAmt > 0) {
+        await db.insert(settlementAdjustmentsTable).values({
+          onboardingId: bag.brandId,
+          cycle: bag.cycle,
+          bagId: bag.bagId,
+          adjustmentType: "TCS_CARRY_FORWARD",
+          amount: tcsAmt.toFixed(2),
+          reason: `TCS deposit deadline ${deadline} passed — carried forward from compliance reversal (${reason})`,
+        });
+      }
+      await db.insert(activityTable).values({
+        user: req.user?.name ?? "System",
+        action: `TCS/TDS already deposited for ${bagId} (deadline ${deadline} passed) — recorded as carry-forward adjustment, not reversed (${reason})`,
+        entityType: "compliance",
+        entityRef: bagId,
+        level: "warning",
+      });
+      return res.status(422).json({
+        success: false,
+        reversalEligible: false,
+        deadline,
+        message: `Cannot reverse TCS/TDS for bag ${bagId}: the deposit deadline (${deadline}) has already passed. Amounts of TDS ₹${tdsAmt.toFixed(2)} and TCS ₹${tcsAmt.toFixed(2)} recorded as carry-forward adjustments for the next settlement cycle instead.`,
+        tdsCarryForward: tdsAmt,
+        tcsCarryForward: tcsAmt,
+      });
+    }
+
+    // Deadline has not passed — proceed with the full reversal.
+    const { month: txnMonth, year: txnYear } = transactionPeriod(txnDate);
 
     const [origTcs] = await db.select().from(tcsRecordsTable)
-      .where(and(eq(tcsRecordsTable.month, month), eq(tcsRecordsTable.year, year), eq(tcsRecordsTable.brandName, bag.brandName)));
+      .where(and(eq(tcsRecordsTable.month, txnMonth), eq(tcsRecordsTable.year, txnYear), eq(tcsRecordsTable.brandName, bag.brandName)));
 
-    if (origTcs || parseFloat(bag.tcsAmount) > 0) {
+    if (origTcs || tcsAmt > 0) {
       await db.insert(tcsRecordsTable).values({
-        month, year,
+        month: txnMonth, year: txnYear,
         stateGstin: origTcs?.stateGstin ?? bag.stateGstin,
         stateCode: origTcs?.stateCode ?? bag.stateCode,
         stateName: origTcs?.stateName ?? bag.stateCode,
         brandName: bag.brandName,
         taxableSupply: String(-parseFloat(bag.esp)),
         tcsRate: "1.00",
-        tcsAmount: String(-parseFloat(bag.tcsAmount)),
+        tcsAmount: String(-tcsAmt),
         status: "Accrued",
-        paymentDueDate,
+        paymentDueDate: deadline,
         isReversal: true,
         reversalReason: reason,
         originalBagId: bagId,
@@ -263,17 +317,17 @@ router.post("/compliance/reversal", async (req, res) => {
     }
 
     const [origTds] = await db.select().from(tdsRecordsTable)
-      .where(and(eq(tdsRecordsTable.month, month), eq(tdsRecordsTable.year, year)));
+      .where(and(eq(tdsRecordsTable.month, txnMonth), eq(tdsRecordsTable.year, txnYear)));
 
-    if (origTds || parseFloat(bag.tdsAmount) > 0) {
+    if (origTds || tdsAmt > 0) {
       await db.insert(tdsRecordsTable).values({
-        month, year,
+        month: txnMonth, year: txnYear,
         companyName: origTds?.companyName ?? bag.brandName,
         tan: origTds?.tan ?? "DELN00000A",
         grossPayment: String(-parseFloat(bag.esp)),
         tdsRate: "1.00",
-        tdsAmount: String(-parseFloat(bag.tdsAmount)),
-        netPaid: String(parseFloat(bag.tdsAmount)),
+        tdsAmount: String(-tdsAmt),
+        netPaid: String(tdsAmt),
         status: "Pending",
         isReversal: true,
         reversalReason: reason,
@@ -286,8 +340,8 @@ router.post("/compliance/reversal", async (req, res) => {
       .where(eq(bagsTable.bagId, bagId));
 
     await db.insert(activityTable).values({
-      user: "System",
-      action: `TCS/TDS reversal logged for bag ${bagId} — ${reason}`,
+      user: req.user?.name ?? "System",
+      action: `TCS/TDS reversal logged for bag ${bagId} (deadline ${deadline}) — ${reason}`,
       entityType: "compliance",
       entityRef: bagId,
       level: "warning",
@@ -295,9 +349,11 @@ router.post("/compliance/reversal", async (req, res) => {
 
     res.json({
       success: true,
-      message: `TCS reversal of ₹${bag.tcsAmount} and TDS reversal of ₹${bag.tdsAmount} logged for bag ${bagId} in ${month} ${year}.`,
-      tcsReversed: parseFloat(bag.tcsAmount),
-      tdsReversed: parseFloat(bag.tdsAmount),
+      reversalEligible: true,
+      deadline,
+      message: `TCS reversal of ₹${tcsAmt} and TDS reversal of ₹${tdsAmt} logged for bag ${bagId} in ${month} ${year}.`,
+      tcsReversed: tcsAmt,
+      tdsReversed: tdsAmt,
     });
   } catch (err) {
     req.log.error({ err }, "compliance reversal error");

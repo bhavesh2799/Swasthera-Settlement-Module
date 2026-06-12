@@ -100,10 +100,12 @@ router.get("/invoices/export.zip", async (req, res) => {
     const rows = await queryInvoices(req.query as Record<string, unknown>);
     if (!rows.length) return res.status(404).json({ error: "no invoices match the filters" });
 
+    const docType = typeof req.query.docType === "string" && req.query.docType === "brand" ? "brand" : "customer";
     const zip = new JSZip();
     for (const inv of rows) {
-      const pdf = await renderInvoicePdf(inv);
-      zip.file(`${inv.invoiceNumber}.pdf`, pdf);
+      const pdf = docType === "brand" ? await renderBrandInvoicePdf(inv) : await renderInvoicePdf(inv);
+      const suffix = docType === "brand" ? "-commission" : "";
+      zip.file(`${inv.invoiceNumber}${suffix}.pdf`, pdf);
     }
     const buffer = await zip.generateAsync({ type: "nodebuffer" });
     res.setHeader("Content-Type", "application/zip");

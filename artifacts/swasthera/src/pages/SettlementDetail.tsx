@@ -426,7 +426,7 @@ export function SettlementDetail() {
               <CardTitle className="text-base font-semibold text-slate-800">Statement of Claim</CardTitle>
             </CardHeader>
             <CardContent className="p-5 space-y-3">
-              <p className="text-xs text-slate-500">BRD §7.1 — 27 fields per bag including Order ID, Invoice Date, ESP, brand/marketplace discounts, commission, TCS, TDS, MDR, net payable, and UTR.</p>
+              <p className="text-xs text-slate-500">BRD §7.1 — 26 fields per bag including Order ID, Invoice Date, ESP, brand/marketplace discounts, commission, TCS, TDS, net payable, and UTR.</p>
               <a href={socUrl} download>
                 <Button variant="outline" size="sm" className="w-full">
                   <Download className="mr-2 h-3.5 w-3.5" /> Download SoC CSV

@@ -14,6 +14,10 @@ A captured order produces ONE `invoices` row, but the marketplace owes TWO conce
 
 **How to apply:** any new place that lists/downloads invoices should offer BOTH PDFs. There is also a legacy `GET /api/invoices/:id/download` (HTML preview) — keep it but do NOT link new UI to it; the UI standardised on the PDF routes.
 
+# Invoice Repository "Document Type" dropdown is a VIEW TOGGLE, not a row filter
+On the Invoices page the "Document Type" select (Customer Tax Invoice / Brand Commission Invoice) switches the *presentation* of the same rows — it must NOT filter rows out. Because every `invoices` row is BOTH documents at once, filtering would be wrong. Customer view shows customer/HSN/taxable/GST/total columns + `/pdf` download + customer ZIP; commission view shows GMV/commission/GST-on-comm/TDS/net-payable columns + `/brand-pdf` download + commission ZIP. Summary cards and subtitle also switch with the toggle.
+**Why:** the dropdown originally only set the bulk-download docType while the table always showed customer columns, which confused users who expected it to change what they were looking at.
+
 # Sign/color convention (don't get this wrong)
 Credit-note invoice rows store ALREADY-SIGNED (negative) amounts; `formatINR` renders the leading `-` itself. The `summary.negative`/`row.negative` flag does NOT change the number — it only colors it RED. So set `negative: isCn` on EVERY monetary line (not `!isCn` on deductions): normal invoices render all-black, credit notes render all-red. A "Less:" label is enough to convey a deduction on a normal invoice; do not red-color deductions there.
 

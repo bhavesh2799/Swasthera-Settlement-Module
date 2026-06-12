@@ -41,6 +41,13 @@ interface InvoiceRow {
   paymentMethod: string | null;
   orderStatus: string | null;
   settlementCycle: string | null;
+  // ---- Brand commission-invoice snapshot ----
+  gmv: string;
+  commissionAmount: string;
+  gstOnCommission: string;
+  tdsDeducted: string;
+  netPayable: string;
+  sellerGstin: string | null;
 }
 
 function inr(v: string | number | null | undefined) {
@@ -149,7 +156,11 @@ export function InvoiceRepository() {
     const taxable = list.reduce((s, r) => s + (parseFloat(r.taxableValue ?? "0") || 0), 0);
     const total = list.reduce((s, r) => s + (parseFloat(r.totalInvoiceValue) || 0), 0);
     const credits = list.filter((r) => r.invoiceType === "CREDIT_NOTE").length;
-    return { count: list.length, taxable, total, credits };
+    const gmv = list.reduce((s, r) => s + (parseFloat(r.gmv ?? "0") || 0), 0);
+    const commission = list.reduce((s, r) => s + (parseFloat(r.commissionAmount ?? "0") || 0), 0);
+    const gstOnComm = list.reduce((s, r) => s + (parseFloat(r.gstOnCommission ?? "0") || 0), 0);
+    const netPayable = list.reduce((s, r) => s + (parseFloat(r.netPayable ?? "0") || 0), 0);
+    return { count: list.length, taxable, total, credits, gmv, commission, gstOnComm, netPayable };
   }, [rows]);
 
   const toggleSelect = (id: number) =>
@@ -176,7 +187,11 @@ export function InvoiceRepository() {
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
           <h1 className="text-3xl font-bold tracking-tight text-slate-900">Invoice Repository</h1>
-          <p className="text-slate-500 mt-1">Customer tax invoices &amp; credit notes — filter, download PDFs &amp; export</p>
+          <p className="text-slate-500 mt-1">
+            {docKind === "customer"
+              ? "Customer tax invoices & credit notes — filter, download PDFs & export"
+              : "Brand commission invoices — marketplace commission charged per order"}
+          </p>
         </div>
         <div className="flex gap-2 flex-wrap">
           <Button variant="outline" size="sm" onClick={() => refetch()}>
@@ -187,31 +202,54 @@ export function InvoiceRepository() {
               <FileSpreadsheet className="h-4 w-4 mr-2" /> Export CSV
             </Button>
           </a>
-          <a href={`/api/invoices/export.zip${qs ? `?${qs}` : ""}`}>
-            <Button size="sm" className="bg-amber-600 hover:bg-amber-700 text-white">
-              <FileArchive className="h-4 w-4 mr-2" /> Download ZIP
+          <a href={`/api/invoices/export.zip?docType=${docKind}${qs ? `&${qs}` : ""}`}>
+            <Button size="sm" className={docKind === "brand" ? "bg-blue-600 hover:bg-blue-700 text-white" : "bg-amber-600 hover:bg-amber-700 text-white"}>
+              <FileArchive className="h-4 w-4 mr-2" /> {docKind === "brand" ? "Download Commission ZIP" : "Download Customer ZIP"}
             </Button>
           </a>
         </div>
       </div>
 
       <div className="grid gap-4 md:grid-cols-4">
-        <Card className="shadow-sm border-slate-200/60 bg-white">
-          <CardHeader className="pb-2"><CardTitle className="text-sm font-medium text-slate-500">Invoices (filtered)</CardTitle></CardHeader>
-          <CardContent><div className="text-2xl font-bold text-slate-900">{totals.count}</div><p className="text-xs text-slate-500 mt-1">{totals.credits} credit note(s)</p></CardContent>
-        </Card>
-        <Card className="shadow-sm border-slate-200/60 bg-white">
-          <CardHeader className="pb-2"><CardTitle className="text-sm font-medium text-slate-500">Taxable Value</CardTitle></CardHeader>
-          <CardContent><div className="text-2xl font-bold text-slate-900">{inr(totals.taxable)}</div></CardContent>
-        </Card>
-        <Card className="shadow-sm border-slate-200/60 bg-white">
-          <CardHeader className="pb-2"><CardTitle className="text-sm font-medium text-slate-500">Total Invoice Value</CardTitle></CardHeader>
-          <CardContent><div className="text-2xl font-bold text-green-700">{inr(totals.total)}</div></CardContent>
-        </Card>
-        <Card className="shadow-sm border-slate-200/60 bg-white">
-          <CardHeader className="pb-2"><CardTitle className="text-sm font-medium text-slate-500">Brands</CardTitle></CardHeader>
-          <CardContent><div className="text-2xl font-bold text-slate-900">{brandOptions.length}</div><p className="text-xs text-slate-500 mt-1">in repository</p></CardContent>
-        </Card>
+        {docKind === "customer" ? (
+          <>
+            <Card className="shadow-sm border-slate-200/60 bg-white">
+              <CardHeader className="pb-2"><CardTitle className="text-sm font-medium text-slate-500">Invoices (filtered)</CardTitle></CardHeader>
+              <CardContent><div className="text-2xl font-bold text-slate-900">{totals.count}</div><p className="text-xs text-slate-500 mt-1">{totals.credits} credit note(s)</p></CardContent>
+            </Card>
+            <Card className="shadow-sm border-slate-200/60 bg-white">
+              <CardHeader className="pb-2"><CardTitle className="text-sm font-medium text-slate-500">Taxable Value</CardTitle></CardHeader>
+              <CardContent><div className="text-2xl font-bold text-slate-900">{inr(totals.taxable)}</div></CardContent>
+            </Card>
+            <Card className="shadow-sm border-slate-200/60 bg-white">
+              <CardHeader className="pb-2"><CardTitle className="text-sm font-medium text-slate-500">Total Invoice Value</CardTitle></CardHeader>
+              <CardContent><div className="text-2xl font-bold text-green-700">{inr(totals.total)}</div></CardContent>
+            </Card>
+            <Card className="shadow-sm border-slate-200/60 bg-white">
+              <CardHeader className="pb-2"><CardTitle className="text-sm font-medium text-slate-500">Brands</CardTitle></CardHeader>
+              <CardContent><div className="text-2xl font-bold text-slate-900">{brandOptions.length}</div><p className="text-xs text-slate-500 mt-1">in repository</p></CardContent>
+            </Card>
+          </>
+        ) : (
+          <>
+            <Card className="shadow-sm border-slate-200/60 bg-white">
+              <CardHeader className="pb-2"><CardTitle className="text-sm font-medium text-slate-500">Commission Invoices</CardTitle></CardHeader>
+              <CardContent><div className="text-2xl font-bold text-slate-900">{totals.count}</div><p className="text-xs text-slate-500 mt-1">{brandOptions.length} brand(s)</p></CardContent>
+            </Card>
+            <Card className="shadow-sm border-slate-200/60 bg-white">
+              <CardHeader className="pb-2"><CardTitle className="text-sm font-medium text-slate-500">Total GMV</CardTitle></CardHeader>
+              <CardContent><div className="text-2xl font-bold text-slate-900">{inr(totals.gmv)}</div></CardContent>
+            </Card>
+            <Card className="shadow-sm border-slate-200/60 bg-white">
+              <CardHeader className="pb-2"><CardTitle className="text-sm font-medium text-slate-500">Total Commission</CardTitle></CardHeader>
+              <CardContent><div className="text-2xl font-bold text-blue-700">{inr(totals.commission)}</div><p className="text-xs text-slate-500 mt-1">+ {inr(totals.gstOnComm)} GST</p></CardContent>
+            </Card>
+            <Card className="shadow-sm border-slate-200/60 bg-white">
+              <CardHeader className="pb-2"><CardTitle className="text-sm font-medium text-slate-500">Net Payable to Brands</CardTitle></CardHeader>
+              <CardContent><div className="text-2xl font-bold text-green-700">{inr(totals.netPayable)}</div></CardContent>
+            </Card>
+          </>
+        )}
       </div>
 
       <Card className="shadow-sm border-slate-200/60 bg-white">
@@ -293,12 +331,12 @@ export function InvoiceRepository() {
               </Select>
             </div>
             <div className="space-y-1">
-              <Label className="text-xs text-slate-500">Bulk Download As</Label>
-              <Select value={docKind} onValueChange={(v) => setDocKind(v as "customer" | "brand")}>
+              <Label className="text-xs text-slate-500">Document Type</Label>
+              <Select value={docKind} onValueChange={(v) => { setDocKind(v as "customer" | "brand"); clearSelection(); }}>
                 <SelectTrigger className="bg-white border-slate-200"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="customer">Customer Tax Invoice</SelectItem>
-                  <SelectItem value="brand">Commission Invoice</SelectItem>
+                  <SelectItem value="brand">Brand Commission Invoice</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -327,11 +365,23 @@ export function InvoiceRepository() {
                 </TableHead>
                 <TableHead className="font-medium text-slate-500 h-10 px-6">Invoice # / Date</TableHead>
                 <TableHead className="font-medium text-slate-500 h-10">Brand / Order</TableHead>
-                <TableHead className="font-medium text-slate-500 h-10">Customer / Place of Supply</TableHead>
-                <TableHead className="font-medium text-slate-500 h-10">Product / HSN</TableHead>
-                <TableHead className="font-medium text-slate-500 h-10 text-right">Taxable</TableHead>
-                <TableHead className="font-medium text-slate-500 h-10 text-right">GST</TableHead>
-                <TableHead className="font-medium text-slate-500 h-10 text-right">Total</TableHead>
+                {docKind === "customer" ? (
+                  <>
+                    <TableHead className="font-medium text-slate-500 h-10">Customer / Place of Supply</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10">Product / HSN</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10 text-right">Taxable</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10 text-right">GST</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10 text-right">Total</TableHead>
+                  </>
+                ) : (
+                  <>
+                    <TableHead className="font-medium text-slate-500 h-10 text-right">GMV</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10 text-right">Commission</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10 text-right">GST on Comm.</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10 text-right">TDS</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10 text-right">Net Payable</TableHead>
+                  </>
+                )}
                 <TableHead className="font-medium text-slate-500 h-10">Status</TableHead>
                 <TableHead className="font-medium text-slate-500 h-10 px-4 text-right">PDF</TableHead>
               </TableRow>
@@ -376,33 +426,48 @@ export function InvoiceRepository() {
                         <div className="font-medium text-slate-900">{r.brandName}</div>
                         <div className="font-mono text-xs text-slate-500 mt-0.5">{r.orderId}</div>
                       </TableCell>
-                      <TableCell>
-                        <div className="text-sm text-slate-800">{r.customerName ?? "—"}</div>
-                        <div className="text-xs text-slate-500 mt-0.5">{r.customerState ?? "—"} ({r.customerStateCode ?? "—"})</div>
-                      </TableCell>
-                      <TableCell>
-                        <div className="text-sm text-slate-800 truncate max-w-[180px]">{r.productName ?? "—"}</div>
-                        <div className="font-mono text-xs text-slate-500 mt-0.5">HSN {r.hsnCode ?? "—"} · Qty {r.quantity ?? "—"}</div>
-                      </TableCell>
-                      <TableCell className="text-right text-sm text-slate-900">{inr(r.taxableValue)}</TableCell>
-                      <TableCell className="text-right text-sm">
-                        <div className="text-slate-900">{inr(gstAmt)}</div>
-                        <div className="text-[10px] text-slate-400 mt-0.5">{r.gstType === "INTRA" ? "CGST+SGST" : "IGST"}</div>
-                      </TableCell>
-                      <TableCell className={`text-right text-sm font-medium ${isCn ? "text-red-600" : "text-slate-900"}`}>{inr(r.totalInvoiceValue)}</TableCell>
+                      {docKind === "customer" ? (
+                        <>
+                          <TableCell>
+                            <div className="text-sm text-slate-800">{r.customerName ?? "—"}</div>
+                            <div className="text-xs text-slate-500 mt-0.5">{r.customerState ?? "—"} ({r.customerStateCode ?? "—"})</div>
+                          </TableCell>
+                          <TableCell>
+                            <div className="text-sm text-slate-800 truncate max-w-[180px]">{r.productName ?? "—"}</div>
+                            <div className="font-mono text-xs text-slate-500 mt-0.5">HSN {r.hsnCode ?? "—"} · Qty {r.quantity ?? "—"}</div>
+                          </TableCell>
+                          <TableCell className="text-right text-sm text-slate-900">{inr(r.taxableValue)}</TableCell>
+                          <TableCell className="text-right text-sm">
+                            <div className="text-slate-900">{inr(gstAmt)}</div>
+                            <div className="text-[10px] text-slate-400 mt-0.5">{r.gstType === "INTRA" ? "CGST+SGST" : "IGST"}</div>
+                          </TableCell>
+                          <TableCell className={`text-right text-sm font-medium ${isCn ? "text-red-600" : "text-slate-900"}`}>{inr(r.totalInvoiceValue)}</TableCell>
+                        </>
+                      ) : (
+                        <>
+                          <TableCell className="text-right text-sm text-slate-900">{inr(r.gmv)}</TableCell>
+                          <TableCell className={`text-right text-sm font-medium ${isCn ? "text-red-600" : "text-blue-700"}`}>{inr(r.commissionAmount)}</TableCell>
+                          <TableCell className="text-right text-sm text-slate-900">{inr(r.gstOnCommission)}</TableCell>
+                          <TableCell className="text-right text-sm text-slate-900">{inr(r.tdsDeducted)}</TableCell>
+                          <TableCell className={`text-right text-sm font-medium ${isCn ? "text-red-600" : "text-green-700"}`}>{inr(r.netPayable)}</TableCell>
+                        </>
+                      )}
                       <TableCell><StatusBadge status={r.orderStatus} /></TableCell>
                       <TableCell className="px-4 text-right">
                         <div className="flex items-center justify-end gap-1">
-                          <a href={`/api/invoices/${r.id}/pdf`} title="Download customer tax invoice (PDF)">
-                            <Button variant="ghost" size="icon" className="h-7 w-7 text-slate-500 hover:text-amber-700">
-                              <Download className="h-3.5 w-3.5" />
-                            </Button>
-                          </a>
-                          <a href={`/api/invoices/${r.id}/brand-pdf`} title="Download brand settlement invoice (PDF)">
-                            <Button variant="ghost" size="icon" className="h-7 w-7 text-slate-500 hover:text-blue-700">
-                              <Building2 className="h-3.5 w-3.5" />
-                            </Button>
-                          </a>
+                          {docKind === "customer" ? (
+                            <a href={`/api/invoices/${r.id}/pdf`} title="Download customer tax invoice (PDF)">
+                              <Button variant="ghost" size="icon" className="h-7 w-7 text-slate-500 hover:text-amber-700">
+                                <Download className="h-3.5 w-3.5" />
+                              </Button>
+                            </a>
+                          ) : (
+                            <a href={`/api/invoices/${r.id}/brand-pdf`} title="Download brand commission invoice (PDF)">
+                              <Button variant="ghost" size="icon" className="h-7 w-7 text-slate-500 hover:text-blue-700">
+                                <Building2 className="h-3.5 w-3.5" />
+                              </Button>
+                            </a>
+                          )}
                         </div>
                       </TableCell>
                     </TableRow>
@@ -422,16 +487,19 @@ export function InvoiceRepository() {
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-slate-900 text-white px-5 py-3 rounded-full shadow-2xl flex items-center gap-3 text-sm whitespace-nowrap">
           <span className="text-slate-300 text-xs font-medium">{selectedIds.size} selected</span>
           <div className="h-4 w-px bg-slate-600" />
-          <a href={bulkZipHref("customer")} download>
-            <Button size="sm" className="bg-amber-600 hover:bg-amber-700 text-white rounded-full text-xs h-7 px-3">
-              <FileArchive className="h-3.5 w-3.5 mr-1.5" /> Customer Invoice ZIP
-            </Button>
-          </a>
-          <a href={bulkZipHref("brand")} download>
-            <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white rounded-full text-xs h-7 px-3">
-              <Building2 className="h-3.5 w-3.5 mr-1.5" /> Commission Invoice ZIP
-            </Button>
-          </a>
+          {docKind === "customer" ? (
+            <a href={bulkZipHref("customer")} download>
+              <Button size="sm" className="bg-amber-600 hover:bg-amber-700 text-white rounded-full text-xs h-7 px-3">
+                <FileArchive className="h-3.5 w-3.5 mr-1.5" /> Customer Invoice ZIP
+              </Button>
+            </a>
+          ) : (
+            <a href={bulkZipHref("brand")} download>
+              <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white rounded-full text-xs h-7 px-3">
+                <Building2 className="h-3.5 w-3.5 mr-1.5" /> Commission Invoice ZIP
+              </Button>
+            </a>
+          )}
           <a href={bulkCsvHref()} download>
             <Button size="sm" variant="outline" className="border-slate-600 text-slate-200 hover:bg-slate-800 rounded-full text-xs h-7 px-3">
               <FileSpreadsheet className="h-3.5 w-3.5 mr-1.5" /> Export CSV

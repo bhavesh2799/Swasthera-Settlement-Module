@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Swasthera Finance Ops — Compliance &amp; Tax</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#1a1d23; --muted:#5d6470; --faint:#9aa1ad;
+    --bg:#f6f7f9; --surface:#ffffff; --line:#e6e8ec; --line2:#d4d7dd;
+    --brand:#e8740c;
+    --green-bg:#eaf3de; --green-tx:#27500a;
+    --amber-bg:#faeeda; --amber-tx:#854f0b; --amber-bd:#ba7517;
+    --red-bg:#fcebeb; --red-tx:#a32d2d; --red-deep:#791f1f;
+    --blue-bg:#e6f1fb; --blue-tx:#0c447c;
+    --purple-bg:#eeedfe; --purple-tx:#3c3489;
+    --pink-bg:#fbeaf0; --pink-tx:#72243e;
+    --teal-bg:#e1f5ee; --teal-tx:#085041;
+    --mono:'JetBrains Mono',ui-monospace,monospace;
+    --r-md:8px; --r-lg:12px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Inter',system-ui,sans-serif;font-size:13px;color:var(--ink);background:var(--bg);-webkit-font-smoothing:antialiased}
+  a{color:var(--blue-tx);text-decoration:none}
+  a:hover{text-decoration:underline}
+  button{font-family:inherit;cursor:pointer}
+
+  .app{display:flex;min-height:100vh}
+
+  /* ============ Sidebar ============ */
+  .side{width:218px;background:var(--surface);border-right:1px solid var(--line);padding:18px 12px;flex-shrink:0;display:flex;flex-direction:column;position:sticky;top:0;height:100vh}
+  .logo{display:flex;align-items:center;gap:9px;padding:0 8px 18px}
+  .logoMark{width:28px;height:28px;border-radius:7px;background:var(--ink);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:600;font-size:14px}
+  .logoName{font-size:15px;font-weight:600;letter-spacing:-.2px}
+  .nav a{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:var(--r-md);color:var(--muted);font-size:13px;font-weight:500;margin-bottom:2px}
+  .nav a:hover{background:var(--bg);text-decoration:none}
+  .nav a.act{background:var(--ink);color:#fff}
+  .nav svg{width:16px;height:16px;flex-shrink:0}
+  .roleBox{margin-top:auto;border-top:1px solid var(--line);padding-top:14px}
+  .roleT{font-size:11px;font-weight:600;color:var(--muted);margin-bottom:8px;display:flex;align-items:center;gap:6px}
+  .roleG{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+  .roleG button{font-size:11px;padding:6px 4px;border-radius:var(--r-md);border:1px solid var(--line2);background:var(--surface);color:var(--muted);font-weight:500}
+  .roleG button.act{background:var(--brand);border-color:var(--brand);color:#fff}
+  .ver{font-size:10px;color:var(--faint);margin-top:12px;padding:0 4px}
+
+  /* ============ Main ============ */
+  .main{flex:1;padding:22px 26px;min-width:0;max-width:1240px}
+  .hd{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:14px;flex-wrap:wrap}
+  .ttl{font-size:22px;font-weight:600;letter-spacing:-.3px;margin-bottom:3px}
+  .sub{font-size:12px;color:var(--muted)}
+  .hdR{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .sel{font-size:12px;background:var(--surface);border:1px solid var(--line2);border-radius:var(--r-md);padding:7px 11px;font-weight:500;color:var(--ink)}
+  .btnGhost{font-size:12px;background:var(--surface);border:1px solid var(--line2);border-radius:var(--r-md);padding:7px 11px;font-weight:500;color:var(--ink);display:inline-flex;align-items:center;gap:6px}
+  .btnGhost:hover{border-color:var(--faint)}
+  .btnDark{font-size:12px;background:var(--ink);border:1px solid var(--ink);border-radius:var(--r-md);padding:7px 12px;font-weight:500;color:#fff;display:inline-flex;align-items:center;gap:6px}
+  .btnDark:hover{opacity:.88}
+  .btnSm{font-size:11px;padding:5px 9px}
+
+  /* Close banner */
+  .close{display:flex;align-items:center;gap:11px;background:var(--amber-bg);border:1px solid #f0d9ae;border-radius:var(--r-md);padding:11px 14px;margin-bottom:14px}
+  .close .ic{color:var(--amber-tx);flex-shrink:0}
+  .close p{font-size:12px;color:#633806;flex:1;line-height:1.5}
+  .close b{font-weight:600}
+  .close button{font-size:11px;background:var(--surface);border:1px solid var(--amber-bd);color:var(--amber-tx);border-radius:var(--r-md);padding:6px 11px;font-weight:600;white-space:nowrap}
+
+  /* Tie-out cards */
+  .tieG{display:grid;grid-template-columns:1fr 1fr;gap:11px;margin-bottom:16px}
+  @media(max-width:980px){.tieG{grid-template-columns:1fr}}
+  .tie{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);padding:13px 15px}
+  .tieH{display:flex;justify-content:space-between;align-items:center;margin-bottom:11px}
+  .tieT{font-size:12.5px;font-weight:600}
+  .tieT span{font-size:10px;color:var(--faint);font-weight:500;margin-left:5px}
+  .chip{font-size:10px;padding:3px 9px;border-radius:99px;font-weight:600}
+  .chip.ok{background:var(--green-bg);color:var(--green-tx)}
+  .chip.bad{background:var(--red-bg);color:var(--red-deep)}
+  .tie3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px}
+  .cell{background:var(--bg);border-radius:var(--r-md);padding:9px 11px}
+  .cell.bad{background:var(--red-bg)}
+  .cell .l{font-size:10px;color:var(--muted);margin-bottom:4px;font-weight:500;display:flex;align-items:center;gap:5px}
+  .cell.bad .l{color:var(--red-tx)}
+  .cell .v{font-size:15px;font-weight:600;font-family:var(--mono)}
+  .cell.bad .v{color:var(--red-deep)}
+  .cell .s{font-size:9.5px;color:var(--faint);margin-top:3px}
+  .cell.bad .s{color:var(--red-tx)}
+  .tieF{display:flex;justify-content:space-between;align-items:center;margin-top:9px;font-size:10.5px;color:var(--faint)}
+  .tieF a{font-weight:600;font-size:10.5px}
+
+  /* Tabs */
+  .tabs{display:flex;border-bottom:1px solid var(--line);margin-bottom:14px;gap:2px;overflow-x:auto}
+  .tb{font-size:12.5px;padding:10px 13px;color:var(--muted);background:none;border:none;border-bottom:2px solid transparent;display:flex;align-items:center;gap:7px;font-weight:500;white-space:nowrap}
+  .tb:hover{color:var(--ink)}
+  .tb.act{color:var(--ink);border-bottom-color:var(--brand);font-weight:600}
+  .tb .n{font-size:10px;background:var(--bg);color:var(--muted);padding:1px 7px;border-radius:99px;font-weight:600}
+  .tb .n.red{background:var(--red-bg);color:var(--red-deep)}
+  .pane{display:none}
+  .pane.act{display:block;animation:fade .18s ease}
+  @keyframes fade{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
+
+  /* Filter row */
+  .filtRow{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:11px;padding:10px 11px;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md)}
+  .vw{display:inline-flex;border:1px solid var(--line2);border-radius:var(--r-md);overflow:hidden}
+  .vw button{font-size:11px;padding:6px 11px;background:var(--surface);border:none;color:var(--muted);font-weight:500}
+  .vw button.act{background:var(--ink);color:#fff;font-weight:600}
+  .filt{font-size:11px;background:var(--bg);border:1px solid var(--line);border-radius:var(--r-md);padding:6px 9px;color:var(--muted);font-weight:500}
+  .filt b{color:var(--ink);font-weight:600}
+  .srch{flex:1;min-width:170px;font-size:11.5px;border:1px solid var(--line2);border-radius:var(--r-md);padding:6px 10px;font-family:inherit;color:var(--ink);background:var(--surface)}
+  .srch::placeholder{color:var(--faint)}
+  .srch:focus{outline:2px solid #b5d4f4;outline-offset:-1px}
+
+  /* Tables */
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden;margin-bottom:14px}
+  .cBar{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:11px 15px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+  .cL{font-size:12px;color:var(--muted)}
+  .cL b{color:var(--ink);font-weight:600}
+  .cR{display:flex;gap:8px;align-items:center}
+  .scr{overflow-x:auto}
+  table{width:100%;border-collapse:collapse;font-size:11.5px;min-width:880px}
+  th{text-align:left;font-weight:600;color:var(--muted);padding:8px 11px;border-bottom:1px solid var(--line);white-space:nowrap;background:#fafbfc;font-size:10px;text-transform:uppercase;letter-spacing:.4px}
+  td{padding:9px 11px;border-bottom:1px solid var(--line);white-space:nowrap;vertical-align:middle}
+  tr:last-child td{border-bottom:none}
+  .num{font-family:var(--mono);font-variant-numeric:tabular-nums;text-align:right;font-size:11px}
+  .num.neg{color:var(--red-tx)}
+  .num.pos{color:#3b6d11}
+  .dim{color:var(--faint)}
+  .mono{font-family:var(--mono);font-size:10.5px}
+  .bag{font-family:var(--mono);font-size:11px;color:var(--blue-tx);font-weight:500}
+  .grp td{background:#fafbfc;font-weight:600;font-size:11.5px;padding:10px 11px}
+  .grp .gstin{font-family:var(--mono);font-size:10px;color:var(--faint);font-weight:400;margin-left:7px}
+  .retRow td{background:#fcebeb2e}
+  .totalR td{background:#fafbfc;font-weight:600;border-top:2px solid var(--line2)}
+  .note{font-size:10.5px;color:var(--faint);font-style:italic;padding:9px 15px;border-top:1px solid var(--line);background:#fafbfc}
+
+  /* Pills */
+  .pl{font-size:10px;padding:2.5px 8px;border-radius:99px;display:inline-block;font-weight:600;line-height:1.5}
+  .pl-ok{background:var(--green-bg);color:var(--green-tx)}
+  .pl-warn{background:var(--amber-bg);color:var(--amber-tx)}
+  .pl-bad{background:var(--red-bg);color:var(--red-deep)}
+  .pl-info{background:var(--blue-bg);color:var(--blue-tx)}
+  .pl-purple{background:var(--purple-bg);color:var(--purple-tx)}
+  .pl-pink{background:var(--pink-bg);color:var(--pink-tx)}
+  .pl-teal{background:var(--teal-bg);color:var(--teal-tx)}
+  .pl-gray{background:var(--bg);color:var(--muted)}
+  .win{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:600}
+  .win.ok{color:#3b6d11}
+  .win.bad{color:var(--red-tx)}
+
+  /* Calendar */
+  .calG{display:grid;grid-template-columns:1fr 1fr;gap:11px}
+  @media(max-width:980px){.calG{grid-template-columns:1fr}}
+  .calCard{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);padding:15px 17px}
+  .calH{display:flex;justify-content:space-between;align-items:center;margin-bottom:11px}
+  .calT{font-size:13px;font-weight:600}
+  .calI{display:flex;gap:11px;padding:10px 0;border-bottom:1px solid var(--line)}
+  .calI:last-child{border-bottom:none}
+  .calD{font-size:9px;color:var(--faint);text-transform:uppercase;letter-spacing:.4px;min-width:52px;text-align:center;background:var(--bg);padding:6px 4px;border-radius:var(--r-md);line-height:1.15;font-weight:600;height:fit-content}
+  .calD b{display:block;font-size:15px;font-weight:600;color:var(--ink)}
+  .calB{flex:1;min-width:0}
+  .calN{font-size:12px;font-weight:600;margin-bottom:2px}
+  .calX{font-size:11px;color:var(--muted)}
+  .calM{font-size:10px;color:var(--faint);margin-top:4px;display:flex;gap:7px;align-items:center;flex-wrap:wrap}
+  .legend{display:flex;gap:13px;font-size:10px;color:var(--muted);font-weight:500;align-items:center}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;vertical-align:0}
+
+  .mc{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;color:var(--muted)}
+  svg.i{width:13px;height:13px;vertical-align:-2px}
+  .toast{position:fixed;bottom:22px;right:22px;background:var(--ink);color:#fff;font-size:12px;padding:10px 16px;border-radius:var(--r-md);opacity:0;transform:translateY(8px);transition:.25s;pointer-events:none;font-weight:500;z-index:50}
+  .toast.show{opacity:1;transform:none}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ================= SIDEBAR ================= -->
+  <aside class="side">
+    <div class="logo">
+      <div class="logoMark">S</div>
+      <div class="logoName">Swasthera</div>
+    </div>
+    <nav class="nav">
+      <a href="#"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>Dashboard</a>
+      <a href="#"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="7" r="3"/><path d="M3 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/><path d="M16 3.5a3 3 0 0 1 0 7"/></svg>Onboarding</a>
+      <a href="#"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/></svg>Orders</a>
+      <a href="#" class="act"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7l8-4z"/><path d="M9 12l2 2 4-4"/></svg>Compliance</a>
+      <a href="#"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h8M8 11h8M8 15h5"/></svg>Settlements</a>
+      <a href="#"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="6" width="18" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/></svg>Payouts</a>
+      <a href="#"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9l-6-6z"/><path d="M14 3v6h6M9 13h6M9 17h6"/></svg>Invoices</a>
+    </nav>
+    <div class="roleBox">
+      <div class="roleT"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>Active role</div>
+      <div class="roleG" id="roleG">
+        <button>Maker</button><button>Checker</button>
+        <button class="act">Backend</button><button>Admin</button>
+      </div>
+      <div class="ver">Swasthera Finance Ops v1.2</div>
+    </div>
+  </aside>
+
+  <!-- ================= MAIN ================= -->
+  <main class="main">
+
+    <div class="hd">
+      <div>
+        <div class="ttl">Compliance &amp; tax</div>
+        <div class="sub">Month-end tie-out: computed → deposited → filed, per tax head. Registers reconcile to GSTR-8 / 26Q lines.</div>
+      </div>
+      <div class="hdR">
+        <select class="sel"><option>May</option><option>April</option><option>June</option></select>
+        <select class="sel"><option>2026</option><option>2025</option></select>
+        <button class="btnGhost" onclick="toast('Reversal logging opens the maker flow')">↺ Log TDS/TCS reversal</button>
+      </div>
+    </div>
+
+    <div class="close">
+      <svg class="i ic" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.9-.9"/></svg>
+      <p><b>May 2026 is OPEN.</b> Close checklist: TCS deposit ✓ partial · TDS deposit awaiting checker · GSTR-8 pending (due 10 Jun) · <b>3 past-window returns</b> queued for amendment. Period locks automatically on GSTR-8 filing.</p>
+      <button onclick="toast('Close checklist: 2 of 5 items complete')">View close checklist</button>
+    </div>
+
+    <div class="tieG">
+      <div class="tie">
+        <div class="tieH">
+          <span class="tieT">TCS tie-out <span>§52 GST · 0.5%</span></span>
+          <span class="chip bad">Variance ₹1,435.00</span>
+        </div>
+        <div class="tie3">
+          <div class="cell">
+            <div class="l">Computed</div>
+            <div class="v">₹5,130.00</div>
+            <div class="s">38 bags · net of 8 returns</div>
+          </div>
+          <div class="cell bad">
+            <div class="l">Deposited</div>
+            <div class="v">₹3,695.00</div>
+            <div class="s">1 challan · CIN 26-06-2210</div>
+          </div>
+          <div class="cell">
+            <div class="l">Filed (GSTR-8)</div>
+            <div class="v">—</div>
+            <div class="s">Due 10 Jun · not filed</div>
+          </div>
+        </div>
+        <div class="tieF">
+          <span>Short-deposit ₹1,435.00 → interest @18% p.a. from 8 Jun</span>
+          <a href="#" onclick="toast('Challan recorder opens (maker role)');return false">Record challan →</a>
+        </div>
+      </div>
+
+      <div class="tie">
+        <div class="tieH">
+          <span class="tieT">TDS tie-out <span>§194-O IT Act · 0.1%</span></span>
+          <span class="chip ok">Matched</span>
+        </div>
+        <div class="tie3">
+          <div class="cell">
+            <div class="l">Computed</div>
+            <div class="v">₹3,055.06</div>
+            <div class="s">Net of 2 reversals</div>
+          </div>
+          <div class="cell">
+            <div class="l">Deposited</div>
+            <div class="v">₹3,055.06</div>
+            <div class="s">Challan 281 · 6 Jun</div>
+          </div>
+          <div class="cell">
+            <div class="l">Filed (26Q)</div>
+            <div class="v">Q1</div>
+            <div class="s">Due 31 Jul · on track</div>
+          </div>
+        </div>
+        <div class="tieF">
+          <span>Form 16A generation unlocks after 26Q filing</span>
+          <a href="#" onclick="toast('Challan 281 · BSR 0510308 · verified by A. Mehta');return false">View challan →</a>
+        </div>
+      </div>
+    </div>
+
+    <div class="tabs" role="tablist">
+      <button class="tb act" data-p="rec">Reconciliation</button>
+      <button class="tb" data-p="tcs">TCS register</button>
+      <button class="tb" data-p="tds">TDS register <span class="n">2 rev</span></button>
+      <button class="tb" data-p="gst">GST register</button>
+      <button class="tb" data-p="ret">Returns &amp; reversals <span class="n red">3 past-window</span></button>
+      <button class="tb" data-p="comm">Commission GST</button>
+      <button class="tb" data-p="led">Brand ledger</button>
+      <button class="tb" data-p="cal">Compliance calendar</button>
+    </div>
+
+    <!-- ========== TAB: RECONCILIATION ========== -->
+    <section class="pane act" id="rec">
+      <div class="card">
+        <div class="cBar">
+          <div class="cL">Liability vs discharge — <b>May 2026</b></div>
+          <div class="cR"><button class="btnDark btnSm" onclick="toast('Tie-out workbook exported (XLSX)')">⬇ Export tie-out (XLSX)</button></div>
+        </div>
+        <div class="scr">
+        <table>
+          <thead><tr><th>Tax head</th><th class="num">Computed</th><th class="num">Deposited</th><th class="num">Variance</th><th>Challan / reference</th><th>Return</th><th>Status</th><th>Action</th></tr></thead>
+          <tbody>
+            <tr><td>TCS — IGST</td><td class="num">3,852.50</td><td class="num">2,770.00</td><td class="num neg">−1,082.50</td><td class="mono">CIN 26-06-2210 · 6 Jun</td><td><span class="pl pl-warn">GSTR-8 pending</span></td><td><span class="pl pl-bad">Short</span></td><td><a href="#" onclick="toast('Challan recorder opens');return false">Record challan</a></td></tr>
+            <tr><td>TCS — CGST</td><td class="num">638.75</td><td class="num">462.50</td><td class="num neg">−176.25</td><td class="mono">CIN 26-06-2210 · 6 Jun</td><td><span class="pl pl-warn">GSTR-8 pending</span></td><td><span class="pl pl-bad">Short</span></td><td><a href="#" onclick="toast('Challan recorder opens');return false">Record challan</a></td></tr>
+            <tr><td>TCS — SGST</td><td class="num">638.75</td><td class="num">462.50</td><td class="num neg">−176.25</td><td class="mono">CIN 26-06-2210 · 6 Jun</td><td><span class="pl pl-warn">GSTR-8 pending</span></td><td><span class="pl pl-bad">Short</span></td><td><a href="#" onclick="toast('Challan recorder opens');return false">Record challan</a></td></tr>
+            <tr><td>TDS §194-O</td><td class="num">3,055.06</td><td class="num">3,055.06</td><td class="num">0.00</td><td class="mono">Challan 281 · BSR 0510308</td><td><span class="pl pl-info">26Q · Q1 open</span></td><td><span class="pl pl-ok">Matched</span></td><td class="dim">—</td></tr>
+            <tr><td>GST on commission (output)</td><td class="num">1,318.42</td><td class="num dim">via GSTR-3B</td><td class="num dim">—</td><td class="mono">8 invoices · May cycle</td><td><span class="pl pl-warn">GSTR-1 pending</span></td><td><span class="pl pl-warn">Open</span></td><td><a href="#" onclick="switchTab('comm');return false">View invoices</a></td></tr>
+          </tbody>
+        </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="cBar">
+          <div class="cL">Challan register — <b>2 recorded</b> · maker-checker enforced</div>
+          <div class="cR"><button class="btnGhost btnSm" onclick="toast('New challan: maker records, checker verifies')">＋ Record challan</button></div>
+        </div>
+        <div class="scr">
+        <table>
+          <thead><tr><th>CIN / Challan</th><th>Tax head</th><th>Period</th><th class="num">Amount</th><th>Deposit date</th><th>Recorded by</th><th>Verified by</th><th>State</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">CIN 26-06-2210</td><td>TCS (§52)</td><td class="mono">May 2026</td><td class="num">3,695.00</td><td class="mono">06 Jun 2026</td><td><span class="mc">Priya R. (Maker)</span></td><td><span class="mc">A. Mehta (Checker)</span></td><td><span class="pl pl-ok">Verified</span></td></tr>
+            <tr><td class="mono">281 · BSR 0510308</td><td>TDS (§194-O)</td><td class="mono">May 2026</td><td class="num">3,055.06</td><td class="mono">06 Jun 2026</td><td><span class="mc">Priya R. (Maker)</span></td><td><span class="pl pl-warn">Awaiting checker</span></td><td><span class="pl pl-warn">Pending</span></td></tr>
+          </tbody>
+        </table>
+        </div>
+        <div class="note">A challan in "Awaiting checker" does not count toward the deposited column until verified. Both roles are logged to the audit trail.</div>
+      </div>
+    </section>
+
+    <!-- ========== TAB: TCS REGISTER ========== -->
+    <section class="pane" id="tcs">
+      <div class="filtRow">
+        <span class="vw"><button class="act">Summary</button><button onclick="toast('Detail view: 41 reconciliation columns + column manager')">Detail</button></span>
+        <span class="filt">Brand: <b>All</b></span>
+        <span class="filt">Cycle: <b>MAY-2026-C1</b></span>
+        <span class="filt">GST type: <b>All</b></span>
+        <input class="srch" placeholder="Search bag ID / order ID / invoice ID…" oninput="filterRows(this,'tcsTable')">
+      </div>
+      <div class="card">
+        <div class="cBar">
+          <div class="cL">Grouped by <b>supplier GSTIN</b> (brand × ship-from state) — mirrors GSTR-8 reporting lines</div>
+          <div class="cR">
+            <button class="btnGhost btnSm" onclick="toast('Column manager: show/hide any of 41 columns')">▦ Columns</button>
+            <button class="btnDark btnSm" onclick="toast('Brand tax report exported — Summary + 75-col Detail')">⬇ Export brand tax report</button>
+          </div>
+        </div>
+        <div class="scr">
+        <table id="tcsTable">
+          <thead><tr><th>Bag ID</th><th>POS</th><th>GST type</th><th class="num">Taxable</th><th class="num">IGST-TCS</th><th class="num">CGST-TCS</th><th class="num">SGST-TCS</th><th>Window</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr class="grp"><td colspan="3">Zara India · Maharashtra <span class="gstin">27ZARFA1234A1Z5</span></td><td class="num">42,100.00</td><td class="num">0.00</td><td class="num">105.25</td><td class="num">105.25</td><td colspan="2"><span class="pl pl-ok">Deposited ✓</span> <span class="pl pl-warn">GSTR-8 pending</span></td></tr>
+            <tr><td><span class="bag">BAG-MAY-0003</span></td><td>Maharashtra</td><td><span class="pl pl-info">Intra</span></td><td class="num">5,600.00</td><td class="num dim">—</td><td class="num">14.00</td><td class="num">14.00</td><td><span class="win ok">● In window</span></td><td><span class="pl pl-ok">Eligible</span></td></tr>
+            <tr><td><span class="bag">BAG-MAY-0004</span></td><td>Maharashtra</td><td><span class="pl pl-info">Intra</span></td><td class="num">8,900.00</td><td class="num dim">—</td><td class="num">22.25</td><td class="num">22.25</td><td><span class="win ok">● In window</span></td><td><span class="pl pl-ok">Eligible</span></td></tr>
+            <tr><td><span class="bag">BAG-MAY-0012</span></td><td>Maharashtra</td><td><span class="pl pl-info">Intra</span></td><td class="num">12,500.00</td><td class="num dim">—</td><td class="num">31.25</td><td class="num">31.25</td><td><span class="win ok">● In window</span></td><td><span class="pl pl-ok">Eligible</span></td></tr>
+            <tr class="retRow"><td><span class="bag">BAG-MAY-0005</span> ↺</td><td>Maharashtra</td><td><span class="pl pl-info">Intra</span></td><td class="num neg">−2,800.00</td><td class="num dim">—</td><td class="num neg">−7.00</td><td class="num neg">−7.00</td><td><span class="win ok">● In window</span></td><td><span class="pl pl-pink">Reversed</span></td></tr>
+            <tr class="grp"><td colspan="3">H&amp;M India · Delhi <span class="gstin">07HNMRA5678B1Z2</span></td><td class="num">16,200.00</td><td class="num">81.00</td><td class="num">0.00</td><td class="num">0.00</td><td colspan="2"><span class="pl pl-warn">Deposit short</span></td></tr>
+            <tr><td><span class="bag">BAG-MAY-0006</span></td><td>Maharashtra</td><td><span class="pl pl-purple">IGST</span></td><td class="num">5,400.00</td><td class="num">27.00</td><td class="num dim">—</td><td class="num dim">—</td><td><span class="win ok">● In window</span></td><td><span class="pl pl-ok">Eligible</span></td></tr>
+            <tr><td><span class="bag">BAG-MAY-0007</span></td><td>Karnataka</td><td><span class="pl pl-purple">IGST</span></td><td class="num">2,900.00</td><td class="num">14.50</td><td class="num dim">—</td><td class="num dim">—</td><td><span class="win ok">● In window</span></td><td><span class="pl pl-ok">Eligible</span></td></tr>
+            <tr><td><span class="bag">BAG-MAY-0008</span></td><td>Karnataka</td><td><span class="pl pl-purple">IGST</span></td><td class="num">3,500.00</td><td class="num">17.50</td><td class="num dim">—</td><td class="num dim">—</td><td><span class="win ok">● In window</span></td><td><span class="pl pl-warn">Awaiting delivery</span></td></tr>
+            <tr class="retRow"><td><span class="bag">DEMO-BAG-03</span> ↺</td><td>Maharashtra</td><td><span class="pl pl-purple">IGST</span></td><td class="num neg">−4,000.00</td><td class="num neg">−20.00</td><td class="num dim">—</td><td class="num dim">—</td><td><span class="win bad">● Past window</span></td><td><span class="pl pl-bad">Needs amendment</span></td></tr>
+            <tr class="grp"><td colspan="3">Climb Foods · Rajasthan <span class="gstin">08AAJCC3864G1ZH</span></td><td class="num">140.01</td><td class="num">0.70</td><td class="num">0.00</td><td class="num">0.00</td><td colspan="2"><span class="pl pl-ok">Deposited ✓</span></td></tr>
+            <tr><td><span class="bag">BAG-51600411</span></td><td>Andhra Pradesh</td><td><span class="pl pl-purple">IGST</span></td><td class="num">94.29</td><td class="num">0.47</td><td class="num dim">—</td><td class="num dim">—</td><td><span class="win ok">● In window</span></td><td><span class="pl pl-ok">Eligible</span></td></tr>
+            <tr><td><span class="bag">BAG-51743187</span></td><td>Karnataka</td><td><span class="pl pl-purple">IGST</span></td><td class="num">22.86</td><td class="num">0.11</td><td class="num dim">—</td><td class="num dim">—</td><td><span class="win ok">● In window</span></td><td><span class="pl pl-ok">Eligible</span></td></tr>
+            <tr><td><span class="bag">BAG-51743188</span></td><td>Karnataka</td><td><span class="pl pl-purple">IGST</span></td><td class="num">22.86</td><td class="num">0.11</td><td class="num dim">—</td><td class="num dim">—</td><td><span class="win ok">● In window</span></td><td><span class="pl pl-ok">Eligible</span></td></tr>
+            <tr class="totalR"><td colspan="3">TOTAL · 38 bags · 8 returned · 5 brand-state groups</td><td class="num">1,02,600.00</td><td class="num">385.50</td><td class="num">64.75</td><td class="num">64.75</td><td colspan="2"><b>Net TCS ₹515.00</b></td></tr>
+          </tbody>
+        </table>
+        </div>
+        <div class="note">TCS @ 0.5% under §52 GST · Past-window returns route to the amendment queue and do not reverse in this period · Register locks on GSTR-8 filing.</div>
+      </div>
+    </section>
+
+    <!-- ========== TAB: TDS REGISTER ========== -->
+    <section class="pane" id="tds">
+      <div class="filtRow">
+        <span class="vw"><button class="act">Summary</button><button onclick="toast('Detail view with TDS column + reversal linkage')">Detail</button></span>
+        <span class="filt">Brand: <b>All</b></span>
+        <span class="filt">Deposit: <b>All</b></span>
+        <input class="srch" placeholder="Search bag ID / order ID…" oninput="filterRows(this,'tdsTable')">
+      </div>
+      <div class="card">
+        <div class="cBar">
+          <div class="cL">Grouped by <b>deductee company / TAN</b> — mirrors Form 26Q annexure rows</div>
+          <div class="cR"><button class="btnDark btnSm" onclick="toast('Brand tax report exported — Summary + 75-col Detail')">⬇ Export brand tax report</button></div>
+        </div>
+        <div class="scr">
+        <table id="tdsTable">
+          <thead><tr><th>Bag ID</th><th>Order ID</th><th>Company / TAN</th><th class="num">Amount paid</th><th class="num">TDS §194-O (0.1%)</th><th>Deposit</th><th>Reversal</th></tr></thead>
+          <tbody>
+            <tr class="grp"><td colspan="3">Zara India · Zara Fashions Pvt Ltd · TAN ZARFA12345 · 7 bags</td><td class="num">42,100.00</td><td class="num">Net ₹331.00</td><td colspan="2"><span class="pl pl-warn">Pending deposit</span></td></tr>
+            <tr><td><span class="bag">BAG-MAY-0003</span></td><td class="mono">ORD-MAY-10002</td><td>Zara Fashions Pvt Ltd</td><td class="num">5,600.00</td><td class="num">5.60</td><td><span class="pl pl-warn">Pending</span></td><td class="dim">—</td></tr>
+            <tr><td><span class="bag">BAG-MAY-0004</span></td><td class="mono">ORD-MAY-10003</td><td>Zara Fashions Pvt Ltd</td><td class="num">8,900.00</td><td class="num">8.90</td><td><span class="pl pl-warn">Pending</span></td><td class="dim">—</td></tr>
+            <tr class="retRow"><td><span class="bag">BAG-MAY-0005</span> ↺</td><td class="mono">ORD-MAY-10004</td><td>Zara Fashions Pvt Ltd</td><td class="num neg">−2,800.00</td><td class="num neg">−2.80</td><td><span class="pl pl-pink">Reversed</span></td><td class="mono" style="color:var(--red-tx)">Credit · May 2026</td></tr>
+            <tr class="retRow"><td><span class="bag">BAG-MAY-0002</span> ↺</td><td class="mono">ORD-MAY-10001</td><td>Zara Fashions Pvt Ltd</td><td class="num neg">−6,200.00</td><td class="num neg">−6.20</td><td><span class="pl pl-pink">Reversed</span></td><td class="mono" style="color:var(--red-tx)">Credit · May 2026</td></tr>
+            <tr class="grp"><td colspan="3">H&amp;M India · H&amp;M Retail India Pvt Ltd · TAN HNMR45678 · 5 bags</td><td class="num">20,200.00</td><td class="num">Net ₹202.00</td><td colspan="2"><span class="pl pl-warn">Pending deposit</span></td></tr>
+            <tr><td><span class="bag">BAG-MAY-0006</span></td><td class="mono">ORD-MAY-10005</td><td>H&amp;M Retail India Pvt Ltd</td><td class="num">5,400.00</td><td class="num">5.40</td><td><span class="pl pl-warn">Pending</span></td><td class="dim">—</td></tr>
+            <tr><td><span class="bag">BAG-MAY-0007</span></td><td class="mono">ORD-MAY-10006</td><td>H&amp;M Retail India Pvt Ltd</td><td class="num">2,900.00</td><td class="num">2.90</td><td><span class="pl pl-warn">Pending</span></td><td class="dim">—</td></tr>
+            <tr class="grp"><td colspan="3">Climb Foods · Climb Foods Private Limited · PAN AAJCC3864G · 3 bags</td><td class="num">122.25</td><td class="num">Net ₹3.00</td><td colspan="2"><span class="pl pl-ok">Deposited ✓</span></td></tr>
+            <tr><td><span class="bag">BAG-51600411</span></td><td class="mono">FY69FD907F548D…</td><td>Climb Foods Private Limited</td><td class="num">74.25</td><td class="num">1.00</td><td><span class="pl pl-ok">Deposited</span></td><td class="dim">—</td></tr>
+            <tr><td><span class="bag">BAG-51743187</span></td><td class="mono">FY6A0735AC5416…</td><td>Climb Foods Private Limited</td><td class="num">24.00</td><td class="num">1.00</td><td><span class="pl pl-ok">Deposited</span></td><td class="dim">—</td></tr>
+            <tr class="totalR"><td colspan="3">TOTAL · 32 bags · 2 reversals</td><td class="num">93,945.00</td><td class="num"><b>₹680.50 net</b></td><td colspan="2"><span class="pl pl-warn">Deposit due 7 Jun</span></td></tr>
+          </tbody>
+        </table>
+        </div>
+        <div class="note">TDS @ 0.1% on Amount paid under §194-O · Reversals route as brand credit in the next payout cycle · Form 16A per deductee unlocks after 26Q filing.</div>
+      </div>
+    </section>
+
+    <!-- ========== TAB: GST REGISTER ========== -->
+    <section class="pane" id="gst">
+      <div class="filtRow">
+        <span class="vw"><button class="act">Summary</button><button onclick="toast('Detail view adds invoice value, credit notes, all 75 columns')">Detail</button></span>
+        <span class="filt">HSN: <b>All</b></span>
+        <span class="filt">GST type: <b>All</b></span>
+        <input class="srch" placeholder="Search HSN / bag ID / invoice…" oninput="filterRows(this,'gstTable')">
+      </div>
+      <div class="card">
+        <div class="cBar">
+          <div class="cL">Grouped by <b>HSN code</b> — mirrors GSTR-1 HSN summary lines · GST on goods (brand's liability, reported by marketplace)</div>
+          <div class="cR"><button class="btnDark btnSm" onclick="toast('GST register exported (XLSX)')">⬇ Export GST register</button></div>
+        </div>
+        <div class="scr">
+        <table id="gstTable">
+          <thead><tr><th>Bag ID</th><th>HSN</th><th>Brand</th><th class="num">Taxable</th><th class="num">GST %</th><th class="num">SGST</th><th class="num">CGST</th><th class="num">IGST</th><th class="num">Invoice value</th><th>Credit note</th></tr></thead>
+          <tbody>
+            <tr class="grp"><td colspan="3">HSN 62034200 — Men's trousers, cotton · 12% · 3 bags</td><td class="num">11,700.00</td><td class="num"></td><td class="num">702.00</td><td class="num">702.00</td><td class="num">0.00</td><td class="num">13,104.00</td><td></td></tr>
+            <tr><td><span class="bag">BAG-MAY-0003</span></td><td class="mono">62034200</td><td>Zara India</td><td class="num">5,600.00</td><td class="num">12</td><td class="num">336.00</td><td class="num">336.00</td><td class="num dim">—</td><td class="num">6,272.00</td><td class="dim">—</td></tr>
+            <tr><td><span class="bag">BAG-MAY-0004</span></td><td class="mono">62034200</td><td>Zara India</td><td class="num">8,900.00</td><td class="num">12</td><td class="num">534.00</td><td class="num">534.00</td><td class="num dim">—</td><td class="num">9,968.00</td><td class="dim">—</td></tr>
+            <tr class="retRow"><td><span class="bag">BAG-MAY-0005</span> ↺</td><td class="mono">62034200</td><td>Zara India</td><td class="num neg">−2,800.00</td><td class="num">12</td><td class="num neg">−168.00</td><td class="num neg">−168.00</td><td class="num dim">—</td><td class="num neg">−3,136.00</td><td class="mono">CN-2026-018</td></tr>
+            <tr class="grp"><td colspan="3">HSN 62052000 — Men's shirts, cotton · 12% · 1 bag</td><td class="num">5,400.00</td><td class="num"></td><td class="num">0.00</td><td class="num">0.00</td><td class="num">648.00</td><td class="num">6,048.00</td><td></td></tr>
+            <tr><td><span class="bag">BAG-MAY-0006</span></td><td class="mono">62052000</td><td>H&amp;M India</td><td class="num">5,400.00</td><td class="num">12</td><td class="num dim">—</td><td class="num dim">—</td><td class="num">648.00</td><td class="num">6,048.00</td><td class="dim">—</td></tr>
+            <tr class="grp"><td colspan="3">HSN 19012000 — Food preparations of flour · 5% · 3 bags</td><td class="num">140.01</td><td class="num"></td><td class="num">0.00</td><td class="num">0.00</td><td class="num">6.99</td><td class="num">147.00</td><td></td></tr>
+            <tr><td><span class="bag">BAG-51600411</span></td><td class="mono">19012000</td><td>Climb Foods</td><td class="num">94.29</td><td class="num">5</td><td class="num dim">—</td><td class="num dim">—</td><td class="num">4.71</td><td class="num">99.00</td><td class="dim">—</td></tr>
+            <tr><td><span class="bag">BAG-51743187</span></td><td class="mono">19012000</td><td>Climb Foods</td><td class="num">22.86</td><td class="num">5</td><td class="num dim">—</td><td class="num dim">—</td><td class="num">1.14</td><td class="num">24.00</td><td class="dim">—</td></tr>
+            <tr><td><span class="bag">BAG-51743188</span></td><td class="mono">19012000</td><td>Climb Foods</td><td class="num">22.86</td><td class="num">5</td><td class="num dim">—</td><td class="num dim">—</td><td class="num">1.14</td><td class="num">24.00</td><td class="dim">—</td></tr>
+            <tr class="grp"><td colspan="3">HSN 62085200 — Women's kurta, cotton · 5% · 2 bags</td><td class="num">13,900.00</td><td class="num"></td><td class="num">0.00</td><td class="num">0.00</td><td class="num">695.00</td><td class="num">14,595.00</td><td></td></tr>
+            <tr><td><span class="bag">BAG-MAY-0009</span></td><td class="mono">62085200</td><td>Fabindia</td><td class="num">6,400.00</td><td class="num">5</td><td class="num dim">—</td><td class="num dim">—</td><td class="num">320.00</td><td class="num">6,720.00</td><td class="dim">—</td></tr>
+            <tr><td><span class="bag">BAG-MAY-0010</span></td><td class="mono">62085200</td><td>Fabindia</td><td class="num">7,500.00</td><td class="num">5</td><td class="num dim">—</td><td class="num dim">—</td><td class="num">375.00</td><td class="num">7,875.00</td><td class="dim">—</td></tr>
+            <tr class="totalR"><td colspan="3">TOTAL · 38 bags · 4 HSN groups</td><td class="num">1,02,600.00</td><td class="num"></td><td class="num">702.00</td><td class="num">702.00</td><td class="num">3,726.00</td><td class="num"><b>1,07,730.00</b></td><td>1 CN</td></tr>
+          </tbody>
+        </table>
+        </div>
+        <div class="note">Credit notes link to the original bag and reverse SGST/CGST/IGST proportionally · HSN grouping copies straight into the GSTR-1 HSN summary table.</div>
+      </div>
+    </section>
+
+    <!-- ========== TAB: RETURNS & REVERSALS ========== -->
+    <section class="pane" id="ret">
+      <div class="card">
+        <div class="cBar">
+          <div class="cL"><b>8 returns</b> this period · 5 in-window (auto-reversed) · <b>3 past-window → amendment queue</b></div>
+          <div class="cR"><button class="btnDark btnSm" onclick="toast('Amendment pack exported for next GSTR-8 filing')">⬇ Export amendment pack</button></div>
+        </div>
+        <div class="scr">
+        <table>
+          <thead><tr><th>Bag ID</th><th>Brand</th><th class="num">TCS to recover</th><th class="num">TDS to recover</th><th>Return date</th><th>Window closed</th><th>Route</th><th>State</th></tr></thead>
+          <tbody>
+            <tr><td><span class="bag">BAG-MAY-0005</span></td><td>Zara India</td><td class="num">14.00</td><td class="num">2.80</td><td class="mono">06 May</td><td class="mono dim">07 Jun</td><td><span class="pl pl-ok">Same-period reversal</span></td><td><span class="pl pl-ok">Done</span></td></tr>
+            <tr><td><span class="bag">BAG-MAY-0002</span></td><td>Zara India</td><td class="num">31.00</td><td class="num">6.20</td><td class="mono">03 May</td><td class="mono dim">07 Jun</td><td><span class="pl pl-ok">Same-period reversal</span></td><td><span class="pl pl-ok">Done</span></td></tr>
+            <tr><td><span class="bag">BAG-MAY-0011</span></td><td>Fabindia</td><td class="num">0.00</td><td class="num">1.20</td><td class="mono">05 May</td><td class="mono dim">07 Jun</td><td><span class="pl pl-ok">Same-period reversal</span></td><td><span class="pl pl-ok">Done</span></td></tr>
+            <tr><td><span class="bag">BAG-MAY-0013</span></td><td>H&amp;M India</td><td class="num">22.00</td><td class="num">4.40</td><td class="mono">06 May</td><td class="mono dim">07 Jun</td><td><span class="pl pl-ok">Same-period reversal</span></td><td><span class="pl pl-ok">Done</span></td></tr>
+            <tr><td><span class="bag">BAG-JUN-3881466</span></td><td>AABCA Enterprises</td><td class="num">4.99</td><td class="num">1.00</td><td class="mono">23 May</td><td class="mono dim">07 Jun</td><td><span class="pl pl-ok">Same-period reversal</span></td><td><span class="pl pl-ok">Done</span></td></tr>
+            <tr class="retRow"><td><span class="bag">DEMO-BAG-03</span></td><td>H&amp;M India</td><td class="num">20.00</td><td class="num">4.00</td><td class="mono">12 Jun</td><td class="mono" style="color:var(--red-tx)">07 Jun</td><td><span class="pl pl-bad">GSTR-8 amendment</span></td><td><span class="pl pl-warn">Queued · next filing</span></td></tr>
+            <tr class="retRow"><td><span class="bag">BAG-JUN-4097374</span></td><td>Test Brand</td><td class="num">19.99</td><td class="num">4.00</td><td class="mono">11 Jun</td><td class="mono" style="color:var(--red-tx)">07 Jun</td><td><span class="pl pl-bad">GSTR-8 amendment</span></td><td><span class="pl pl-warn">Queued · next filing</span></td></tr>
+            <tr class="retRow"><td><span class="bag">BAG-JUN-4110716</span></td><td>Test Brand</td><td class="num">4.00</td><td class="num">0.80</td><td class="mono">11 Jun</td><td class="mono" style="color:var(--red-tx)">07 Jun</td><td><span class="pl pl-bad">GSTR-8 amendment</span></td><td><span class="pl pl-warn">Queued · next filing</span></td></tr>
+          </tbody>
+        </table>
+        </div>
+        <div class="note">In-window returns net against the current period automatically · Past-window items batch into an amendment pack for the next GSTR-8, with brand credit issued in the following payout cycle.</div>
+      </div>
+    </section>
+
+    <!-- ========== TAB: COMMISSION GST ========== -->
+    <section class="pane" id="comm">
+      <div class="card">
+        <div class="cBar">
+          <div class="cL">Platform's <b>own output liability</b> from commission invoices · GSTR-1 / 3B · Issuer: USEKIWI WELLNESS SOLUTIONS · GSTIN <span class="mono">06AADCU9163E1Z9</span></div>
+          <div class="cR"><button class="btnDark btnSm" onclick="toast('GSTR-1 B2B export generated for May cycle invoices')">⬇ GSTR-1 export</button></div>
+        </div>
+        <div class="scr">
+        <table>
+          <thead><tr><th>Invoice #</th><th>Brand (recipient)</th><th>Recipient GSTIN</th><th>POS</th><th class="num">Taxable</th><th class="num">IGST 18%</th><th class="num">CGST 9%</th><th class="num">SGST 9%</th><th>GSTR-1</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">AP/M/Jun26/004</td><td>Climb Foods Pvt Ltd</td><td class="mono">08AAJCC3864G1ZH</td><td>Rajasthan (08)</td><td class="num">36.75</td><td class="num">6.62</td><td class="num dim">—</td><td class="num dim">—</td><td><span class="pl pl-warn">Pending</span></td></tr>
+            <tr><td class="mono">AP/M/Jun26/003</td><td>Zara Fashions Pvt Ltd</td><td class="mono">27ZARFA1234A1Z5</td><td>Maharashtra (27)</td><td class="num">4,210.00</td><td class="num">757.80</td><td class="num dim">—</td><td class="num dim">—</td><td><span class="pl pl-warn">Pending</span></td></tr>
+            <tr><td class="mono">AP/M/Jun26/002</td><td>H&amp;M Retail India Pvt Ltd</td><td class="mono">07HNMRA5678B1Z2</td><td>Delhi (07)</td><td class="num">2,020.00</td><td class="num">363.60</td><td class="num dim">—</td><td class="num dim">—</td><td><span class="pl pl-warn">Pending</span></td></tr>
+            <tr><td class="mono">AP/M/Jun26/001</td><td>Gurgaon Wellness Co</td><td class="mono">06GWELL9012C1Z8</td><td>Haryana (06)</td><td class="num">1,058.00</td><td class="num dim">—</td><td class="num">95.22</td><td class="num">95.22</td><td><span class="pl pl-warn">Pending</span></td></tr>
+            <tr class="totalR"><td colspan="4">TOTAL · 8 invoices · May cycle</td><td class="num">7,324.75</td><td class="num">1,127.98</td><td class="num">95.22</td><td class="num">95.22</td><td><span class="pl pl-warn">Due 11 Jun</span></td></tr>
+          </tbody>
+        </table>
+        </div>
+        <div class="note">Issuer is always USEKIWI (Haryana 06): recipient POS ≠ 06 → IGST 18% · POS = 06 → CGST 9% + SGST 9% · Distinct from GST on goods, which is the brand's liability and lives in the GST register.</div>
+      </div>
+    </section>
+
+    <!-- ========== TAB: BRAND LEDGER ========== -->
+    <section class="pane" id="led">
+      <div class="filtRow">
+        <span class="filt">Brand: <b>H&amp;M India</b></span>
+        <span class="filt">Type: <b>All</b></span>
+        <span class="filt">From: <b>01-05-2026</b></span>
+        <span class="filt">To: <b>12-06-2026</b></span>
+        <span style="flex:1"></span>
+        <button class="btnDark btnSm" onclick="toast('SOC generated — UTR Summary + 78-col Transaction Details')">⬇ Generate SOC</button>
+      </div>
+      <div class="card">
+        <div class="cBar">
+          <div class="cL">H&amp;M India · H&amp;M Retail India Pvt Ltd · Closing balance <b>₹63,587.48</b> <span style="color:var(--amber-tx)">(outstanding to brand)</span></div>
+          <div class="cR"><button class="btnGhost btnSm" onclick="toast('Ledger CSV exported')">⬇ Export ledger CSV</button></div>
+        </div>
+        <div class="scr">
+        <table>
+          <thead><tr><th>Date</th><th>Type</th><th>Cycle</th><th>Reference</th><th>Description</th><th class="num">Amount</th><th class="num">Running balance</th><th>Linked SOC</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">04 May 2026</td><td><span class="pl pl-teal">Settlement</span></td><td class="mono">MAY-2026-C1</td><td class="mono">STMT-2</td><td>Settlement computed (8 bags, net payable)</td><td class="num pos">+2,92,878.00</td><td class="num">2,92,878.00</td><td><a href="#" onclick="toast('SOC opens — STMT-2');return false">Open SOC</a></td></tr>
+            <tr><td class="mono">05 May 2026</td><td><span class="pl pl-info">Payout</span></td><td class="mono">MAY-2026-C1</td><td class="mono">NEFTHDFC2026050552…</td><td>Payout settled · UTR NEFTHDFC2026050552…</td><td class="num neg">−2,92,878.00</td><td class="num">0.00</td><td class="dim">—</td></tr>
+            <tr><td class="mono">05 May 2026</td><td><span class="pl pl-teal">Settlement</span></td><td class="mono">2026-04</td><td class="mono">STMT-6</td><td>Settlement computed (6 bags, net payable)</td><td class="num pos">+15,708.11</td><td class="num">15,708.11</td><td><a href="#" onclick="toast('SOC opens — STMT-6');return false">Open SOC</a></td></tr>
+            <tr><td class="mono">05 May 2026</td><td><span class="pl pl-info">Payout</span></td><td class="mono">2026-04</td><td class="mono">NEFTHDFC2026050566…</td><td>Payout settled · UTR NEFTHDFC2026050566…</td><td class="num neg">−15,708.11</td><td class="num">0.00</td><td class="dim">—</td></tr>
+            <tr><td class="mono">06 Jun 2026</td><td><span class="pl pl-teal">Settlement</span></td><td class="mono">2026-05</td><td class="mono">STMT-7</td><td>Settlement computed (14 bags, net payable)</td><td class="num pos">+33,010.28</td><td class="num">33,010.28</td><td><a href="#" onclick="toast('SOC opens — STMT-7');return false">Open SOC</a></td></tr>
+            <tr><td class="mono">08 Jun 2026</td><td><span class="pl pl-teal">Settlement</span></td><td class="mono">2026-05</td><td class="mono">STMT-8</td><td>Settlement computed (14 bags, net payable)</td><td class="num pos">+33,010.28</td><td class="num">66,020.56</td><td><a href="#" onclick="toast('SOC opens — STMT-8');return false">Open SOC</a></td></tr>
+            <tr><td class="mono">12 Jun 2026</td><td><span class="pl pl-info">Payout</span></td><td class="mono">2026-05</td><td class="mono">NEFTHDFC2026061255…</td><td>Payout settled · UTR NEFTHDFC2026061255…</td><td class="num neg">−33,010.28</td><td class="num">63,587.48</td><td class="dim">—</td></tr>
+            <tr><td class="mono">12 Jun 2026</td><td><span class="pl pl-teal">Settlement</span></td><td class="mono">MAY-2026-C1</td><td class="mono">STMT-9</td><td>Settlement computed (2 bags, net payable)</td><td class="num pos">+7,644.30</td><td class="num">71,231.78</td><td><a href="#" onclick="toast('SOC opens — STMT-9');return false">Open SOC</a></td></tr>
+          </tbody>
+        </table>
+        </div>
+        <div class="note">Each Settlement row links to its SOC (2 sheets: UTR Summary + 78-column Transaction Details) · Closing balance is recomputed on every settlement and payout event.</div>
+      </div>
+    </section>
+
+    <!-- ========== TAB: COMPLIANCE CALENDAR ========== -->
+    <section class="pane" id="cal">
+      <div class="filtRow">
+        <span class="filt">Window: <b>Next 60 days</b></span>
+        <span class="filt">Category: <b>All</b></span>
+        <span style="flex:1"></span>
+        <span class="legend">
+          <span><span class="dot" style="background:#a32d2d"></span>Overdue</span>
+          <span><span class="dot" style="background:#ba7517"></span>Due ≤ 7d</span>
+          <span><span class="dot" style="background:#9aa1ad"></span>Upcoming</span>
+          <span><span class="dot" style="background:#3b6d11"></span>Filed</span>
+        </span>
+      </div>
+      <div class="calG">
+        <div class="calCard">
+          <div class="calH"><span class="calT">June 2026 — filings &amp; deposits</span><span class="pl pl-bad">2 due now</span></div>
+          <div class="calI">
+            <div class="calD"><b>07</b>JUN</div>
+            <div class="calB">
+              <div class="calN">TCS deposit (§52)</div>
+              <div class="calX">May 2026 collection · ₹5,130.00 · short by ₹1,435.00</div>
+              <div class="calM"><span class="pl pl-bad">Due in 0 days</span> Owner: Finance ops</div>
+            </div>
+          </div>
+          <div class="calI">
+            <div class="calD"><b>07</b>JUN</div>
+            <div class="calB">
+              <div class="calN">TDS deposit (§194-O)</div>
+              <div class="calX">May 2026 deductions · ₹3,055.06 net of reversals · Challan 281</div>
+              <div class="calM"><span class="pl pl-warn">Awaiting checker</span> Owner: Finance ops</div>
+            </div>
+          </div>
+          <div class="calI">
+            <div class="calD"><b>10</b>JUN</div>
+            <div class="calB">
+              <div class="calN">GSTR-8 filing</div>
+              <div class="calX">Marketplace TCS return · May 2026 · 38 bag rows · locks the period</div>
+              <div class="calM"><span class="pl pl-warn">Due in 3 days</span> Owner: GST team</div>
+            </div>
+          </div>
+          <div class="calI">
+            <div class="calD"><b>11</b>JUN</div>
+            <div class="calB">
+              <div class="calN">GSTR-1 filing</div>
+              <div class="calX">Outward supply · May 2026 · incl. 8 commission invoices ₹1,318.42 output GST</div>
+              <div class="calM"><span class="pl pl-gray">Due in 4 days</span> Owner: GST team</div>
+            </div>
+          </div>
+          <div class="calI">
+            <div class="calD"><b>20</b>JUN</div>
+            <div class="calB">
+              <div class="calN">GSTR-3B filing</div>
+              <div class="calX">Self-assessed summary return · May 2026</div>
+              <div class="calM"><span class="pl pl-gray">Due in 13 days</span> Owner: GST team</div>
+            </div>
+          </div>
+        </div>
+        <div class="calCard">
+          <div class="calH"><span class="calT">Quarterly &amp; recently filed</span><span class="pl pl-ok">3 filed</span></div>
+          <div class="calI">
+            <div class="calD"><b>31</b>JUL</div>
+            <div class="calB">
+              <div class="calN">TDS quarterly return (Form 26Q)</div>
+              <div class="calX">Q1 FY 26-27 · April – June 2026 · unlocks Form 16A generation</div>
+              <div class="calM"><span class="pl pl-gray">Due in 54 days</span> Owner: Tax team</div>
+            </div>
+          </div>
+          <div class="calI">
+            <div class="calD"><b>15</b>AUG</div>
+            <div class="calB">
+              <div class="calN">Form 27EQ (TCS quarterly)</div>
+              <div class="calX">Q1 FY 26-27 · TCS return to Income Tax dept</div>
+              <div class="calM"><span class="pl pl-gray">Due in 69 days</span> Owner: Tax team</div>
+            </div>
+          </div>
+          <div class="calI">
+            <div class="calD"><b>10</b>MAY</div>
+            <div class="calB">
+              <div class="calN">GSTR-8 filing · April 2026</div>
+              <div class="calX">ARN ARN-26-04-08-2026 · ₹4,820.00 · period locked</div>
+              <div class="calM"><span class="pl pl-ok">Filed 09 May 2026</span> By: Priya R.</div>
+            </div>
+          </div>
+          <div class="calI">
+            <div class="calD"><b>07</b>MAY</div>
+            <div class="calB">
+              <div class="calN">TCS deposit · April 2026</div>
+              <div class="calX">Challan CIN 26-05-1670 · ₹4,820.00 · matched</div>
+              <div class="calM"><span class="pl pl-ok">Paid 07 May 2026</span> By: Finance ops</div>
+            </div>
+          </div>
+          <div class="calI">
+            <div class="calD"><b>30</b>APR</div>
+            <div class="calB">
+              <div class="calN">TDS quarterly return Q4 FY 25-26</div>
+              <div class="calX">Form 26Q · January – March 2026 · Form 16A issued to 5 brands</div>
+              <div class="calM"><span class="pl pl-ok">Filed 28 Apr 2026</span> By: Tax team</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+  function switchTab(id){
+    document.querySelectorAll('.tabs .tb').forEach(function(x){x.classList.remove('act')});
+    document.querySelectorAll('.pane').forEach(function(x){x.classList.remove('act')});
+    var btn=document.querySelector('.tabs .tb[data-p="'+id+'"]');
+    if(btn)btn.classList.add('act');
+    var p=document.getElementById(id);
+    if(p)p.classList.add('act');
+  }
+  document.querySelectorAll('.tabs .tb').forEach(function(t){
+    t.addEventListener('click',function(){switchTab(t.getAttribute('data-p'))});
+  });
+  document.querySelectorAll('.vw').forEach(function(g){
+    g.querySelectorAll('button').forEach(function(b){
+      b.addEventListener('click',function(){
+        g.querySelectorAll('button').forEach(function(x){x.classList.remove('act')});
+        b.classList.add('act');
+      });
+    });
+  });
+  document.querySelectorAll('#roleG button').forEach(function(b){
+    b.addEventListener('click',function(){
+      document.querySelectorAll('#roleG button').forEach(function(x){x.classList.remove('act')});
+      b.classList.add('act');
+      toast('Active role: '+b.textContent+' — gates Mark Deposited & challan verification');
+    });
+  });
+  function filterRows(input,tableId){
+    var q=input.value.toLowerCase();
+    var rows=document.querySelectorAll('#'+tableId+' tbody tr');
+    rows.forEach(function(r){
+      if(r.classList.contains('grp')||r.classList.contains('totalR')){r.style.display='';return;}
+      r.style.display = r.textContent.toLowerCase().indexOf(q)>-1 ? '' : 'none';
+    });
+  }
+  var toastTimer;
+  function toast(msg){
+    var t=document.getElementById('toast');
+    t.textContent=msg;
+    t.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer=setTimeout(function(){t.classList.remove('show')},2600);
+  }
+</script>
+</body>
+</html>

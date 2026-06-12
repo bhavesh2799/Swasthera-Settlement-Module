@@ -317,6 +317,217 @@ router.put("/compliance/tds-records/:id", async (req, res) => {
   }
 });
 
+// GET /compliance/reconciliation — month-end tie-out: computed vs deposited per tax head.
+// Computed totals come from the same records the tie-out cards use (net of reversals);
+// the IGST/CGST/SGST split is derived from the cycle bags (interstate vs intrastate).
+// Deposited comes from records marked Paid/Deposited/Filed. GST on commission discharges
+// via GSTR-3B (no challan), so it has no "deposited" column. The challan register is read
+// straight from the deposit references stored on the records (no separate challan table).
+router.get("/compliance/reconciliation", async (req, res) => {
+  try {
+    const month = (req.query.month as string) || "May";
+    const year = parseInt((req.query.year as string) || "2026");
+    const prefix = cyclePrefix(month, year);
+    const r2 = (n: number) => Math.round(n * 100) / 100;
+
+    const [cycleBags, tcsRecs, tdsRecs] = await Promise.all([
+      db.select().from(bagsTable).where(like(bagsTable.cycle, `${prefix}%`)),
+      db.select().from(tcsRecordsTable).where(and(eq(tcsRecordsTable.month, month), eq(tcsRecordsTable.year, year))),
+      db.select().from(tdsRecordsTable).where(and(eq(tdsRecordsTable.month, month), eq(tdsRecordsTable.year, year))),
+    ]);
+
+    // --- TCS: net computed from records, split fractions from bags ---
+    const tcsComputed = r2(tcsRecs.reduce((s, r) => s + parseFloat(r.tcsAmount), 0));
+    const tcsDeposited = r2(
+      tcsRecs.filter((r) => !r.isReversal && (r.status === "Paid" || r.status === "Filed")).reduce((s, r) => s + parseFloat(r.tcsAmount), 0),
+    );
+    const igstBagTcs = cycleBags
+      .filter((b) => b.stateCode && b.customerStateCode && b.stateCode !== b.customerStateCode)
+      .reduce((s, b) => s + parseFloat(b.tcsAmount), 0);
+    const intraBagTcs = cycleBags
+      .filter((b) => !b.customerStateCode || !b.stateCode || b.stateCode === b.customerStateCode)
+      .reduce((s, b) => s + parseFloat(b.tcsAmount), 0);
+    const totalBagTcs = igstBagTcs + intraBagTcs;
+    const igstFrac = totalBagTcs > 0 ? igstBagTcs / totalBagTcs : 0;
+    const intraFrac = totalBagTcs > 0 ? intraBagTcs / totalBagTcs : 1;
+
+    const tcsAnyFiled = tcsRecs.some((r) => !r.isReversal && r.status === "Filed");
+    const tcsRef = tcsRecs.find((r) => r.paymentRef)?.paymentRef ?? null;
+    const tcsReturnStatus = tcsAnyFiled ? "GSTR-8 filed" : "GSTR-8 pending";
+
+    const tcsHead = (label: string, frac: number) => {
+      const computed = r2(tcsComputed * frac);
+      const deposited = r2(tcsDeposited * frac);
+      const variance = r2(deposited - computed);
+      return {
+        head: label,
+        computed,
+        deposited,
+        variance,
+        ref: tcsRef,
+        returnStatus: tcsReturnStatus,
+        status: variance < -0.01 ? "Short" : computed > 0 ? "Matched" : "Nil",
+      };
+    };
+
+    // --- TDS: net computed (incl. negative reversals) from records ---
+    const tdsComputed = r2(tdsRecs.reduce((s, r) => s + parseFloat(r.tdsAmount), 0));
+    const tdsDeposited = r2(
+      tdsRecs.filter((r) => !r.isReversal && (r.status === "Deposited" || r.status === "Filed")).reduce((s, r) => s + parseFloat(r.tdsAmount), 0),
+    );
+    const tdsVariance = r2(tdsDeposited - tdsComputed);
+    const tdsRef = tdsRecs.find((r) => r.depositRef)?.depositRef ?? null;
+    const tdsAnyFiled = tdsRecs.some((r) => !r.isReversal && r.status === "Filed");
+
+    // --- GST on commission (platform output, discharged via GSTR-3B) ---
+    const cycleOrderIds = cycleBags.map((b) => b.orderId);
+    const commissionInvoices = cycleOrderIds.length
+      ? await db.select().from(invoicesTable).where(and(inArray(invoicesTable.orderId, cycleOrderIds), eq(invoicesTable.invoiceType, "INVOICE")))
+      : [];
+    const gstOnCommission = r2(commissionInvoices.reduce((s, i) => s + parseFloat(i.gstOnCommission), 0));
+
+    const rows = [
+      tcsHead("TCS — IGST", igstFrac),
+      tcsHead("TCS — CGST", intraFrac / 2),
+      tcsHead("TCS — SGST", intraFrac / 2),
+      {
+        head: "TDS §194-O",
+        computed: tdsComputed,
+        deposited: tdsDeposited,
+        variance: tdsVariance,
+        ref: tdsRef,
+        returnStatus: tdsAnyFiled ? "26Q filed" : "26Q · Q1 open",
+        status: tdsVariance < -0.01 ? "Short" : tdsComputed > 0 ? "Matched" : "Nil",
+      },
+      {
+        head: "GST on commission (output)",
+        computed: gstOnCommission,
+        deposited: null,
+        variance: null,
+        ref: `${commissionInvoices.length} invoices`,
+        returnStatus: "GSTR-1 pending",
+        status: "Open",
+      },
+    ];
+
+    // --- Challan register (read from deposit refs on records) ---
+    type Challan = { ref: string; head: string; period: string; amount: number; date: string | null; status: string };
+    const challanMap = new Map<string, Challan>();
+    for (const r of tcsRecs) {
+      if (!r.paymentRef) continue;
+      const k = `TCS__${r.paymentRef}`;
+      const c = challanMap.get(k) ?? { ref: r.paymentRef, head: "TCS (§52)", period: `${month} ${year}`, amount: 0, date: r.paymentDate ?? null, status: r.status === "Filed" ? "Filed" : "Verified" };
+      c.amount = r2(c.amount + parseFloat(r.tcsAmount));
+      challanMap.set(k, c);
+    }
+    for (const r of tdsRecs) {
+      if (!r.depositRef) continue;
+      const k = `TDS__${r.depositRef}`;
+      const c = challanMap.get(k) ?? { ref: r.depositRef, head: "TDS (§194-O)", period: `${month} ${year}`, amount: 0, date: r.depositDate ?? null, status: r.status === "Pending" ? "Awaiting checker" : "Verified" };
+      c.amount = r2(c.amount + parseFloat(r.tdsAmount));
+      challanMap.set(k, c);
+    }
+
+    return res.json({
+      month,
+      year,
+      rows,
+      challanRegister: Array.from(challanMap.values()),
+      totals: {
+        tcsComputed,
+        tcsDeposited,
+        tcsVariance: r2(tcsDeposited - tcsComputed),
+        tcsFiled: tcsAnyFiled,
+        tdsComputed,
+        tdsDeposited,
+        tdsVariance,
+        tdsFiled: tdsAnyFiled,
+        gstOnCommission,
+      },
+    });
+  } catch (err) {
+    req.log.error({ err }, "reconciliation error");
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// GET /compliance/commission-gst — the platform's OWN output GST liability raised on
+// commission invoices (distinct from GST on goods, which is the brand's liability and
+// lives in the GST register). Issuer is always USEKIWI (Haryana, state 06): recipient
+// POS ≠ 06 → IGST 18%; POS = 06 → CGST 9% + SGST 9%.
+const COMMISSION_ISSUER_STATE = "06";
+router.get("/compliance/commission-gst", async (req, res) => {
+  try {
+    const month = (req.query.month as string) || "May";
+    const year = parseInt((req.query.year as string) || "2026");
+    const prefix = cyclePrefix(month, year);
+    const r2 = (n: number) => Math.round(n * 100) / 100;
+
+    const cycleBags = await db.select().from(bagsTable).where(like(bagsTable.cycle, `${prefix}%`));
+    const orderIds = cycleBags.map((b) => b.orderId);
+    const [invoices, allOnboardings] = await Promise.all([
+      orderIds.length
+        ? db.select().from(invoicesTable).where(and(inArray(invoicesTable.orderId, orderIds), eq(invoicesTable.invoiceType, "INVOICE")))
+        : Promise.resolve([] as typeof invoicesTable.$inferSelect[]),
+      db.select().from(onboardingsTable),
+    ]);
+    const obMap = new Map(allOnboardings.map((o) => [o.id, o]));
+
+    const rows = invoices
+      .filter((inv) => parseFloat(inv.commissionAmount) > 0)
+      .map((inv) => {
+        const ob = obMap.get(inv.brandId);
+        const recipientGstin = ob?.masterGstin ?? inv.sellerGstin ?? "";
+        const recipientState = recipientGstin.slice(0, 2);
+        const taxable = r2(parseFloat(inv.commissionAmount));
+        const totalGst = parseFloat(inv.gstOnCommission) > 0 ? r2(parseFloat(inv.gstOnCommission)) : r2(taxable * 0.18);
+        const isIntra = recipientState === COMMISSION_ISSUER_STATE;
+        return {
+          invoiceNumber: inv.invoiceNumber,
+          recipientName: ob?.companyName ?? inv.brandName ?? "",
+          recipientGstin,
+          posCode: recipientState,
+          posName: STATE_NAMES[recipientState] ?? recipientState,
+          taxable,
+          igstAmount: isIntra ? 0 : totalGst,
+          cgstAmount: isIntra ? r2(totalGst / 2) : 0,
+          sgstAmount: isIntra ? r2(totalGst / 2) : 0,
+          totalGst,
+          status: "Pending",
+        };
+      })
+      .sort((a, b) => b.taxable - a.taxable);
+
+    const summary = rows.reduce(
+      (acc, r) => ({
+        invoiceCount: acc.invoiceCount + 1,
+        taxable: r2(acc.taxable + r.taxable),
+        igstAmount: r2(acc.igstAmount + r.igstAmount),
+        cgstAmount: r2(acc.cgstAmount + r.cgstAmount),
+        sgstAmount: r2(acc.sgstAmount + r.sgstAmount),
+        totalGst: r2(acc.totalGst + r.totalGst),
+      }),
+      { invoiceCount: 0, taxable: 0, igstAmount: 0, cgstAmount: 0, sgstAmount: 0, totalGst: 0 },
+    );
+
+    const monthIndex = MONTH_NAMES.indexOf(month);
+    const dueYear = monthIndex === 11 ? year + 1 : year;
+    const dueMonth = (monthIndex + 2).toString().padStart(2, "0");
+
+    return res.json({
+      month,
+      year,
+      issuer: { name: "USEKIWI WELLNESS SOLUTIONS", gstin: "06AADCU9163E1Z9", stateCode: COMMISSION_ISSUER_STATE },
+      gstr1DueDate: `${dueYear}-${dueMonth}-11`,
+      summary,
+      rows,
+    });
+  } catch (err) {
+    req.log.error({ err }, "commission-gst error");
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 // GET /compliance/gst-register — sales register by cycle/month/brand.
 // Returns per-bag invoice breakdown with CGST/SGST/IGST split and credit-note cross-reference.
 router.get("/compliance/gst-register", async (req, res) => {

@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
-import { Loader2, Calendar, CheckCircle2, AlertCircle, RotateCcw, TrendingDown, CreditCard, Layers, BookOpen, Download, AlertTriangle, Info, Receipt, ChevronDown, ChevronRight } from "lucide-react";
+import { Loader2, Calendar, CheckCircle2, AlertCircle, RotateCcw, TrendingDown, CreditCard, Layers, BookOpen, Download, AlertTriangle, Info, Receipt, ChevronDown, ChevronRight, Lock, Scale, Percent } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 function fmt(amount: number) {
@@ -197,6 +197,57 @@ interface LedgerResponse {
   closingBalance: number;
 }
 
+interface ReconRow {
+  head: string;
+  computed: number;
+  deposited: number | null;
+  variance: number | null;
+  ref: string | null;
+  returnStatus: string;
+  status: string;
+}
+interface ChallanRow {
+  ref: string;
+  head: string;
+  period: string;
+  amount: number;
+  date: string | null;
+  status: string;
+}
+interface ReconciliationData {
+  month: string;
+  year: number;
+  rows: ReconRow[];
+  challanRegister: ChallanRow[];
+  totals: {
+    tcsComputed: number; tcsDeposited: number; tcsVariance: number; tcsFiled: boolean;
+    tdsComputed: number; tdsDeposited: number; tdsVariance: number; tdsFiled: boolean;
+    gstOnCommission: number;
+  };
+}
+
+interface CommissionGstRow {
+  invoiceNumber: string;
+  recipientName: string;
+  recipientGstin: string;
+  posCode: string;
+  posName: string;
+  taxable: number;
+  igstAmount: number;
+  cgstAmount: number;
+  sgstAmount: number;
+  totalGst: number;
+  status: string;
+}
+interface CommissionGstData {
+  month: string;
+  year: number;
+  issuer: { name: string; gstin: string; stateCode: string };
+  gstr1DueDate: string;
+  summary: { invoiceCount: number; taxable: number; igstAmount: number; cgstAmount: number; sgstAmount: number; totalGst: number };
+  rows: CommissionGstRow[];
+}
+
 export function ComplianceRegister() {
   const [month, setMonth] = useState("May");
   const [year, setYear] = useState("2026");
@@ -263,6 +314,24 @@ export function ComplianceRegister() {
     queryKey: breakdownKey,
     queryFn: async () => {
       const r = await fetch(`/api/compliance/order-breakdown?month=${month}&year=${year}`);
+      return r.json();
+    },
+  });
+
+  const { data: reconciliation, isLoading: isLoadingRecon } = useQuery<ReconciliationData>({
+    queryKey: ["/api/compliance/reconciliation", params],
+    queryFn: async () => {
+      const r = await fetch(`/api/compliance/reconciliation?month=${month}&year=${year}`);
+      if (!r.ok) throw new Error("Failed to load reconciliation");
+      return r.json();
+    },
+  });
+
+  const { data: commissionGst, isLoading: isLoadingCommissionGst } = useQuery<CommissionGstData>({
+    queryKey: ["/api/compliance/commission-gst", params],
+    queryFn: async () => {
+      const r = await fetch(`/api/compliance/commission-gst?month=${month}&year=${year}`);
+      if (!r.ok) throw new Error("Failed to load commission GST");
       return r.json();
     },
   });
@@ -438,79 +507,134 @@ export function ComplianceRegister() {
         </div>
       </div>
 
-      {/* Summary Cards */}
+      {/* Tie-out header: Computed → Deposited → Filed */}
       {isLoadingSummary ? (
         <div className="flex justify-center p-8"><Loader2 className="animate-spin text-slate-400" /></div>
       ) : s ? (
-        <div className="grid gap-4 md:grid-cols-4">
-          <Card className="shadow-sm border-slate-200/60 bg-white">
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium text-slate-500">TCS Accrued (Section 52)</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-slate-900">{fmt(s.tcsAccrued)}</div>
-              <div className="text-xs text-slate-500 mt-1">
-                Paid: <span className={`font-medium ${s.tcsPaid < s.tcsAccrued ? "text-amber-700" : "text-green-700"}`}>{fmt(s.tcsPaid)}</span>
-              </div>
-              <div className="text-xs text-slate-500 mt-0.5">Due: <span className="font-medium text-slate-700">{new Date(s.tcsPaymentDue).toLocaleDateString()}</span></div>
-            </CardContent>
-          </Card>
+        <>
+          {(() => {
+            // Single source of truth: the reconciliation endpoint (same numbers the
+            // Reconciliation tab shows), falling back to the summary before it loads.
+            const t = reconciliation?.totals;
+            const tcsComputed = t?.tcsComputed ?? s.tcsAccrued;
+            const tcsDeposited = t?.tcsDeposited ?? s.tcsPaid;
+            const tcsVariance = t?.tcsVariance ?? Math.round((tcsDeposited - tcsComputed) * 100) / 100;
+            const tdsComputed = t?.tdsComputed ?? (s.tdsNet ?? s.tdsDeducted);
+            const tdsDeposited = t?.tdsDeposited ?? 0;
+            const tdsVariance = t?.tdsVariance ?? Math.round((tdsDeposited - tdsComputed) * 100) / 100;
+            const tcsFiled = t?.tcsFiled ?? (s.gstr8Status === "Filed");
+            const tdsFiled = t?.tdsFiled ?? false;
+            const periodClosed = tcsFiled && tdsFiled && tcsVariance === 0 && tdsVariance === 0;
 
-          <Card className="shadow-sm border-slate-200/60 bg-white">
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium text-slate-500">TCS Liability</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-slate-900">{fmt(Math.max(0, s.tcsAccrued - s.tcsPaid))}</div>
-              <div className="text-xs text-slate-500 mt-1">
-                <span className={`font-medium ${s.tcsAccrued > s.tcsPaid ? "text-amber-700" : "text-green-700"}`}>
-                  {s.tcsAccrued > s.tcsPaid ? "Unpaid — remit to govt" : "Fully paid"}
-                </span>
-              </div>
-              <div className="text-xs text-slate-400 mt-0.5 italic">Reversible via GSTR-8 amendment within deadline</div>
-            </CardContent>
-          </Card>
+            const TieOutCard = ({
+              title, section, computed, deposited, filed, dueLabel, dueDate, variance, returnLabel,
+            }: {
+              title: string; section: string; computed: number; deposited: number; filed: boolean;
+              dueLabel: string; dueDate: string; variance: number; returnLabel: string;
+            }) => (
+              <Card className="shadow-sm border-slate-200/60 bg-white">
+                <CardHeader className="flex flex-row items-start justify-between pb-3">
+                  <div>
+                    <CardTitle className="text-sm font-semibold text-slate-900">{title}</CardTitle>
+                    <p className="text-xs text-slate-400 mt-0.5">{section}</p>
+                  </div>
+                  <Badge
+                    className={`border-transparent text-[11px] ${
+                      variance === 0
+                        ? "bg-green-100 text-green-700 hover:bg-green-100"
+                        : "bg-amber-100 text-amber-700 hover:bg-amber-100"
+                    }`}
+                  >
+                    {variance === 0 ? "Tied out" : `Variance ${fmt(variance)}`}
+                  </Badge>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex items-stretch gap-2">
+                    <div className="flex-1 rounded-md bg-slate-50 px-3 py-2">
+                      <div className="text-[10px] uppercase tracking-wide text-slate-400">Computed</div>
+                      <div className="text-lg font-bold text-slate-900 tabular-nums">{fmt(computed)}</div>
+                    </div>
+                    <ChevronRight className="h-4 w-4 text-slate-300 self-center flex-shrink-0" />
+                    <div className="flex-1 rounded-md bg-slate-50 px-3 py-2">
+                      <div className="text-[10px] uppercase tracking-wide text-slate-400">Deposited</div>
+                      <div className={`text-lg font-bold tabular-nums ${deposited < computed ? "text-amber-700" : "text-green-700"}`}>{fmt(deposited)}</div>
+                    </div>
+                    <ChevronRight className="h-4 w-4 text-slate-300 self-center flex-shrink-0" />
+                    <div className="flex-1 rounded-md bg-slate-50 px-3 py-2">
+                      <div className="text-[10px] uppercase tracking-wide text-slate-400">Filed</div>
+                      <div className="flex items-center gap-1.5 mt-0.5">
+                        {filed ? (
+                          <><CheckCircle2 className="h-4 w-4 text-green-500" /><span className="text-sm font-semibold text-green-700">{returnLabel}</span></>
+                        ) : (
+                          <><AlertCircle className="h-4 w-4 text-amber-500" /><span className="text-sm font-semibold text-amber-700">Pending</span></>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="text-xs text-slate-500 mt-3">{dueLabel}: <span className="font-medium text-slate-700">{new Date(dueDate).toLocaleDateString()}</span></div>
+                </CardContent>
+              </Card>
+            );
 
-          <Card className="shadow-sm border-slate-200/60 bg-white">
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium text-slate-500">TDS Deducted (Section 194-O)</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-slate-900">{fmt(s.tdsDeducted)}</div>
-              {(s.tdsReversed ?? 0) > 0 && (
-                <div className="flex items-center gap-1 mt-1 text-xs text-red-600">
-                  <TrendingDown className="h-3 w-3" />
-                  Reversed: −{fmt(s.tdsReversed ?? 0)}
+            return (
+              <>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <TieOutCard
+                    title="TCS tie-out" section="Section 52 GST · GSTR-8"
+                    computed={tcsComputed} deposited={tcsDeposited} filed={tcsFiled}
+                    dueLabel="GSTR-8 due" dueDate={s.gstr8DueDate} variance={tcsVariance} returnLabel="GSTR-8 filed"
+                  />
+                  <TieOutCard
+                    title="TDS tie-out" section="Section 194-O · Form 26Q"
+                    computed={tdsComputed} deposited={tdsDeposited} filed={tdsFiled}
+                    dueLabel="Deposit due" dueDate={s.tdsDepositDue} variance={tdsVariance} returnLabel="26Q filed"
+                  />
                 </div>
-              )}
-              {(s.tdsNet ?? 0) !== s.tdsDeducted && (
-                <div className="text-sm font-semibold text-green-700 mt-0.5">Net: {fmt(s.tdsNet ?? s.tdsDeducted)}</div>
-              )}
-              <div className="text-xs text-slate-500 mt-0.5">Deposit Due: <span className="font-medium text-slate-700">{new Date(s.tdsDepositDue).toLocaleDateString()}</span></div>
-            </CardContent>
-          </Card>
 
-          <Card className="shadow-sm border-slate-200/60 bg-white">
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium text-slate-500">GSTR-8 Status</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-center gap-2">
-                <StatusBadge status={s.gstr8Status} />
-                {s.gstr8Status === "Filed" ? (
-                  <CheckCircle2 className="h-5 w-5 text-green-500" />
-                ) : (
-                  <AlertCircle className="h-5 w-5 text-amber-500" />
-                )}
-              </div>
-              <p className="text-xs text-slate-500 mt-2">Due: {new Date(s.gstr8DueDate).toLocaleDateString()}</p>
-            </CardContent>
-          </Card>
-        </div>
+                <div
+                  className={`flex items-center justify-between rounded-lg border px-4 py-3 ${
+                    periodClosed
+                      ? "border-green-200 bg-green-50"
+                      : "border-amber-200 bg-amber-50"
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    {periodClosed ? (
+                      <Lock className="h-5 w-5 text-green-600" />
+                    ) : (
+                      <AlertCircle className="h-5 w-5 text-amber-600" />
+                    )}
+                    <div>
+                      <div className={`text-sm font-semibold ${periodClosed ? "text-green-800" : "text-amber-800"}`}>
+                        {month} {year} period — {periodClosed ? "ready to close" : "open"}
+                      </div>
+                      <div className={`text-xs ${periodClosed ? "text-green-700" : "text-amber-700"}`}>
+                        {periodClosed
+                          ? "All heads tied out and returns filed."
+                          : `${[tcsVariance !== 0 ? "TCS variance" : null, tdsVariance !== 0 ? "TDS variance" : null, !tcsFiled ? "GSTR-8 not filed" : null, !tdsFiled ? "26Q not filed" : null].filter(Boolean).join(" · ")} — resolve before close.`}
+                      </div>
+                    </div>
+                  </div>
+                  <Badge
+                    className={`border-transparent ${
+                      periodClosed ? "bg-green-600 text-white hover:bg-green-600" : "bg-amber-500 text-white hover:bg-amber-500"
+                    }`}
+                  >
+                    {periodClosed ? "CLOSE-READY" : "OPEN"}
+                  </Badge>
+                </div>
+              </>
+            );
+          })()}
+        </>
       ) : null}
 
-      <Tabs defaultValue="tcs" className="w-full">
-        <TabsList className="bg-slate-200/50 mb-4">
+      <Tabs defaultValue="reconciliation" className="w-full">
+        <TabsList className="bg-slate-200/50 mb-4 flex-wrap h-auto">
+          <TabsTrigger value="reconciliation" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
+            <Scale className="mr-1.5 h-3.5 w-3.5" />
+            Reconciliation
+          </TabsTrigger>
           <TabsTrigger value="tcs" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
             TCS Register
           </TabsTrigger>
@@ -528,12 +652,16 @@ export function ComplianceRegister() {
           </TabsTrigger>
           <TabsTrigger value="breakdown" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
             <Layers className="mr-1.5 h-3.5 w-3.5" />
-            Order Breakdown
+            Returns &amp; Reversals
             {returnedBags.length > 0 && (
               <Badge className="ml-2 text-[10px] h-4 bg-red-100 text-red-700 border-transparent hover:bg-red-100">
                 {returnedBags.length} returned
               </Badge>
             )}
+          </TabsTrigger>
+          <TabsTrigger value="commission-gst" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
+            <Percent className="mr-1.5 h-3.5 w-3.5" />
+            Commission GST
           </TabsTrigger>
           <TabsTrigger value="ledger" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
             <BookOpen className="mr-1.5 h-4 w-4" /> Brand Ledger
@@ -543,6 +671,111 @@ export function ComplianceRegister() {
             Compliance Calendar
           </TabsTrigger>
         </TabsList>
+
+        {/* Reconciliation — month-end tie-out: liability vs discharge + challan register */}
+        <TabsContent value="reconciliation" className="m-0 space-y-4">
+          <Card className="shadow-sm border-slate-200/60 bg-white">
+            <div className="px-6 py-3 border-b border-slate-100 bg-blue-50/40 flex items-start gap-2">
+              <Info className="h-3.5 w-3.5 text-blue-500 mt-0.5 flex-shrink-0" />
+              <p className="text-xs text-blue-700">
+                Liability (computed from bags &amp; invoices) vs discharge (deposited via challan / filed in return), per tax head.
+                A non-zero variance means the head is not yet fully remitted. TCS is split into IGST / CGST / SGST by the
+                inter- vs intra-state share of bags; the deposited amount is allocated across those heads pro-rata.
+              </p>
+            </div>
+            <CardContent className="p-0">
+              {isLoadingRecon ? (
+                <div className="flex justify-center p-8"><Loader2 className="animate-spin text-slate-400" /></div>
+              ) : (
+                <Table>
+                  <TableHeader className="bg-slate-50/80">
+                    <TableRow className="border-slate-100">
+                      <TableHead className="font-medium text-slate-500 h-10 px-4">Tax head</TableHead>
+                      <TableHead className="font-medium text-slate-500 h-10 text-right">Computed</TableHead>
+                      <TableHead className="font-medium text-slate-500 h-10 text-right">Deposited</TableHead>
+                      <TableHead className="font-medium text-slate-500 h-10 text-right">Variance</TableHead>
+                      <TableHead className="font-medium text-slate-500 h-10">Challan / ref</TableHead>
+                      <TableHead className="font-medium text-slate-500 h-10">Return</TableHead>
+                      <TableHead className="font-medium text-slate-500 h-10 text-center">Status</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {(reconciliation?.rows ?? []).map((r) => (
+                      <TableRow key={r.head} className="border-slate-100">
+                        <TableCell className="px-4 font-medium text-slate-800">{r.head}</TableCell>
+                        <TableCell className="text-right tabular-nums text-slate-700">{fmt(r.computed)}</TableCell>
+                        <TableCell className="text-right tabular-nums text-slate-700">{r.deposited === null ? "—" : fmt(r.deposited)}</TableCell>
+                        <TableCell className={`text-right tabular-nums font-medium ${r.variance === null ? "text-slate-400" : r.variance < 0 ? "text-amber-700" : "text-green-700"}`}>
+                          {r.variance === null ? "n/a" : fmt(r.variance)}
+                        </TableCell>
+                        <TableCell className="text-xs text-slate-500 font-mono">{r.ref ?? "—"}</TableCell>
+                        <TableCell className="text-xs text-slate-500">{r.returnStatus}</TableCell>
+                        <TableCell className="text-center">
+                          <Badge
+                            className={`border-transparent text-[11px] ${
+                              r.status === "Matched"
+                                ? "bg-green-100 text-green-700 hover:bg-green-100"
+                                : r.status === "Short"
+                                ? "bg-amber-100 text-amber-700 hover:bg-amber-100"
+                                : r.status === "Open"
+                                ? "bg-blue-100 text-blue-700 hover:bg-blue-100"
+                                : "bg-slate-100 text-slate-500 hover:bg-slate-100"
+                            }`}
+                          >
+                            {r.status}
+                          </Badge>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="shadow-sm border-slate-200/60 bg-white">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm font-semibold text-slate-900 flex items-center gap-2">
+                <CreditCard className="h-4 w-4 text-slate-400" /> Challan register
+              </CardTitle>
+              <p className="text-xs text-slate-400">Government deposit references recorded against this period's tax records.</p>
+            </CardHeader>
+            <CardContent className="p-0">
+              {(reconciliation?.challanRegister?.length ?? 0) === 0 ? (
+                <div className="px-6 py-8 text-center text-sm text-slate-400">
+                  No challans recorded yet — mark TCS paid / TDS deposited (with a reference) to populate this register.
+                </div>
+              ) : (
+                <Table>
+                  <TableHeader className="bg-slate-50/80">
+                    <TableRow className="border-slate-100">
+                      <TableHead className="font-medium text-slate-500 h-10 px-4">Challan ref</TableHead>
+                      <TableHead className="font-medium text-slate-500 h-10">Head</TableHead>
+                      <TableHead className="font-medium text-slate-500 h-10">Period</TableHead>
+                      <TableHead className="font-medium text-slate-500 h-10 text-right">Amount</TableHead>
+                      <TableHead className="font-medium text-slate-500 h-10">Date</TableHead>
+                      <TableHead className="font-medium text-slate-500 h-10 text-center">Status</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {(reconciliation?.challanRegister ?? []).map((c) => (
+                      <TableRow key={`${c.head}-${c.ref}`} className="border-slate-100">
+                        <TableCell className="px-4 font-mono text-xs text-slate-700">{c.ref}</TableCell>
+                        <TableCell className="text-slate-700">{c.head}</TableCell>
+                        <TableCell className="text-slate-500">{c.period}</TableCell>
+                        <TableCell className="text-right tabular-nums text-slate-700">{fmt(c.amount)}</TableCell>
+                        <TableCell className="text-slate-500">{c.date ? new Date(c.date).toLocaleDateString() : "—"}</TableCell>
+                        <TableCell className="text-center">
+                          <Badge className="border-transparent text-[11px] bg-green-100 text-green-700 hover:bg-green-100">{c.status}</Badge>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
 
         {/* TCS Register — flat bag-level view grouped by brand × state */}
         <TabsContent value="tcs" className="m-0">
@@ -956,6 +1189,68 @@ export function ComplianceRegister() {
                     TDS: {fmt(breakdownRows.reduce((s, r) => s + (r.isReturned ? 0 : r.tdsAmount), 0))}
                   </span>
                 </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Commission GST — the platform's OWN output GST liability on commission invoices */}
+        <TabsContent value="commission-gst" className="m-0 space-y-4">
+          <Card className="shadow-sm border-slate-200/60 bg-white">
+            <div className="px-6 py-3 border-b border-slate-100 bg-blue-50/40 flex items-start gap-2">
+              <Info className="h-3.5 w-3.5 text-blue-500 mt-0.5 flex-shrink-0" />
+              <p className="text-xs text-blue-700">
+                Output GST the marketplace charges brands on its commission (18%). Issuer is{" "}
+                {commissionGst?.issuer.name ?? "USEKIWI"} (
+                <span className="font-mono">{commissionGst?.issuer.gstin ?? "06…"}</span>, Haryana). POS ≠ Haryana → IGST 18%;
+                POS = Haryana → CGST 9% + SGST 9%. Reported in GSTR-1.
+              </p>
+            </div>
+            {commissionGst && (
+              <div className="px-6 py-3 border-b border-slate-100 grid gap-3 sm:grid-cols-5 text-sm">
+                <div><div className="text-xs text-slate-400">Invoices</div><div className="font-semibold text-slate-800">{commissionGst.summary.invoiceCount}</div></div>
+                <div><div className="text-xs text-slate-400">Taxable</div><div className="font-semibold text-slate-800 tabular-nums">{fmt(commissionGst.summary.taxable)}</div></div>
+                <div><div className="text-xs text-slate-400">IGST</div><div className="font-semibold text-slate-800 tabular-nums">{fmt(commissionGst.summary.igstAmount)}</div></div>
+                <div><div className="text-xs text-slate-400">CGST + SGST</div><div className="font-semibold text-slate-800 tabular-nums">{fmt(commissionGst.summary.cgstAmount + commissionGst.summary.sgstAmount)}</div></div>
+                <div><div className="text-xs text-slate-400">Total GST</div><div className="font-semibold text-blue-700 tabular-nums">{fmt(commissionGst.summary.totalGst)}</div></div>
+              </div>
+            )}
+            <CardContent className="p-0">
+              {isLoadingCommissionGst ? (
+                <div className="flex justify-center p-8"><Loader2 className="animate-spin text-slate-400" /></div>
+              ) : (commissionGst?.rows.length ?? 0) === 0 ? (
+                <div className="px-6 py-8 text-center text-sm text-slate-400">No commission invoices for this period.</div>
+              ) : (
+                <Table>
+                  <TableHeader className="bg-slate-50/80">
+                    <TableRow className="border-slate-100">
+                      <TableHead className="font-medium text-slate-500 h-10 px-4">Invoice #</TableHead>
+                      <TableHead className="font-medium text-slate-500 h-10">Recipient (brand)</TableHead>
+                      <TableHead className="font-medium text-slate-500 h-10">Recipient GSTIN</TableHead>
+                      <TableHead className="font-medium text-slate-500 h-10">POS</TableHead>
+                      <TableHead className="font-medium text-slate-500 h-10 text-right">Taxable</TableHead>
+                      <TableHead className="font-medium text-slate-500 h-10 text-right">IGST</TableHead>
+                      <TableHead className="font-medium text-slate-500 h-10 text-right">CGST</TableHead>
+                      <TableHead className="font-medium text-slate-500 h-10 text-right">SGST</TableHead>
+                      <TableHead className="font-medium text-slate-500 h-10 text-right">Total GST</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {(commissionGst?.rows ?? []).map((r) => (
+                      <TableRow key={r.invoiceNumber} className="border-slate-100">
+                        <TableCell className="px-4 font-mono text-xs text-slate-700">{r.invoiceNumber}</TableCell>
+                        <TableCell className="text-slate-800">{r.recipientName}</TableCell>
+                        <TableCell className="font-mono text-xs text-slate-500">{r.recipientGstin}</TableCell>
+                        <TableCell className="text-slate-600">{r.posName} <span className="text-slate-400">({r.posCode})</span></TableCell>
+                        <TableCell className="text-right tabular-nums text-slate-700">{fmt(r.taxable)}</TableCell>
+                        <TableCell className="text-right tabular-nums text-slate-600">{r.igstAmount > 0 ? fmt(r.igstAmount) : "—"}</TableCell>
+                        <TableCell className="text-right tabular-nums text-slate-600">{r.cgstAmount > 0 ? fmt(r.cgstAmount) : "—"}</TableCell>
+                        <TableCell className="text-right tabular-nums text-slate-600">{r.sgstAmount > 0 ? fmt(r.sgstAmount) : "—"}</TableCell>
+                        <TableCell className="text-right tabular-nums font-medium text-slate-800">{fmt(r.totalGst)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
               )}
             </CardContent>
           </Card>

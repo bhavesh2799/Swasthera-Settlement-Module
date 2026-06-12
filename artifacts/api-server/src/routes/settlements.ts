@@ -5,6 +5,8 @@ import { eq, and, inArray, desc, like, sql } from "drizzle-orm";
 import { authorize } from "../middlewares/rbac";
 import { writeAudit } from "../services/audit";
 import { calculateSettlement } from "../services/settlementCalculator";
+import { resolveRoutedSettlement, type DestinationGroup } from "../services/jurisdictionRouting";
+import { stateName } from "../services/stateCodes";
 import { notify } from "../services/notify";
 import { generateInvoicePdf, formatINR, groupINR, type InvoiceDocument, type PdfRow } from "../services/pdfService";
 
@@ -145,6 +147,132 @@ router.post("/settlements", async (req, res) => {
   } catch (err) {
     req.log.error({ err }, "create settlement error");
     res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// Jurisdiction-based bulk settlement — route each brand's eligible orders to the
+// mapped (or primary) bank account and split into one settlement per account.
+// ----------------------------------------------------------------------------
+
+function groupSummary(g: DestinationGroup) {
+  const last4 = g.bankAccount ? g.bankAccount.slice(-4) : "----";
+  return {
+    bankAccountId: g.bankAccountId,
+    bankName: g.bankName,
+    accountMasked: `••••${last4}`,
+    ifsc: g.bankIfsc,
+    isPrimaryDestination: g.isPrimaryDestination,
+    stateCodes: g.stateCodes,
+    stateNames: g.stateCodes.map((c) => stateName(c)),
+    eligibleBags: g.bags.length,
+    grossGmv: g.calc.grossGmv,
+    netPayable: g.calc.netPayable,
+    carryForward: g.calc.carryForward,
+  };
+}
+
+// Preview the routed groups for one or more brands + a cycle. No DB writes.
+router.post("/settlements/bulk/preview", async (req, res) => {
+  try {
+    const { onboardingIds, cycle } = req.body as { onboardingIds?: number[]; cycle?: string };
+    if (!Array.isArray(onboardingIds) || onboardingIds.length === 0 || !cycle) {
+      return res.status(400).json({ error: "onboardingIds (non-empty) and cycle are required" });
+    }
+
+    const brands: Array<Record<string, unknown>> = [];
+    let totalGroups = 0;
+    let totalNet = 0;
+    for (const id of onboardingIds) {
+      const routed = await resolveRoutedSettlement(id, cycle);
+      if (!routed) {
+        brands.push({ onboardingId: id, error: "Onboarding not found", groups: [] });
+        continue;
+      }
+      const groups = routed.groups.map(groupSummary);
+      totalGroups += groups.length;
+      totalNet += groups.reduce((s, g) => s + g.netPayable, 0);
+      brands.push({
+        onboardingId: id,
+        companyId: `CO-${String(id).padStart(5, "0")}`,
+        companyName: routed.onboarding.companyName,
+        brandName: routed.onboarding.brandName,
+        eligibleBags: routed.eligibleBags,
+        warning: routed.warning,
+        groups,
+      });
+    }
+
+    return res.json({ cycle, brandCount: onboardingIds.length, settlementCount: totalGroups, totalNetPayable: totalNet, brands });
+  } catch (err) {
+    req.log.error({ err }, "bulk settlement preview error");
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Confirm the batch: create one routed settlement record per destination group
+// for each brand. Each record drives its own payout via the existing approve flow.
+router.post("/settlements/bulk/confirm", async (req, res) => {
+  try {
+    const { onboardingIds, cycle } = req.body as { onboardingIds?: number[]; cycle?: string };
+    if (!Array.isArray(onboardingIds) || onboardingIds.length === 0 || !cycle) {
+      return res.status(400).json({ error: "onboardingIds (non-empty) and cycle are required" });
+    }
+
+    const created: Array<ReturnType<typeof mapSettlement>> = [];
+    const skipped: Array<{ onboardingId: number; reason: string }> = [];
+
+    for (const id of onboardingIds) {
+      const routed = await resolveRoutedSettlement(id, cycle);
+      if (!routed) { skipped.push({ onboardingId: id, reason: "Onboarding not found" }); continue; }
+      if (routed.groups.length === 0) { skipped.push({ onboardingId: id, reason: routed.warning ?? "No eligible bags" }); continue; }
+
+      const ob = routed.onboarding;
+      for (const g of routed.groups) {
+        const [row] = await db.insert(settlementsTable).values({
+          cycle,
+          onboardingId: ob.id,
+          companyName: ob.companyName,
+          brandName: ob.brandName,
+          bankAccount: g.bankAccount,
+          bankIfsc: g.bankIfsc,
+          bankName: g.bankName,
+          eligibleBags: g.bags.length,
+          bagIds: JSON.stringify(g.bags.map((b) => b.bagId)),
+          grossGmv: g.calc.grossGmv.toFixed(2),
+          brandPromotions: g.calc.brandPromotions.toFixed(2),
+          marketplacePromotions: g.calc.marketplacePromotions.toFixed(2),
+          netBeforeCommission: g.calc.netBeforeCommission.toFixed(2),
+          commission: g.calc.commission.toFixed(2),
+          commissionRate: ob.commissionRate,
+          gstOnCommission: g.calc.gstOnCommission.toFixed(2),
+          tcsAmount: g.calc.tcsAmount.toFixed(2),
+          tdsAmount: g.calc.tdsAmount.toFixed(2),
+          mdrCharges: g.calc.mdrCharges.toFixed(2),
+          mdrRate: g.calc.mdrRate.toFixed(2),
+          penalty: g.calc.penalty.toFixed(2),
+          netPayable: g.calc.netPayable.toFixed(2),
+          carryForward: g.calc.carryForward.toFixed(2),
+          status: "PENDING_APPROVAL",
+        }).returning();
+
+        const dest = g.bankName ? `${g.bankName} ••••${g.bankAccount.slice(-4)}` : "primary account";
+        const states = g.stateCodes.length > 0 ? ` [${g.stateCodes.map((c) => stateName(c)).join(", ")}]` : "";
+        await db.insert(activityTable).values({
+          user: req.user?.name ?? "Anjali Patel",
+          action: `Bulk settlement: ${ob.brandName} — ${cycle} → ${dest}${states} (${g.bags.length} bags, net ₹${g.calc.netPayable.toFixed(0)})`,
+          entityType: "settlement",
+          entityRef: String(row.id),
+          level: g.calc.carryForward < 0 ? "warning" : "info",
+        });
+        created.push(mapSettlement(row));
+      }
+    }
+
+    return res.status(201).json({ cycle, created, skipped, settlementCount: created.length });
+  } catch (err) {
+    req.log.error({ err }, "bulk settlement confirm error");
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 

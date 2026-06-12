@@ -10,6 +10,7 @@ import {
   Users2,
   Database,
   Receipt,
+  Layers,
 } from "lucide-react";
 import { useRole } from "@/contexts/RoleContext";
 import { NotificationBell } from "@/components/NotificationBell";
@@ -57,6 +58,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
     { label: "Orders", href: "/orders", icon: PackageSearch, badge: isBackend ? "SIM" : undefined },
     { label: "Compliance", href: "/compliance", icon: ShieldCheck },
     { label: "Settlements", href: "/settlements", icon: Calculator, prefix: "/settlements" },
+    { label: "Bulk Settlement", href: "/bulk-settlement", icon: Layers },
     { label: "Payouts", href: "/payouts", icon: Banknote },
     { label: "Invoices", href: "/invoices", icon: Receipt },
   ];

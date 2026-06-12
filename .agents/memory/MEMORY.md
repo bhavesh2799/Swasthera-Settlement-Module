@@ -1,8 +1,1 @@
-- [Cancellation & reversal rules](cancellation-reversal-rules.md) — how order cancellation maps to credit notes and TDS/TCS reversals in the transaction engine.
-- [Onboarding response field whitelist](onboarding-response-mapping.md) — new onboarding columns can persist in DB but return null in API responses unless added to the mapper whitelist.
-- [Brand ledger posting policy](ledger-posting-policy.md) — when settlement credits and payout debits post to the running brand ledger.
-- [API contract drift](api-contract-drift.md) — generated hooks send OpenAPI keys (e.g. `rejectionReason`) but hand-written servers may read another (`notes`); a field saving as null usually means a body-key mismatch.
-- [KYB via GSTIN](kyb-via-gstin.md) — KYB has no separate detail-page step; it's auto-PASSED on GSTIN fetch at onboarding; don't gate submit on kybStatus.
-- [Entity governance pattern](entity-governance-pattern.md) — brand/warehouse edits go through propose→approve/reject; lock legacy PUT routes to checker; PENDING entities must not mutate live primary state.
-- [Commercial rate source of truth](commercial-rate-source-of-truth.md) — settlement reads commission/tcs/tds/mdr from the onboarding row, not brands; brand-level rate edits must propagate to onboarding on approval or they never reach compute.
-- [Role header on downloads](role-header-on-downloads.md) — X-Role injected only on fetch(), not anchor downloads; keep GET/download API routes unguarded or they 403 for everyone.
+- [Swasthera data model](swasthera-data-model.md) — settlement domain quirks: bag→onboarding linkage, bank-account/jurisdiction routing, and the cycle-value mismatch gotcha.

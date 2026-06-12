@@ -14,6 +14,7 @@ import { OrdersList } from "./pages/OrdersList";
 import { ComplianceRegister } from "./pages/ComplianceRegister";
 import { SettlementList } from "./pages/SettlementList";
 import { SettlementDetail } from "./pages/SettlementDetail";
+import { BulkSettlement } from "./pages/BulkSettlement";
 import { PayoutList } from "./pages/PayoutList";
 import { InvoiceRepository } from "./pages/InvoiceRepository";
 
@@ -37,6 +38,7 @@ function Router() {
         <Route path="/orders" component={OrdersList} />
         <Route path="/compliance" component={ComplianceRegister} />
         <Route path="/settlements" component={SettlementList} />
+        <Route path="/bulk-settlement" component={BulkSettlement} />
         <Route path="/settlements/:id" component={SettlementDetail} />
         <Route path="/payouts" component={PayoutList} />
         <Route path="/invoices" component={InvoiceRepository} />

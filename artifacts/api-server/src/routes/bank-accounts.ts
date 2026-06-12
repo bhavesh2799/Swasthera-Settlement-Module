@@ -1,8 +1,9 @@
 import { Router } from "express";
-import { db, bankAccountsTable, brandsTable, activityTable } from "@workspace/db";
+import { db, bankAccountsTable, brandsTable, activityTable, bankAccountJurisdictionsTable } from "@workspace/db";
 import { eq, and, ne } from "drizzle-orm";
 import { writeAudit } from "../services/audit";
 import { authorize } from "../middlewares/rbac";
+import { stateName } from "../services/stateCodes";
 
 const router = Router();
 
@@ -258,6 +259,120 @@ router.post("/onboarding/bank-account/:id/primary", authorize(["checker", "admin
     return res.json(mapBankAccount(row));
   } catch (err) {
     req.log.error({ err }, "set primary bank account failed");
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// Jurisdiction → bank-account routing (per onboarding/brand)
+// ----------------------------------------------------------------------------
+
+// List the state→bank-account mappings for an onboarding.
+router.get("/onboardings/:id/jurisdiction-mappings", async (req, res) => {
+  try {
+    const onboardingId = parseInt(req.params.id);
+    const rows = await db
+      .select()
+      .from(bankAccountJurisdictionsTable)
+      .where(eq(bankAccountJurisdictionsTable.onboardingId, onboardingId));
+    const accounts = await db
+      .select()
+      .from(bankAccountsTable)
+      .where(eq(bankAccountsTable.onboardingId, onboardingId));
+    const acctById = new Map(accounts.map((a) => [a.id, a]));
+    const mappings = rows
+      .map((r) => {
+        const acct = acctById.get(r.bankAccountId);
+        return {
+          id: r.id,
+          stateCode: r.stateCode,
+          stateName: stateName(r.stateCode),
+          bankAccountId: r.bankAccountId,
+          brandId: r.brandId,
+          bankName: acct?.bankName ?? null,
+          accountNumber: acct ? maskAcct(acct.accountNumber) : null,
+          ifsc: acct?.ifsc ?? null,
+          accountStatus: acct?.status ?? "MISSING",
+        };
+      })
+      .sort((a, b) => a.stateCode.localeCompare(b.stateCode));
+    return res.json({ mappings });
+  } catch (err) {
+    req.log.error({ err }, "list jurisdiction mappings failed");
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Upsert a single state→account mapping. A state resolves to exactly one account
+// per onboarding, so re-assigning a state replaces its previous account.
+router.post("/onboardings/:id/jurisdiction-mappings", authorize(["maker", "checker", "admin"]), async (req, res) => {
+  try {
+    const onboardingId = parseInt(req.params.id);
+    const { stateCode, bankAccountId } = req.body as { stateCode?: string; bankAccountId?: number };
+    const code = String(stateCode ?? "").trim();
+    if (!/^\d{2}$/.test(code)) {
+      return res.status(400).json({ error: "A valid 2-digit GST state code is required" });
+    }
+    if (!bankAccountId) {
+      return res.status(400).json({ error: "bankAccountId is required" });
+    }
+
+    const [acct] = await db.select().from(bankAccountsTable).where(eq(bankAccountsTable.id, bankAccountId));
+    if (!acct) return res.status(404).json({ error: "Bank account not found" });
+    if (acct.onboardingId !== onboardingId) {
+      return res.status(400).json({ error: "Bank account belongs to a different onboarding" });
+    }
+    if (acct.status !== "ACTIVE") {
+      return res.status(400).json({ error: "Only an ACTIVE bank account can be a routing destination" });
+    }
+
+    const [existing] = await db
+      .select()
+      .from(bankAccountJurisdictionsTable)
+      .where(and(eq(bankAccountJurisdictionsTable.onboardingId, onboardingId), eq(bankAccountJurisdictionsTable.stateCode, code)));
+
+    let row;
+    if (existing) {
+      [row] = await db
+        .update(bankAccountJurisdictionsTable)
+        .set({ bankAccountId, brandId: acct.brandId, updatedAt: new Date() })
+        .where(eq(bankAccountJurisdictionsTable.id, existing.id))
+        .returning();
+    } else {
+      [row] = await db
+        .insert(bankAccountJurisdictionsTable)
+        .values({ onboardingId, brandId: acct.brandId, bankAccountId, stateCode: code })
+        .returning();
+    }
+
+    await writeAudit(req, { entityType: "BankAccountJurisdiction", entityId: row.id, action: existing ? "update" : "create", changedFields: { stateCode: code, bankAccountId } });
+    await logActivity(
+      req.user?.name ?? "Maker",
+      `Routed ${stateName(code)} (${code}) orders to ${acct.bankName} ${maskAcct(acct.accountNumber)}`,
+      acct.brandId != null ? String(acct.brandId) : String(onboardingId),
+      "info",
+    );
+    return res.status(existing ? 200 : 201).json({ id: row.id, stateCode: code, bankAccountId, brandId: acct.brandId });
+  } catch (err) {
+    req.log.error({ err }, "upsert jurisdiction mapping failed");
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Remove a state mapping (state then falls back to the primary account at settlement time).
+router.delete("/onboardings/:id/jurisdiction-mappings/:stateCode", authorize(["maker", "checker", "admin"]), async (req, res) => {
+  try {
+    const onboardingId = parseInt(req.params.id);
+    const code = String(req.params.stateCode).trim();
+    const [row] = await db
+      .delete(bankAccountJurisdictionsTable)
+      .where(and(eq(bankAccountJurisdictionsTable.onboardingId, onboardingId), eq(bankAccountJurisdictionsTable.stateCode, code)))
+      .returning();
+    if (!row) return res.status(404).json({ error: "Mapping not found" });
+    await writeAudit(req, { entityType: "BankAccountJurisdiction", entityId: row.id, action: "delete", changedFields: { stateCode: code } });
+    return res.json({ deleted: true, stateCode: code });
+  } catch (err) {
+    req.log.error({ err }, "delete jurisdiction mapping failed");
     return res.status(500).json({ error: "Internal server error" });
   }
 });

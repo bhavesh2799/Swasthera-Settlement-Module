@@ -88,17 +88,17 @@ function mapWarehouse(w: typeof warehousesTable.$inferSelect) {
 router.get("/brands", async (req, res) => {
   try {
     const brands = await db.select().from(brandsTable).orderBy(brandsTable.createdAt);
-    res.json(brands.map(mapBrand));
+    return res.json(brands.map(mapBrand));
   } catch (err) {
     req.log.error({ err }, "list all brands error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
 // List all brands for an onboarding (auto-populates from onboarding data if table is empty for this record)
 router.get("/onboardings/:id/brands", async (req, res) => {
   try {
-    const onboardingId = parseInt(req.params.id);
+    const onboardingId = parseInt(String(req.params.id));
     let brands = await db
       .select()
       .from(brandsTable)
@@ -154,17 +154,17 @@ router.get("/onboardings/:id/brands", async (req, res) => {
       }
     }
 
-    res.json(brands.map(mapBrand));
+    return res.json(brands.map(mapBrand));
   } catch (err) {
     req.log.error({ err }, "list brands error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
 // Create a brand for an onboarding
 router.post("/onboardings/:id/brands", authorize(["maker", "admin"]), async (req, res) => {
   try {
-    const onboardingId = parseInt(req.params.id);
+    const onboardingId = parseInt(String(req.params.id));
     const [ob] = await db
       .select()
       .from(onboardingsTable)
@@ -226,10 +226,10 @@ router.post("/onboardings/:id/brands", authorize(["maker", "admin"]), async (req
       "info",
     );
 
-    res.status(201).json(mapBrand(updated));
+    return res.status(201).json(mapBrand(updated));
   } catch (err) {
     req.log.error({ err }, "create brand error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -259,13 +259,13 @@ router.put("/brands/:id", authorize(["checker", "admin"]), async (req, res) => {
     const [row] = await db
       .update(brandsTable)
       .set(updates)
-      .where(eq(brandsTable.id, parseInt(req.params.id)))
+      .where(eq(brandsTable.id, parseInt(String(req.params.id))))
       .returning();
     if (!row) return res.status(404).json({ error: "Brand not found" });
-    res.json(mapBrand(row));
+    return res.json(mapBrand(row));
   } catch (err) {
     req.log.error({ err }, "update brand error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -278,7 +278,7 @@ const BRAND_EDITABLE = [
 router.post("/brands/:id/propose-edit", authorize(["maker", "admin"]), async (req, res) => {
   try {
     const body = req.body as Record<string, unknown>;
-    const [brand] = await db.select().from(brandsTable).where(eq(brandsTable.id, parseInt(req.params.id)));
+    const [brand] = await db.select().from(brandsTable).where(eq(brandsTable.id, parseInt(String(req.params.id))));
     if (!brand) return res.status(404).json({ error: "Brand not found" });
 
     const proposed: Record<string, unknown> = {};
@@ -302,17 +302,17 @@ router.post("/brands/:id/propose-edit", authorize(["maker", "admin"]), async (re
       row.brandCode ?? genBrandCode(row.id),
       "info",
     );
-    res.json(mapBrand(row));
+    return res.json(mapBrand(row));
   } catch (err) {
     req.log.error({ err }, "propose brand edit error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
 // Checker approves a pending brand (new brand or proposed edit)
 router.post("/brands/:id/approve", authorize(["checker", "admin"]), async (req, res) => {
   try {
-    const [brand] = await db.select().from(brandsTable).where(eq(brandsTable.id, parseInt(req.params.id)));
+    const [brand] = await db.select().from(brandsTable).where(eq(brandsTable.id, parseInt(String(req.params.id))));
     if (!brand) return res.status(404).json({ error: "Brand not found" });
     if (brand.status !== "PENDING_APPROVAL") {
       return res.status(400).json({ error: "Brand is not pending approval" });
@@ -350,10 +350,10 @@ router.post("/brands/:id/approve", authorize(["checker", "admin"]), async (req, 
       row.brandCode ?? genBrandCode(row.id),
       "success",
     );
-    res.json(mapBrand(row));
+    return res.json(mapBrand(row));
   } catch (err) {
     req.log.error({ err }, "approve brand error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -361,7 +361,7 @@ router.post("/brands/:id/approve", authorize(["checker", "admin"]), async (req, 
 router.post("/brands/:id/reject", authorize(["checker", "admin"]), async (req, res) => {
   try {
     const { notes } = req.body as { notes?: string };
-    const [brand] = await db.select().from(brandsTable).where(eq(brandsTable.id, parseInt(req.params.id)));
+    const [brand] = await db.select().from(brandsTable).where(eq(brandsTable.id, parseInt(String(req.params.id))));
     if (!brand) return res.status(404).json({ error: "Brand not found" });
     if (brand.status !== "PENDING_APPROVAL") {
       return res.status(400).json({ error: "Brand is not pending approval" });
@@ -383,10 +383,10 @@ router.post("/brands/:id/reject", authorize(["checker", "admin"]), async (req, r
       row.brandCode ?? genBrandCode(row.id),
       "warning",
     );
-    res.json(mapBrand(row));
+    return res.json(mapBrand(row));
   } catch (err) {
     req.log.error({ err }, "reject brand error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -395,23 +395,23 @@ router.post("/brands/:id/reject", authorize(["checker", "admin"]), async (req, r
 // List warehouses for a brand
 router.get("/brands/:id/warehouses", async (req, res) => {
   try {
-    const brandId = parseInt(req.params.id);
+    const brandId = parseInt(String(req.params.id));
     const warehouses = await db
       .select()
       .from(warehousesTable)
       .where(and(eq(warehousesTable.brandId, brandId), eq(warehousesTable.isActive, true)))
       .orderBy(warehousesTable.createdAt);
-    res.json(warehouses.map(mapWarehouse));
+    return res.json(warehouses.map(mapWarehouse));
   } catch (err) {
     req.log.error({ err }, "list warehouses error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
 // Create a warehouse for a brand
 router.post("/brands/:id/warehouses", authorize(["maker", "admin"]), async (req, res) => {
   try {
-    const brandId = parseInt(req.params.id);
+    const brandId = parseInt(String(req.params.id));
     const [brand] = await db
       .select()
       .from(brandsTable)
@@ -465,10 +465,10 @@ router.post("/brands/:id/warehouses", authorize(["maker", "admin"]), async (req,
       "info",
     );
 
-    res.status(201).json(mapWarehouse(updated));
+    return res.status(201).json(mapWarehouse(updated));
   } catch (err) {
     req.log.error({ err }, "create warehouse error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -495,13 +495,13 @@ router.put("/warehouses/:id", authorize(["checker", "admin"]), async (req, res) 
     const [row] = await db
       .update(warehousesTable)
       .set(updates)
-      .where(eq(warehousesTable.id, parseInt(req.params.id)))
+      .where(eq(warehousesTable.id, parseInt(String(req.params.id))))
       .returning();
     if (!row) return res.status(404).json({ error: "Warehouse not found" });
-    res.json(mapWarehouse(row));
+    return res.json(mapWarehouse(row));
   } catch (err) {
     req.log.error({ err }, "update warehouse error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -513,7 +513,7 @@ const WAREHOUSE_EDITABLE = [
 router.post("/warehouses/:id/propose-edit", authorize(["maker", "admin"]), async (req, res) => {
   try {
     const body = req.body as Record<string, unknown>;
-    const [wh] = await db.select().from(warehousesTable).where(eq(warehousesTable.id, parseInt(req.params.id)));
+    const [wh] = await db.select().from(warehousesTable).where(eq(warehousesTable.id, parseInt(String(req.params.id))));
     if (!wh) return res.status(404).json({ error: "Warehouse not found" });
 
     const proposed: Record<string, unknown> = {};
@@ -537,17 +537,17 @@ router.post("/warehouses/:id/propose-edit", authorize(["maker", "admin"]), async
       row.warehouseCode ?? genWarehouseCode(row.id),
       "info",
     );
-    res.json(mapWarehouse(row));
+    return res.json(mapWarehouse(row));
   } catch (err) {
     req.log.error({ err }, "propose warehouse edit error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
 // Checker approves a pending warehouse (new warehouse or proposed edit)
 router.post("/warehouses/:id/approve", authorize(["checker", "admin"]), async (req, res) => {
   try {
-    const [wh] = await db.select().from(warehousesTable).where(eq(warehousesTable.id, parseInt(req.params.id)));
+    const [wh] = await db.select().from(warehousesTable).where(eq(warehousesTable.id, parseInt(String(req.params.id))));
     if (!wh) return res.status(404).json({ error: "Warehouse not found" });
     if (wh.status !== "PENDING_APPROVAL") {
       return res.status(400).json({ error: "Warehouse is not pending approval" });
@@ -585,10 +585,10 @@ router.post("/warehouses/:id/approve", authorize(["checker", "admin"]), async (r
       row.warehouseCode ?? genWarehouseCode(row.id),
       "success",
     );
-    res.json(mapWarehouse(row));
+    return res.json(mapWarehouse(row));
   } catch (err) {
     req.log.error({ err }, "approve warehouse error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -596,7 +596,7 @@ router.post("/warehouses/:id/approve", authorize(["checker", "admin"]), async (r
 router.post("/warehouses/:id/reject", authorize(["checker", "admin"]), async (req, res) => {
   try {
     const { notes } = req.body as { notes?: string };
-    const [wh] = await db.select().from(warehousesTable).where(eq(warehousesTable.id, parseInt(req.params.id)));
+    const [wh] = await db.select().from(warehousesTable).where(eq(warehousesTable.id, parseInt(String(req.params.id))));
     if (!wh) return res.status(404).json({ error: "Warehouse not found" });
     if (wh.status !== "PENDING_APPROVAL") {
       return res.status(400).json({ error: "Warehouse is not pending approval" });
@@ -617,10 +617,10 @@ router.post("/warehouses/:id/reject", authorize(["checker", "admin"]), async (re
       row.warehouseCode ?? genWarehouseCode(row.id),
       "warning",
     );
-    res.json(mapWarehouse(row));
+    return res.json(mapWarehouse(row));
   } catch (err) {
     req.log.error({ err }, "reject warehouse error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -631,7 +631,7 @@ router.delete("/warehouses/:id", authorize(["checker", "admin"]), async (req, re
     const [row] = await db
       .update(warehousesTable)
       .set({ isActive: false, updatedAt: new Date() })
-      .where(eq(warehousesTable.id, parseInt(req.params.id)))
+      .where(eq(warehousesTable.id, parseInt(String(req.params.id))))
       .returning();
     if (!row) return res.status(404).json({ error: "Warehouse not found" });
     await logActivity(
@@ -641,10 +641,10 @@ router.delete("/warehouses/:id", authorize(["checker", "admin"]), async (req, re
       row.warehouseCode ?? genWarehouseCode(row.id),
       "warning",
     );
-    res.json({ deactivated: true, id: row.id });
+    return res.json({ deactivated: true, id: row.id });
   } catch (err) {
     req.log.error({ err }, "delete warehouse error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 

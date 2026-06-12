@@ -46,6 +46,6 @@ export function authorize(roles: Role[]) {
         currentRole: role ?? null,
       });
     }
-    next();
+    return next();
   };
 }

@@ -47,12 +47,82 @@ router.get("/payouts", async (req, res) => {
   }
 });
 
+// Bulk initiate — Maker action (PENDING_APPROVAL → INITIATED for multiple payouts)
+router.post("/payouts/bulk/initiate", authorize(["maker", "admin"]), async (req, res) => {
+  try {
+    const { ids, initiatedBy } = req.body as { ids: number[]; initiatedBy?: string };
+    if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ error: "ids array required" });
+    const maker = initiatedBy || "Anjali Patel";
+
+    const results: { id: number; status: "ok" | "skipped"; reason?: string }[] = [];
+    for (const payoutId of ids) {
+      const [existing] = await db.select().from(payoutsTable).where(eq(payoutsTable.id, payoutId));
+      if (!existing || existing.status !== "PENDING_APPROVAL") {
+        results.push({ id: payoutId, status: "skipped", reason: existing ? `Status is ${existing.status}` : "Not found" });
+        continue;
+      }
+      const [row] = await db.update(payoutsTable)
+        .set({ status: "INITIATED", initiatedBy: maker })
+        .where(eq(payoutsTable.id, payoutId))
+        .returning();
+      await db.insert(activityTable).values({
+        user: maker,
+        action: `Payout initiated for ${row.brandName} — ${row.cycle} (bulk) — awaiting Checker approval`,
+        entityType: "payout",
+        entityRef: String(row.id),
+        level: "info",
+      });
+      results.push({ id: payoutId, status: "ok" });
+    }
+    return res.json({ processed: results.filter((r) => r.status === "ok").length, total: ids.length, results });
+  } catch (err) {
+    req.log.error({ err }, "bulk initiate payout error");
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Bulk approve — Checker action (INITIATED → SETTLED with auto UTR for multiple payouts)
+router.post("/payouts/bulk/approve", authorize(["checker", "admin"]), async (req, res) => {
+  try {
+    const { ids, approvedBy, payoutNotes } = req.body as { ids: number[]; approvedBy?: string; payoutNotes?: string };
+    if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ error: "ids array required" });
+    const checker = approvedBy || "Rajesh Kumar";
+    const now = new Date();
+
+    const results: { id: number; status: "ok" | "skipped"; utr?: string; reason?: string }[] = [];
+    for (const payoutId of ids) {
+      const [existing] = await db.select().from(payoutsTable).where(eq(payoutsTable.id, payoutId));
+      if (!existing || existing.status !== "INITIATED") {
+        results.push({ id: payoutId, status: "skipped", reason: existing ? `Status is ${existing.status}` : "Not found" });
+        continue;
+      }
+      const utr = generateUtr(existing.transferMode);
+      const [row] = await db.update(payoutsTable)
+        .set({ status: "SETTLED", utr, bankAckAt: now, settledAt: now, payoutApprovedBy: checker, payoutApprovedAt: now, payoutNotes: payoutNotes ?? null })
+        .where(eq(payoutsTable.id, payoutId))
+        .returning();
+      await db.insert(activityTable).values({
+        user: checker,
+        action: `Payout approved for ${row.brandName} — UTR ${utr} · ₹${parseFloat(row.amount).toLocaleString("en-IN")} settled (bulk)`,
+        entityType: "payout",
+        entityRef: String(row.id),
+        level: "success",
+      });
+      results.push({ id: payoutId, status: "ok", utr });
+    }
+    return res.json({ processed: results.filter((r) => r.status === "ok").length, total: ids.length, results });
+  } catch (err) {
+    req.log.error({ err }, "bulk approve payout error");
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 // Maker action: submit payout for Checker approval (PENDING_APPROVAL → INITIATED)
 router.post("/payouts/:id/initiate", authorize(["maker", "admin"]), async (req, res) => {
   try {
     const { initiatedBy } = req.body as { initiatedBy?: string };
     const maker = initiatedBy || "Anjali Patel";
-    const payoutId = parseInt(req.params.id);
+    const payoutId = parseInt(String(req.params.id));
 
     const [existing] = await db.select().from(payoutsTable).where(eq(payoutsTable.id, payoutId));
     if (!existing) return res.status(404).json({ error: "Payout not found" });
@@ -81,10 +151,10 @@ router.post("/payouts/:id/initiate", authorize(["maker", "admin"]), async (req, 
       level: "info",
     });
 
-    res.json(mapPayout(row));
+    return res.json(mapPayout(row));
   } catch (err) {
     req.log.error({ err }, "initiate payout error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -93,7 +163,7 @@ router.post("/payouts/:id/approve", authorize(["checker", "admin"]), async (req,
   try {
     const { approvedBy, payoutNotes } = req.body as { approvedBy?: string; payoutNotes?: string };
     const checker = approvedBy || "Rajesh Kumar";
-    const payoutId = parseInt(req.params.id);
+    const payoutId = parseInt(String(req.params.id));
 
     const [existing] = await db.select().from(payoutsTable).where(eq(payoutsTable.id, payoutId));
     if (!existing) return res.status(404).json({ error: "Payout not found" });
@@ -134,10 +204,10 @@ router.post("/payouts/:id/approve", authorize(["checker", "admin"]), async (req,
       level: "success",
     });
 
-    res.json(mapPayout(row));
+    return res.json(mapPayout(row));
   } catch (err) {
     req.log.error({ err }, "approve payout error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 

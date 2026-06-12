@@ -48,7 +48,7 @@ router.get("/orders", async (req, res) => {
       })
       .from(bagsTable);
 
-    res.json({
+    return res.json({
       bags: bags.map(mapBag),
       totals: {
         totalBags: parseInt(totals?.totalBags ?? "0"),
@@ -63,15 +63,15 @@ router.get("/orders", async (req, res) => {
     });
   } catch (err) {
     req.log.error({ err }, "list orders error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
 router.get("/orders/:id", async (req, res) => {
   try {
-    const [bag] = await db.select().from(bagsTable).where(eq(bagsTable.id, parseInt(req.params.id)));
+    const [bag] = await db.select().from(bagsTable).where(eq(bagsTable.id, parseInt(String(req.params.id))));
     if (!bag) return res.status(404).json({ error: "Not found" });
-    res.json({
+    return res.json({
       ...mapBag(bag),
       omsTimeline: [
         { state: "bag_created", critical: false },
@@ -87,7 +87,7 @@ router.get("/orders/:id", async (req, res) => {
     });
   } catch (err) {
     req.log.error({ err }, "get order error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -181,10 +181,10 @@ router.post("/bags", async (req, res) => {
       stateGstin,
     }).returning();
 
-    res.status(201).json(mapBag(row));
+    return res.status(201).json(mapBag(row));
   } catch (err) {
     req.log.error({ err }, "create bag error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -231,7 +231,7 @@ router.post("/bags/bulk", async (req, res) => {
       const brandRows = await db.select().from(brandsTable)
         .where(sql`${brandsTable.brandCode} = ANY(ARRAY[${sql.join(brandCodeIds.map((c) => sql`${String(c)}`), sql`, `)}])`);
       for (const br of brandRows) {
-        resolvedCodeMap.set(br.brandCode, br.onboardingId);
+        if (br.brandCode) resolvedCodeMap.set(br.brandCode, br.onboardingId);
       }
     }
     // Normalise all bag entries to use numeric onboarding IDs
@@ -292,10 +292,10 @@ router.post("/bags/bulk", async (req, res) => {
       return row;
     }));
 
-    res.status(201).json({ created: inserted.length, bags: inserted.map(mapBag) });
+    return res.status(201).json({ created: inserted.length, bags: inserted.map(mapBag) });
   } catch (err) {
     req.log.error({ err }, "bulk create bags error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -311,10 +311,10 @@ router.post("/bags/recalculate-eligibility", async (req, res) => {
       ))
       .returning();
 
-    res.json({ updated: updated.length, message: `${updated.length} bag(s) moved from In-Window to Eligible` });
+    return res.json({ updated: updated.length, message: `${updated.length} bag(s) moved from In-Window to Eligible` });
   } catch (err) {
     req.log.error({ err }, "recalculate eligibility error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -326,12 +326,12 @@ router.put("/bags/:id", async (req, res) => {
     if (body.eligibility) {
       updates.eligibility = body.eligibility as "eligible" | "in_window" | "on_hold" | "settled" | "awaiting_delivery";
     }
-    const [row] = await db.update(bagsTable).set(updates).where(eq(bagsTable.id, parseInt(req.params.id))).returning();
+    const [row] = await db.update(bagsTable).set(updates).where(eq(bagsTable.id, parseInt(String(req.params.id)))).returning();
     if (!row) return res.status(404).json({ error: "Not found" });
-    res.json(mapBag(row));
+    return res.json(mapBag(row));
   } catch (err) {
     req.log.error({ err }, "update bag error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -351,7 +351,7 @@ router.put("/bags/:id", async (req, res) => {
  */
 router.post("/bags/:id/set-scenario", authorize(["backend", "admin"]), async (req, res) => {
   try {
-    const bagId = parseInt(req.params.id);
+    const bagId = parseInt(String(req.params.id));
     const { scenario, pastDeadline = false } = req.body as { scenario: 1 | 2 | 4; pastDeadline?: boolean };
 
     if (![1, 2, 4].includes(scenario)) {
@@ -451,12 +451,12 @@ router.post("/bags/:id/set-scenario", authorize(["backend", "admin"]), async (re
 // Fynd simulator: delete a bag
 router.delete("/bags/:id", async (req, res) => {
   try {
-    const [row] = await db.delete(bagsTable).where(eq(bagsTable.id, parseInt(req.params.id))).returning();
+    const [row] = await db.delete(bagsTable).where(eq(bagsTable.id, parseInt(String(req.params.id)))).returning();
     if (!row) return res.status(404).json({ error: "Not found" });
-    res.json({ deleted: true, id: row.id });
+    return res.json({ deleted: true, id: row.id });
   } catch (err) {
     req.log.error({ err }, "delete bag error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 

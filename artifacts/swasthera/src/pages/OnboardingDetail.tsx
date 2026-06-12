@@ -10,7 +10,7 @@ import { useQueryClient, useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, CheckCircle, XCircle, Send, ShieldCheck, FileText, Upload, Plus, RefreshCw, Building2, ExternalLink, Warehouse, Store, MapPin, Tag, ChevronDown, ChevronRight, Percent, Pencil } from "lucide-react";
+import { ArrowLeft, CheckCircle, XCircle, Send, ShieldCheck, FileText, Upload, Plus, RefreshCw, Building2, ExternalLink, Warehouse, Store, MapPin, Tag, ChevronDown, ChevronRight, Percent, Pencil, Loader2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
@@ -38,7 +38,6 @@ interface BrandItem {
   returnWindowDays: number;
   tcsRate: number;
   tdsRate: number;
-  mdrRate: number;
   tcsApplicable: boolean;
   fyndBrandId: string | null;
   pendingChanges?: Record<string, unknown> | null;
@@ -175,7 +174,6 @@ const FIELD_LABELS: Record<string, string> = {
   returnWindowDays: "Return Window (days)",
   tcsRate: "TCS Rate (%)",
   tdsRate: "TDS Rate (%)",
-  mdrRate: "MDR Rate (%)",
   tcsApplicable: "TCS Applicable",
   warehouseName: "Warehouse Name",
   warehouseState: "State",
@@ -301,7 +299,7 @@ export function OnboardingDetail() {
   const [addBrandForm, setAddBrandForm] = useState({
     brandName: "", brandLegalName: "", brandCategory: "", brandType: "RETAILER",
     commissionType: "FLAT_PERCENT", commissionRate: "", returnWindowDays: "15",
-    tcsRate: "1", tdsRate: "1", mdrRate: "0",
+    tcsRate: "1", tdsRate: "1",
   });
   const [addBrandLoading, setAddBrandLoading] = useState(false);
 
@@ -311,6 +309,8 @@ export function OnboardingDetail() {
     warehouseName: "", warehouseState: "", warehouseGstin: "", warehouseAddress: "", isPrimary: false,
   });
   const [addWarehouseLoading, setAddWarehouseLoading] = useState(false);
+  const [addWarehouseGstLoading, setAddWarehouseGstLoading] = useState(false);
+  const [editWarehouseGstLoading, setEditWarehouseGstLoading] = useState(false);
 
   const [warehousesByBrand, setWarehousesByBrand] = useState<Record<number, WarehouseItem[]>>({});
 
@@ -320,7 +320,7 @@ export function OnboardingDetail() {
   const [editBrandForm, setEditBrandForm] = useState({
     brandName: "", brandLegalName: "", brandCategory: "", brandType: "RETAILER",
     commissionType: "FLAT_PERCENT", commissionRate: "", returnWindowDays: "15",
-    tcsRate: "1", tdsRate: "1", mdrRate: "0",
+    tcsRate: "1", tdsRate: "1",
   });
   const [editBrandLoading, setEditBrandLoading] = useState(false);
 
@@ -362,6 +362,50 @@ export function OnboardingDetail() {
   const [entityRejectNotes, setEntityRejectNotes] = useState("");
   const [entityActionLoading, setEntityActionLoading] = useState(false);
 
+  const fetchGstinForAddWarehouse = async () => {
+    const code = addWarehouseForm.warehouseGstin;
+    if (!code || code.length < 15) { toast({ title: "Enter a 15-character GSTIN first", variant: "destructive" }); return; }
+    setAddWarehouseGstLoading(true);
+    try {
+      const r = await fetch("/api/utils/gst-lookup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ gstn: code.toUpperCase() }) });
+      if (!r.ok) throw new Error("GST lookup failed");
+      const d = await r.json();
+      setAddWarehouseForm((p) => ({
+        ...p,
+        warehouseName: d.legalName ?? d.tradeName ?? p.warehouseName,
+        warehouseState: d.state ?? p.warehouseState,
+        warehouseAddress: d.registeredAddress ?? p.warehouseAddress,
+      }));
+      toast({ title: "Warehouse details fetched", description: d.legalName ?? d.tradeName });
+    } catch (err) {
+      toast({ title: "GST lookup failed", description: (err as Error).message, variant: "destructive" });
+    } finally {
+      setAddWarehouseGstLoading(false);
+    }
+  };
+
+  const fetchGstinForEditWarehouse = async () => {
+    const code = editWarehouseForm.warehouseGstin;
+    if (!code || code.length < 15) { toast({ title: "Enter a 15-character GSTIN first", variant: "destructive" }); return; }
+    setEditWarehouseGstLoading(true);
+    try {
+      const r = await fetch("/api/utils/gst-lookup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ gstn: code.toUpperCase() }) });
+      if (!r.ok) throw new Error("GST lookup failed");
+      const d = await r.json();
+      setEditWarehouseForm((p) => ({
+        ...p,
+        warehouseName: d.legalName ?? d.tradeName ?? p.warehouseName,
+        warehouseState: d.state ?? p.warehouseState,
+        warehouseAddress: d.registeredAddress ?? p.warehouseAddress,
+      }));
+      toast({ title: "Warehouse details fetched", description: d.legalName ?? d.tradeName });
+    } catch (err) {
+      toast({ title: "GST lookup failed", description: (err as Error).message, variant: "destructive" });
+    } finally {
+      setEditWarehouseGstLoading(false);
+    }
+  };
+
   const loadWarehouses = async (brandId: number) => {
     const r = await fetch(`/api/brands/${brandId}/warehouses`);
     if (!r.ok) return;
@@ -389,13 +433,12 @@ export function OnboardingDetail() {
           returnWindowDays: parseInt(addBrandForm.returnWindowDays) || 15,
           tcsRate: parseFloat(addBrandForm.tcsRate) || 1,
           tdsRate: parseFloat(addBrandForm.tdsRate) || 1,
-          mdrRate: parseFloat(addBrandForm.mdrRate) || 0,
         }),
       });
       if (!r.ok) throw new Error("Failed");
       toast({ title: "Brand added successfully" });
       setShowAddBrand(false);
-      setAddBrandForm({ brandName: "", brandLegalName: "", brandCategory: "", brandType: "RETAILER", commissionType: "FLAT_PERCENT", commissionRate: "", returnWindowDays: "15", tcsRate: "1", tdsRate: "1", mdrRate: "0" });
+      setAddBrandForm({ brandName: "", brandLegalName: "", brandCategory: "", brandType: "RETAILER", commissionType: "FLAT_PERCENT", commissionRate: "", returnWindowDays: "15", tcsRate: "1", tdsRate: "1" });
       refetchBrands();
     } catch {
       toast({ title: "Failed to add brand", variant: "destructive" });
@@ -439,7 +482,6 @@ export function OnboardingDetail() {
       returnWindowDays: String(brand.returnWindowDays ?? "15"),
       tcsRate: String(brand.tcsRate ?? "1"),
       tdsRate: String(brand.tdsRate ?? "1"),
-      mdrRate: String(brand.mdrRate ?? "0"),
     });
     setShowEditBrand(true);
   };
@@ -457,7 +499,6 @@ export function OnboardingDetail() {
           returnWindowDays: parseInt(editBrandForm.returnWindowDays) || 15,
           tcsRate: parseFloat(editBrandForm.tcsRate) || 1,
           tdsRate: parseFloat(editBrandForm.tdsRate) || 1,
-          mdrRate: parseFloat(editBrandForm.mdrRate) || 0,
         }),
       });
       if (!r.ok) throw new Error("Failed");
@@ -1543,10 +1584,6 @@ export function OnboardingDetail() {
                             <span className="text-slate-400 uppercase tracking-wider font-medium mr-1.5">TDS</span>
                             <span className="text-slate-700">{brand.tdsRate}%</span>
                           </div>
-                          <div>
-                            <span className="text-slate-400 uppercase tracking-wider font-medium mr-1.5">MDR</span>
-                            <span className="text-slate-700">{brand.mdrRate}%</span>
-                          </div>
                         </div>
 
                         {/* Tier slabs if TIERED */}
@@ -1775,10 +1812,6 @@ export function OnboardingDetail() {
                 <Label className="text-sm">TDS Rate (%)</Label>
                 <Input type="number" step="0.01" min="0" value={addBrandForm.tdsRate} onChange={(e) => setAddBrandForm((p) => ({ ...p, tdsRate: e.target.value }))} />
               </div>
-              <div className="space-y-1.5">
-                <Label className="text-sm">MDR Rate (%)</Label>
-                <Input type="number" step="0.01" min="0" max="100" value={addBrandForm.mdrRate} onChange={(e) => setAddBrandForm((p) => ({ ...p, mdrRate: e.target.value }))} />
-              </div>
             </div>
           </div>
           <DialogFooter>
@@ -1817,8 +1850,13 @@ export function OnboardingDetail() {
               </div>
               <div className="col-span-2 space-y-1.5">
                 <Label className="text-sm">Warehouse GSTIN <span className="text-red-500">*</span></Label>
-                <Input value={addWarehouseForm.warehouseGstin} onChange={(e) => setAddWarehouseForm((p) => ({ ...p, warehouseGstin: e.target.value }))} placeholder="27AABCZ1234D1Z5" className="font-mono" />
-                <p className="text-[10px] text-slate-400">First 2 digits = state code for TCS Section 52 accrual</p>
+                <div className="flex gap-2">
+                  <Input value={addWarehouseForm.warehouseGstin} onChange={(e) => setAddWarehouseForm((p) => ({ ...p, warehouseGstin: e.target.value }))} placeholder="27AABCZ1234D1Z5" className="font-mono flex-1" />
+                  <Button type="button" variant="outline" size="sm" disabled={addWarehouseGstLoading} onClick={fetchGstinForAddWarehouse} className="shrink-0">
+                    {addWarehouseGstLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Fetch"}
+                  </Button>
+                </div>
+                <p className="text-[10px] text-slate-400">First 2 digits = state code for TCS Section 52 accrual. Click Fetch to auto-fill name, state & address.</p>
               </div>
               <div className="col-span-2 space-y-1.5">
                 <Label className="text-sm">Warehouse Address <span className="text-red-500">*</span></Label>
@@ -1986,10 +2024,6 @@ export function OnboardingDetail() {
               <Label className="text-sm">TDS Rate (%)</Label>
               <Input type="number" step="0.01" min="0" value={editBrandForm.tdsRate} onChange={(e) => setEditBrandForm((p) => ({ ...p, tdsRate: e.target.value }))} />
             </div>
-            <div className="space-y-1.5">
-              <Label className="text-sm">MDR Rate (%)</Label>
-              <Input type="number" step="0.01" min="0" max="100" value={editBrandForm.mdrRate} onChange={(e) => setEditBrandForm((p) => ({ ...p, mdrRate: e.target.value }))} />
-            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowEditBrand(false)}>Cancel</Button>
@@ -2019,7 +2053,12 @@ export function OnboardingDetail() {
               </div>
               <div className="space-y-1.5">
                 <Label className="text-sm">GSTIN <span className="text-red-500">*</span></Label>
-                <Input value={editWarehouseForm.warehouseGstin} onChange={(e) => setEditWarehouseForm((p) => ({ ...p, warehouseGstin: e.target.value }))} />
+                <div className="flex gap-2">
+                  <Input value={editWarehouseForm.warehouseGstin} onChange={(e) => setEditWarehouseForm((p) => ({ ...p, warehouseGstin: e.target.value }))} className="font-mono flex-1" />
+                  <Button type="button" variant="outline" size="sm" disabled={editWarehouseGstLoading} onClick={fetchGstinForEditWarehouse} className="shrink-0">
+                    {editWarehouseGstLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Fetch"}
+                  </Button>
+                </div>
               </div>
             </div>
             <div className="space-y-1.5">

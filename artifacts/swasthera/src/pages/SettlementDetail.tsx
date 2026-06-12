@@ -290,11 +290,6 @@ export function SettlementDetail() {
                   <div className="text-red-700">− {formatCurrency(settlement.tdsAmount)}</div>
                 </div>
 
-                <div className="flex justify-between items-center p-4 hover:bg-slate-50/50">
-                  <div className="text-slate-600">9. Less: MDR (Payment Gateway)</div>
-                  <div className="text-red-700">− {formatCurrency(settlement.mdrCharges)}</div>
-                </div>
-
                 {settlement.penalty > 0 && (
                   <div className="flex justify-between items-center p-4 hover:bg-slate-50/50">
                     <div className="text-slate-600">Penalty / Adjustments</div>
@@ -312,7 +307,7 @@ export function SettlementDetail() {
                 )}
 
                 <div className="flex justify-between items-center p-6 bg-slate-50">
-                  <div className="text-lg font-bold text-slate-900">10. Net Payable to Brand</div>
+                  <div className="text-lg font-bold text-slate-900">9. Net Payable to Brand</div>
                   <div className="text-2xl font-bold text-green-700">{formatCurrency(settlement.netPayable)}</div>
                 </div>
 

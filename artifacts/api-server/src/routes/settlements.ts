@@ -113,14 +113,9 @@ router.post("/settlements", async (req, res) => {
       ));
     const creditNoteDeductions = adjustments.reduce((sum, a) => sum + parseFloat(a.amount), 0);
 
-    // MDR rate is sourced from the onboarding's commercial terms, consistent with
-    // how commissionRate/tcsRate/tdsRate are read here. Blank coerces to 0.
-    const mdrRate = parseFloat(String(ob.mdrRate)) || 0;
-
     const calc = calculateSettlement({
       bags: eligibleBags.map((b) => ({ esp: b.esp, qty: b.qty, tcsAmount: b.tcsAmount, tdsAmount: b.tdsAmount })),
       commissionRate: parseFloat(ob.commissionRate),
-      mdrRate,
       priorCarryForward,
       creditNoteDeductions,
     });
@@ -144,8 +139,8 @@ router.post("/settlements", async (req, res) => {
       gstOnCommission: calc.gstOnCommission.toFixed(2),
       tcsAmount: calc.tcsAmount.toFixed(2),
       tdsAmount: calc.tdsAmount.toFixed(2),
-      mdrCharges: calc.mdrCharges.toFixed(2),
-      mdrRate: calc.mdrRate.toFixed(2),
+      mdrCharges: "0.00",
+      mdrRate: "0.00",
       penalty: calc.penalty.toFixed(2),
       netPayable: calc.netPayable.toFixed(2),
       carryForward: calc.carryForward.toFixed(2),
@@ -165,10 +160,10 @@ router.post("/settlements", async (req, res) => {
     const negNote = calc.carryForward < 0 ? ` — net negative, ₹${Math.abs(calc.carryForward).toFixed(0)} carried to next cycle, payout floored at ₹0` : "";
     await db.insert(activityTable).values({ user: req.user?.name ?? "Anjali Patel", action: `Computed settlement for ${ob.brandName} — ${cycle} (${eligibleBags.length} bags, GMV ₹${calc.grossGmv.toFixed(0)})${cfNote}${cnNote}${negNote}`, entityType: "settlement", entityRef: String(row.id), level: calc.carryForward < 0 ? "warning" : "info" });
 
-    res.status(201).json(mapSettlement(row));
+    return res.status(201).json(mapSettlement(row));
   } catch (err) {
     req.log.error({ err }, "create settlement error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -270,8 +265,8 @@ router.post("/settlements/bulk/confirm", async (req, res) => {
           gstOnCommission: g.calc.gstOnCommission.toFixed(2),
           tcsAmount: g.calc.tcsAmount.toFixed(2),
           tdsAmount: g.calc.tdsAmount.toFixed(2),
-          mdrCharges: g.calc.mdrCharges.toFixed(2),
-          mdrRate: g.calc.mdrRate.toFixed(2),
+          mdrCharges: "0.00",
+          mdrRate: "0.00",
           penalty: g.calc.penalty.toFixed(2),
           netPayable: g.calc.netPayable.toFixed(2),
           carryForward: g.calc.carryForward.toFixed(2),
@@ -300,12 +295,12 @@ router.post("/settlements/bulk/confirm", async (req, res) => {
 
 router.get("/settlements/:id", async (req, res) => {
   try {
-    const [row] = await db.select().from(settlementsTable).where(eq(settlementsTable.id, parseInt(req.params.id)));
+    const [row] = await db.select().from(settlementsTable).where(eq(settlementsTable.id, parseInt(String(req.params.id))));
     if (!row) return res.status(404).json({ error: "Not found" });
-    res.json(mapSettlement(row));
+    return res.json(mapSettlement(row));
   } catch (err) {
     req.log.error({ err }, "get settlement error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -315,7 +310,7 @@ router.get("/settlements/:id/payout", async (req, res) => {
     const settlementId = parseInt(req.params.id);
     const [payout] = await db.select().from(payoutsTable).where(eq(payoutsTable.settlementId, settlementId));
     if (!payout) return res.status(404).json({ error: "No payout created yet for this settlement" });
-    res.json({
+    return res.json({
       id: payout.id,
       settlementId: payout.settlementId,
       status: payout.status,
@@ -334,7 +329,7 @@ router.get("/settlements/:id/payout", async (req, res) => {
     });
   } catch (err) {
     req.log.error({ err }, "get settlement payout error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -350,7 +345,7 @@ router.get("/settlements/:id/invoice", async (req, res) => {
 
     const invoiceNo = `INV-SWAS-${settlement.cycle.replace(/[^A-Z0-9]/gi, "")}-${String(settlementId).padStart(4, "0")}`;
 
-    res.json({
+    return res.json({
       invoiceNo,
       invoiceDate: payout?.settledAt?.toISOString().split("T")[0] ?? settlement.createdAt.toISOString().split("T")[0],
       cycle: settlement.cycle,
@@ -395,7 +390,62 @@ router.get("/settlements/:id/invoice", async (req, res) => {
     });
   } catch (err) {
     req.log.error({ err }, "get invoice error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Bulk approve — Checker approves multiple PENDING_APPROVAL settlements at once.
+// Each approved settlement automatically creates a PENDING_APPROVAL payout record.
+router.post("/settlements/bulk/approve", authorize(["checker", "admin"]), async (req, res) => {
+  try {
+    const { ids, financeNotes, approvedBy } = req.body as { ids: number[]; financeNotes?: string; approvedBy?: string };
+    if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ error: "ids array required" });
+    const checker = approvedBy || "Rajesh Kumar";
+    const now = new Date();
+
+    const results: { id: number; status: "ok" | "skipped"; reason?: string }[] = [];
+    for (const settlementId of ids) {
+      const [settlement] = await db.select().from(settlementsTable).where(eq(settlementsTable.id, settlementId));
+      if (!settlement || settlement.status !== "PENDING_APPROVAL") {
+        results.push({ id: settlementId, status: "skipped", reason: settlement ? `Status is ${settlement.status}` : "Not found" });
+        continue;
+      }
+
+      await db.update(settlementsTable)
+        .set({ status: "APPROVED", financeNotes: financeNotes ?? null, approvedBy: checker, approvedAt: now })
+        .where(eq(settlementsTable.id, settlementId));
+
+      const paymentRef = `PAY-${settlement.cycle}-${String(settlementId).padStart(4, "0")}`;
+      await db.insert(payoutsTable).values({
+        settlementId,
+        cycle: settlement.cycle,
+        companyName: settlement.companyName,
+        brandName: settlement.brandName,
+        bankAccount: settlement.bankAccount,
+        bankIfsc: settlement.bankIfsc,
+        bankName: settlement.bankName,
+        amount: settlement.netPayable,
+        transferMode: "NEFT",
+        paymentRef,
+        status: "PENDING_APPROVAL",
+        bagCount: settlement.eligibleBags,
+        bagIds: settlement.bagIds,
+      });
+
+      await db.insert(activityTable).values({
+        user: checker,
+        action: `Settlement approved for ${settlement.brandName} — ${settlement.cycle} (bulk) · payout ${paymentRef} created`,
+        entityType: "settlement",
+        entityRef: String(settlementId),
+        level: "success",
+      });
+      results.push({ id: settlementId, status: "ok" });
+    }
+
+    return res.json({ processed: results.filter((r) => r.status === "ok").length, total: ids.length, results });
+  } catch (err) {
+    req.log.error({ err }, "bulk approve settlements error");
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -403,7 +453,7 @@ router.post("/settlements/:id/approve", authorize(["checker", "admin"]), async (
   try {
     const { financeNotes, approvedBy } = req.body as { financeNotes?: string; approvedBy?: string };
     const checker = approvedBy || "Rajesh Kumar";
-    const [existing] = await db.select().from(settlementsTable).where(eq(settlementsTable.id, parseInt(req.params.id)));
+    const [existing] = await db.select().from(settlementsTable).where(eq(settlementsTable.id, parseInt(String(req.params.id))));
     if (!existing) return res.status(404).json({ error: "Not found" });
     if (existing.status === "APPROVED" || existing.status === "PAID") {
       return res.status(409).json({ error: `Settlement is already ${existing.status}. A payout has already been created.` });
@@ -420,7 +470,7 @@ router.post("/settlements/:id/approve", authorize(["checker", "admin"]), async (
     if (netPayableAmt <= 0) {
       const [row] = await db.update(settlementsTable)
         .set({ status: "APPROVED", financeNotes, approvedBy: checker, approvedAt: new Date() })
-        .where(eq(settlementsTable.id, parseInt(req.params.id)))
+        .where(eq(settlementsTable.id, parseInt(String(req.params.id))))
         .returning();
       await db.insert(activityTable).values({
         user: checker,
@@ -434,7 +484,7 @@ router.post("/settlements/:id/approve", authorize(["checker", "admin"]), async (
 
     const [row] = await db.update(settlementsTable)
       .set({ status: "APPROVED", financeNotes, approvedBy: checker, approvedAt: new Date() })
-      .where(eq(settlementsTable.id, parseInt(req.params.id)))
+      .where(eq(settlementsTable.id, parseInt(String(req.params.id))))
       .returning();
 
     await db.insert(payoutsTable).values({
@@ -463,10 +513,10 @@ router.post("/settlements/:id/approve", authorize(["checker", "admin"]), async (
       level: "success",
     });
 
-    res.json(mapSettlement(row));
+    return res.json(mapSettlement(row));
   } catch (err) {
     req.log.error({ err }, "approve settlement error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -485,7 +535,6 @@ router.get("/settlements/:id/soc", async (req, res) => {
     const [payout] = await db.select().from(payoutsTable).where(eq(payoutsTable.settlementId, settlement.id));
 
     const commRate = parseFloat(settlement.commissionRate);
-    const mdrRate = parseFloat(settlement.mdrRate) || 0;
     const utr = payout?.utr ?? "";
     const settlementDate = payout?.settledAt?.toISOString().split("T")[0] ?? "";
 
@@ -495,7 +544,7 @@ router.get("/settlements/:id/soc", async (req, res) => {
       "MRP (₹)", "Effective Selling Price (₹)", "Brand-funded Discount (₹)", "Marketplace-funded Discount (₹)",
       "Net ESP after Brand Discount (₹)", "Commission %", "Commission Amount (₹)",
       "GST on Commission 18% (₹)", "TCS Amount (₹)", "TDS Amount (₹)",
-      "MDR Amount (₹)", "Net Payable (₹)", "Bag Settlement Status", "OMS State",
+      "Net Payable (₹)", "Bag Settlement Status", "OMS State",
       "Return Status", "UTR", "Settlement Date",
     ];
 
@@ -508,9 +557,7 @@ router.get("/settlements/:id/soc", async (req, res) => {
       const gstOnCommission = commission * 0.18;
       const tcs = parseFloat(b.tcsAmount);
       const tds = parseFloat(b.tdsAmount);
-      // MDR is levied on gross GMV (per-bag ESP), per the brand's configured rate.
-      const mdr = esp * mdrRate / 100;
-      const net = netEsp - commission - gstOnCommission - tcs - tds - mdr;
+      const net = netEsp - commission - gstOnCommission - tcs - tds;
       const returnStatus = b.eligibility === "on_hold" ? "INITIATED" : "NONE";
       const mrp = (parseFloat(b.esp) * 1.15 * b.qty).toFixed(2);
 
@@ -519,7 +566,7 @@ router.get("/settlements/:id/soc", async (req, res) => {
         b.deliveryDate ?? "", b.windowExpiryDate ?? "", b.sku, b.sku, b.qty,
         mrp, esp.toFixed(2), brandDiscount.toFixed(2), marketplaceDiscount.toFixed(2),
         netEsp.toFixed(2), commRate.toFixed(2), commission.toFixed(2), gstOnCommission.toFixed(2),
-        tcs.toFixed(2), tds.toFixed(2), mdr.toFixed(2), net.toFixed(2),
+        tcs.toFixed(2), tds.toFixed(2), net.toFixed(2),
         b.eligibility.toUpperCase(), b.omsState, returnStatus, utr, settlementDate,
       ];
     });
@@ -531,10 +578,10 @@ router.get("/settlements/:id/soc", async (req, res) => {
     const filename = `SoC-${settlement.cycle}-${settlement.brandName.replace(/\s+/g, "-")}.csv`;
     res.setHeader("Content-Type", "text/csv");
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-    res.send(csv);
+    return res.send(csv);
   } catch (err) {
     req.log.error({ err }, "soc download error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -583,7 +630,6 @@ router.get("/settlements/:id/invoice-pdf", async (req, res) => {
     }
 
     const commRate = parseFloat(settlement.commissionRate);
-    const mdrRate = parseFloat(settlement.mdrRate) || 0;
 
     // Settlement period from the bag invoice-date range; falls back to the cycle.
     const dates = bags.map((b) => b.invoiceDate).filter((d): d is string => !!d).sort();
@@ -597,8 +643,7 @@ router.get("/settlements/:id/invoice-pdf", async (req, res) => {
       const gstOnCommission = commission * 0.18;
       const tcs = parseFloat(b.tcsAmount);
       const tds = parseFloat(b.tdsAmount);
-      const mdr = gmv * mdrRate / 100;
-      const net = gmv - commission - gstOnCommission - tcs - tds - mdr;
+      const net = gmv - commission - gstOnCommission - tcs - tds;
       return {
         cells: {
           orderId: b.orderId,
@@ -606,7 +651,6 @@ router.get("/settlements/:id/invoice-pdf", async (req, res) => {
           orderDate: b.invoiceDate ?? "—",
           gmv: groupINR(gmv),
           commission: `${groupINR(commission)} (${commRate.toFixed(2)}%)`,
-          mdr: `${groupINR(mdr)} (${mdrRate.toFixed(2)}%)`,
           tds: groupINR(tds),
           tcs: groupINR(tcs),
           net: groupINR(net),
@@ -624,7 +668,6 @@ router.get("/settlements/:id/invoice-pdf", async (req, res) => {
           orderDate: "Credit Note",
           gmv: groupINR(parseFloat(cn.gmv)),
           commission: groupINR(parseFloat(cn.commissionAmount)),
-          mdr: "—",
           tds: groupINR(parseFloat(cn.tdsDeducted)),
           tcs: groupINR(parseFloat(cn.tcsCollected)),
           net: groupINR(parseFloat(cn.netPayable)),
@@ -642,7 +685,6 @@ router.get("/settlements/:id/invoice-pdf", async (req, res) => {
           orderDate: "",
           gmv: "",
           commission: `Adjustment carried forward from ${predecessor.cycle}`,
-          mdr: "",
           tds: "",
           tcs: "",
           net: groupINR(priorCarryForward),
@@ -656,7 +698,6 @@ router.get("/settlements/:id/invoice-pdf", async (req, res) => {
     const gstOnCommission = parseFloat(settlement.gstOnCommission);
     const tcsAmount = parseFloat(settlement.tcsAmount);
     const tdsAmount = parseFloat(settlement.tdsAmount);
-    const mdrCharges = parseFloat(settlement.mdrCharges);
     const penalty = parseFloat(settlement.penalty);
     const netPayable = parseFloat(settlement.netPayable);
     const carryForward = parseFloat(settlement.carryForward);
@@ -668,7 +709,6 @@ router.get("/settlements/:id/invoice-pdf", async (req, res) => {
       { label: "Less: GST on Commission (18%)", value: formatINR(-gstOnCommission), negative: true },
       { label: "Less: TCS (Sec. 52 GST)", value: formatINR(-tcsAmount), negative: true },
       { label: "Less: TDS (Sec. 194-O)", value: formatINR(-tdsAmount), negative: true },
-      { label: `Less: MDR (${mdrRate.toFixed(2)}%)`, value: formatINR(-mdrCharges), negative: true },
       ...(penalty > 0 ? [{ label: "Less: Penalty / Adjustments", value: formatINR(-penalty), negative: true }] : []),
       ...(priorCarryForward < 0 && predecessor
         ? [{ label: `Adjustment carried forward from ${predecessor.cycle}`, value: formatINR(priorCarryForward), negative: true }]
@@ -729,9 +769,8 @@ router.get("/settlements/:id/invoice-pdf", async (req, res) => {
         { key: "orderId", header: "Order ID", width: 1.6 },
         { key: "invoiceNo", header: "Invoice No", width: 1.7 },
         { key: "orderDate", header: "Order Date", width: 1.3 },
-        { key: "gmv", header: "GMV", width: 1.1, align: "right" },
-        { key: "commission", header: "Commission", width: 1.7, align: "right" },
-        { key: "mdr", header: "MDR", width: 1.4, align: "right" },
+        { key: "gmv", header: "GMV", width: 1.4, align: "right" },
+        { key: "commission", header: "Commission", width: 1.9, align: "right" },
         { key: "tds", header: "TDS", width: 1.0, align: "right" },
         { key: "tcs", header: "TCS", width: 1.0, align: "right" },
         { key: "net", header: "Net Payable", width: 1.3, align: "right" },
@@ -786,10 +825,10 @@ router.post("/settlements/:id/hold", authorize(["checker", "admin"]), async (req
     });
     await db.insert(activityTable).values({ user: req.user?.name ?? "Finance", action: msg, entityType: "settlement", entityRef: String(id), level: onHold ? "warning" : "info" });
 
-    res.json(mapSettlement(row));
+    return res.json(mapSettlement(row));
   } catch (err) {
     req.log.error({ err }, "hold settlement error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 

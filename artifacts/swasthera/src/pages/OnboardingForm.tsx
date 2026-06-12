@@ -58,7 +58,6 @@ const onboardingSchema = z.object({
   returnWindowDays: z.coerce.number().min(0).max(90),
   tcsRate: z.coerce.number().min(0),
   tdsRate: z.coerce.number().min(0),
-  mdrRate: z.coerce.number().min(0).max(100),
 }).refine((d) => d.companyType !== "OTHER" || (d.entityTypeOther && d.entityTypeOther.trim().length > 0), {
   message: "Specify the entity type",
   path: ["entityTypeOther"],
@@ -171,7 +170,6 @@ export function OnboardingForm() {
       returnWindowDays: 15,
       tcsRate: 1,
       tdsRate: 1,
-      mdrRate: 0,
     },
   });
 
@@ -187,6 +185,7 @@ export function OnboardingForm() {
 
   const [ifscLoading, setIfscLoading] = useState<number | null>(null);
   const [gstLoading, setGstLoading] = useState(false);
+  const [warehouseGstLoading, setWarehouseGstLoading] = useState(false);
   const [sameAsCompany, setSameAsCompany] = useState(false);
 
   const entityRequires = (field: "cin" | "llpCode" | "gstn") => {
@@ -263,6 +262,32 @@ export function OnboardingForm() {
       if (d.state) form.setValue("warehouseState", d.state);
     } catch {
       /* non-blocking */
+    }
+  };
+
+  const fetchWarehouseViaGstin = async () => {
+    const code = form.getValues("warehouseGstin") ?? "";
+    if (!code || code.length < 15) {
+      toast({ title: "Enter a 15-character GSTIN first", variant: "destructive" });
+      return;
+    }
+    setWarehouseGstLoading(true);
+    try {
+      const r = await fetch("/api/utils/gst-lookup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ gstn: code.toUpperCase() }),
+      });
+      if (!r.ok) throw new Error("GST lookup failed");
+      const d = await r.json();
+      if (d.legalName) form.setValue("warehouseName", d.legalName);
+      if (d.state) form.setValue("warehouseState", d.state);
+      if (d.registeredAddress) form.setValue("warehouseAddress", d.registeredAddress);
+      toast({ title: "Warehouse details fetched", description: d.legalName ?? d.tradeName });
+    } catch (err) {
+      toast({ title: "GST lookup failed", description: (err as Error).message, variant: "destructive" });
+    } finally {
+      setWarehouseGstLoading(false);
     }
   };
 
@@ -610,7 +635,22 @@ export function OnboardingForm() {
                   <p className="text-xs text-slate-500">Auto-fills state (India Post lookup)</p>
                 </div>
                 <TextField control={control} name="warehouseState" label="State" placeholder="Maharashtra" description="Drives TCS state-wise filing" required />
-                <TextField control={control} name="warehouseGstin" label="Warehouse GSTIN" placeholder="27AABCZ1234D1Z5" description="State GSTIN for TCS accrual (Section 52)" required />
+                <FormField control={control} name="warehouseGstin" render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Warehouse GSTIN <span className="text-red-500">*</span></FormLabel>
+                    <div className="flex gap-2">
+                      <FormControl>
+                        <Input placeholder="27AABCZ1234D1Z5" className="font-mono" {...field} value={(field.value as string) ?? ""} />
+                      </FormControl>
+                      <Button type="button" disabled={warehouseGstLoading} variant="outline" onClick={fetchWarehouseViaGstin} className="shrink-0">
+                        <Sparkles className="h-3.5 w-3.5 mr-1.5 text-indigo-500" />
+                        {warehouseGstLoading ? "Fetching..." : "Fetch"}
+                      </Button>
+                    </div>
+                    <FormDescription className="text-xs">State GSTIN for TCS accrual (Section 52). Auto-fills name, state, and address.</FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )} />
                 <div className="col-span-2">
                   <TextField control={control} name="warehouseAddress" label="Warehouse Address" placeholder="Plot 12, MIDC Industrial Area, Thane 400604" required />
                 </div>
@@ -674,14 +714,6 @@ export function OnboardingForm() {
                     </FormItem>
                   )} />
 
-                  <FormField control={control} name="mdrRate" render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>MDR Rate (%)</FormLabel>
-                      <FormControl><Input type="number" step="0.01" min="0" max="100" {...field} /></FormControl>
-                      <FormDescription className="text-xs">Payment gateway</FormDescription>
-                      <FormMessage />
-                    </FormItem>
-                  )} />
                 </div>
 
                 {commissionType === "TIERED" && (

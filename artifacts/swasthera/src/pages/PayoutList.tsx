@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { Loader2, Send, CheckCircle2, CircleDot, Clock, BanknoteIcon, Info, ExternalLink, Download, FileText } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { useQueryClient } from "@tanstack/react-query";
 import { useRole } from "@/contexts/RoleContext";
@@ -82,6 +83,55 @@ export function PayoutList() {
   const [actionType, setActionType] = useState<"initiate" | "approve" | null>(null);
   const [actionNotes, setActionNotes] = useState("");
   const [actionLoading, setActionLoading] = useState(false);
+
+  const [checkedPayouts, setCheckedPayouts] = useState<Set<number>>(new Set());
+  const [bulkLoading, setBulkLoading] = useState(false);
+
+  const togglePayout = (id: number) => setCheckedPayouts((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+
+  const handleBulkInitiate = async () => {
+    if (checkedPayouts.size === 0) return;
+    setBulkLoading(true);
+    try {
+      const res = await fetch("/api/payouts/bulk/initiate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ payoutIds: Array.from(checkedPayouts), initiatedBy: "Anjali Patel" }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Bulk initiate failed");
+      toast({ title: "Payouts initiated", description: `${data.initiated ?? checkedPayouts.size} payout(s) sent to Checker for approval.` });
+      setCheckedPayouts(new Set());
+      refetch();
+      queryClient.invalidateQueries({ queryKey: ["/api/activity"] });
+    } catch (err) {
+      toast({ title: "Bulk initiate failed", description: (err as Error).message, variant: "destructive" });
+    } finally {
+      setBulkLoading(false);
+    }
+  };
+
+  const handleBulkApprove = async () => {
+    if (checkedPayouts.size === 0) return;
+    setBulkLoading(true);
+    try {
+      const res = await fetch("/api/payouts/bulk/approve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ payoutIds: Array.from(checkedPayouts), approvedBy: "Rajesh Kumar" }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Bulk approve failed");
+      toast({ title: "Payouts approved & settled", description: `${data.approved ?? checkedPayouts.size} payout(s) settled with auto-generated UTRs.` });
+      setCheckedPayouts(new Set());
+      refetch();
+      queryClient.invalidateQueries({ queryKey: ["/api/activity"] });
+    } catch (err) {
+      toast({ title: "Bulk approve failed", description: (err as Error).message, variant: "destructive" });
+    } finally {
+      setBulkLoading(false);
+    }
+  };
 
   const [invoiceDialogPayoutId, setInvoiceDialogPayoutId] = useState<number | null>(null);
   const [invoiceData, setInvoiceData] = useState<InvoiceData | null>(null);
@@ -191,11 +241,31 @@ export function PayoutList() {
         </div>
       </div>
 
+      {checkedPayouts.size > 0 && (
+        <div className="flex items-center justify-between bg-amber-50 border border-amber-200 rounded-lg px-4 py-2.5">
+          <span className="text-sm text-amber-800 font-medium">{checkedPayouts.size} payout(s) selected</span>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => setCheckedPayouts(new Set())}>Clear</Button>
+            {isMaker && (
+              <Button size="sm" className="h-8 text-xs bg-amber-600 hover:bg-amber-700" disabled={bulkLoading} onClick={handleBulkInitiate}>
+                {bulkLoading ? <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Initiating…</> : `Initiate ${checkedPayouts.size} Payout(s)`}
+              </Button>
+            )}
+            {isChecker && (
+              <Button size="sm" className="h-8 text-xs bg-green-600 hover:bg-green-700" disabled={bulkLoading} onClick={handleBulkApprove}>
+                {bulkLoading ? <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Approving…</> : `Approve & Release ${checkedPayouts.size}`}
+              </Button>
+            )}
+          </div>
+        </div>
+      )}
+
       <Card className="shadow-sm border-slate-200/60 bg-white">
         <CardContent className="p-0">
           <Table>
             <TableHeader className="bg-slate-50/80">
               <TableRow className="border-slate-100">
+                <TableHead className="w-10 px-3" />
                 <TableHead className="font-medium text-slate-500 h-10 px-6">Payment Ref</TableHead>
                 <TableHead className="font-medium text-slate-500 h-10">Brand / Cycle</TableHead>
                 <TableHead className="font-medium text-slate-500 h-10">Beneficiary</TableHead>
@@ -207,11 +277,20 @@ export function PayoutList() {
             </TableHeader>
             <TableBody>
               {isLoading ? (
-                <TableRow><TableCell colSpan={7} className="h-32 text-center"><Loader2 className="h-6 w-6 animate-spin mx-auto text-slate-400" /></TableCell></TableRow>
+                <TableRow><TableCell colSpan={8} className="h-32 text-center"><Loader2 className="h-6 w-6 animate-spin mx-auto text-slate-400" /></TableCell></TableRow>
               ) : rows?.length === 0 ? (
-                <TableRow><TableCell colSpan={7} className="h-32 text-center text-slate-500">No payouts found.</TableCell></TableRow>
+                <TableRow><TableCell colSpan={8} className="h-32 text-center text-slate-500">No payouts found.</TableCell></TableRow>
               ) : rows?.map((row) => (
                 <TableRow key={row.id} className="border-slate-100/50">
+                  <TableCell className="px-3">
+                    {((row.status === "PENDING_APPROVAL" && isMaker) || (row.status === "INITIATED" && isChecker)) && (
+                      <Checkbox
+                        checked={checkedPayouts.has(row.id)}
+                        onCheckedChange={() => togglePayout(row.id)}
+                        className={row.status === "INITIATED" ? "border-green-400" : "border-amber-400"}
+                      />
+                    )}
+                  </TableCell>
                   <TableCell className="px-6">
                     <div className="font-mono text-xs text-slate-700">{row.paymentRef}</div>
                     <div className="text-[10px] text-slate-400 mt-0.5">{row.transferMode}</div>

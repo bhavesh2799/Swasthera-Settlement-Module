@@ -12,13 +12,13 @@ router.get("/commission-master/:onboardingId", async (req, res) => {
   try {
     const rows = await db.select()
       .from(commissionMasterTable)
-      .where(eq(commissionMasterTable.onboardingId, parseInt(req.params.onboardingId)))
+      .where(eq(commissionMasterTable.onboardingId, parseInt(String(req.params.onboardingId))))
       .orderBy(commissionMasterTable.createdAt);
 
-    res.json(rows.map(mapCommission));
+    return res.json(rows.map(mapCommission));
   } catch (err) {
     req.log.error({ err }, "list commission master error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -28,15 +28,15 @@ router.get("/commission-master/:onboardingId/active", async (req, res) => {
     const [row] = await db.select()
       .from(commissionMasterTable)
       .where(and(
-        eq(commissionMasterTable.onboardingId, parseInt(req.params.onboardingId)),
+        eq(commissionMasterTable.onboardingId, parseInt(String(req.params.onboardingId))),
         eq(commissionMasterTable.isCurrent, true),
       ))
       .limit(1);
     if (!row) return res.status(404).json({ error: "No active commercial terms" });
-    res.json(mapCommission(row));
+    return res.json(mapCommission(row));
   } catch (err) {
     req.log.error({ err }, "active commission error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -44,7 +44,7 @@ router.get("/commission-master/:onboardingId/active", async (req, res) => {
 // version, and requires an addendum document for version > 1 (spec step 6).
 router.post("/commission-master/:onboardingId", async (req, res) => {
   try {
-    const onboardingId = parseInt(req.params.onboardingId);
+    const onboardingId = parseInt(String(req.params.onboardingId));
     const body = req.body as {
       commissionType?: string;
       commissionPercent?: number;
@@ -114,10 +114,10 @@ router.post("/commission-master/:onboardingId", async (req, res) => {
     });
     await writeAudit(req, { entityType: "CommercialTerms", entityId: row.id, action: "create_version", changedFields: { version: nextVersion, commissionType } });
 
-    res.status(201).json(mapCommission(row));
+    return res.status(201).json(mapCommission(row));
   } catch (err) {
     req.log.error({ err }, "add commission version error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -132,16 +132,16 @@ router.put("/commission-master/:onboardingId/tds", authorize(["checker", "admin"
         tdsLimit: tdsLimit != null ? String(tdsLimit) : undefined,
       })
       .where(and(
-        eq(commissionMasterTable.onboardingId, parseInt(req.params.onboardingId)),
+        eq(commissionMasterTable.onboardingId, parseInt(String(req.params.onboardingId))),
         eq(commissionMasterTable.isCurrent, true),
       ))
       .returning();
     if (!row) return res.status(404).json({ error: "No active commercial terms" });
     await writeAudit(req, { entityType: "CommercialTerms", entityId: row.id, action: "update_tds", changedFields: { tdsRate, tdsTan, tdsLimit } });
-    res.json(mapCommission(row));
+    return res.json(mapCommission(row));
   } catch (err) {
     req.log.error({ err }, "update tds error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -152,16 +152,16 @@ router.put("/commission-master/:onboardingId/tcs", authorize(["checker", "admin"
     const [row] = await db.update(commissionMasterTable)
       .set({ tcsRate: tcsRate != null ? String(tcsRate) : undefined })
       .where(and(
-        eq(commissionMasterTable.onboardingId, parseInt(req.params.onboardingId)),
+        eq(commissionMasterTable.onboardingId, parseInt(String(req.params.onboardingId))),
         eq(commissionMasterTable.isCurrent, true),
       ))
       .returning();
     if (!row) return res.status(404).json({ error: "No active commercial terms" });
     await writeAudit(req, { entityType: "CommercialTerms", entityId: row.id, action: "update_tcs", changedFields: { tcsRate } });
-    res.json(mapCommission(row));
+    return res.json(mapCommission(row));
   } catch (err) {
     req.log.error({ err }, "update tcs error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 

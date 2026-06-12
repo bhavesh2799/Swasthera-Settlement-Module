@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useRole } from "@/contexts/RoleContext";
 import { Link, useLocation } from "wouter";
 import { useListSettlements, useCreateSettlement } from "@workspace/api-client-react";
 import { useQuery } from "@tanstack/react-query";
@@ -112,6 +113,7 @@ export function SettlementList() {
   const [activeTab, setActiveTab] = useState("register");
   const { toast } = useToast();
   const [, navigate] = useLocation();
+  const { isChecker } = useRole();
 
   const cycleOptions = generateCycleOptions();
   const defaultCycle = cycleOptions.find((_o, i) => i === 1)?.value ?? cycleOptions[0]?.value ?? "";
@@ -236,6 +238,33 @@ export function SettlementList() {
 
   const hasGroups = preview && preview.settlementCount > 0;
 
+  // ── Bulk Approve state (Checker only) ──
+  const [checkedApprove, setCheckedApprove] = useState<Set<number>>(new Set());
+  const [bulkApproving, setBulkApproving] = useState(false);
+
+  const toggleApprove = (id: number) => setCheckedApprove((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+
+  const bulkApproveSettlements = async () => {
+    if (checkedApprove.size === 0) return;
+    setBulkApproving(true);
+    try {
+      const res = await fetch("/api/settlements/bulk/approve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ settlementIds: Array.from(checkedApprove), approvedBy: "Checker" }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Bulk approve failed");
+      toast({ title: "Settlements approved", description: `${data.approved ?? checkedApprove.size} settlement(s) approved successfully.` });
+      setCheckedApprove(new Set());
+      refetch();
+    } catch (err) {
+      toast({ title: "Bulk approve failed", description: (err as Error).message, variant: "destructive" });
+    } finally {
+      setBulkApproving(false);
+    }
+  };
+
   return (
     <div className="flex-1 overflow-auto bg-slate-50/50 p-6 md:p-8 space-y-6">
       {/* Header */}
@@ -330,11 +359,24 @@ export function SettlementList() {
             </Dialog>
           </div>
 
+          {isChecker && checkedApprove.size > 0 && (
+            <div className="flex items-center justify-between bg-amber-50 border border-amber-200 rounded-lg px-4 py-2.5">
+              <span className="text-sm text-amber-800 font-medium">{checkedApprove.size} settlement(s) selected for approval</span>
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => setCheckedApprove(new Set())}>Clear</Button>
+                <Button size="sm" className="h-8 text-xs bg-green-600 hover:bg-green-700" disabled={bulkApproving} onClick={bulkApproveSettlements}>
+                  {bulkApproving ? <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Approving…</> : `Approve ${checkedApprove.size} Settlement(s)`}
+                </Button>
+              </div>
+            </div>
+          )}
+
           <Card className="shadow-sm border-slate-200/60 bg-white">
             <CardContent className="p-0">
               <Table>
                 <TableHeader className="bg-slate-50/80">
                   <TableRow className="border-slate-100">
+                    {isChecker && <TableHead className="w-10 px-3" />}
                     <TableHead className="font-medium text-slate-500 h-10 px-6">Cycle</TableHead>
                     <TableHead className="font-medium text-slate-500 h-10">Brand</TableHead>
                     <TableHead className="font-medium text-slate-500 h-10 text-right">Bags</TableHead>
@@ -360,6 +402,17 @@ export function SettlementList() {
                   ) : (
                     settlements?.map((row) => (
                       <TableRow key={row.id} className="border-slate-100/50 group">
+                        {isChecker && (
+                          <TableCell className="px-3">
+                            {row.status === "PENDING_APPROVAL" && (
+                              <Checkbox
+                                checked={checkedApprove.has(row.id)}
+                                onCheckedChange={() => toggleApprove(row.id)}
+                                className="border-amber-400"
+                              />
+                            )}
+                          </TableCell>
+                        )}
                         <TableCell className="px-6 font-mono text-sm text-slate-700">{row.cycle}</TableCell>
                         <TableCell>
                           <div className="font-medium text-slate-900">{row.brandName}</div>

@@ -96,7 +96,6 @@ export async function resolveRoutedSettlement(onboardingId: number, cycle: strin
   }
 
   const priorCarryForward = await mostRecentCarryForward(ob.id);
-  const mdrRate = parseFloat(String(ob.mdrRate)) || 0;
   const primaryKey = keyFor(primaryAccountId);
 
   const groups: DestinationGroup[] = [];
@@ -106,7 +105,6 @@ export async function resolveRoutedSettlement(onboardingId: number, cycle: strin
     const calc = calculateSettlement({
       bags: bucket.bags.map((b) => ({ esp: b.esp, qty: b.qty, tcsAmount: b.tcsAmount, tdsAmount: b.tdsAmount })),
       commissionRate: parseFloat(ob.commissionRate),
-      mdrRate,
       // Apply the brand-level carry-forward to the primary group only.
       priorCarryForward: isPrimaryDestination ? priorCarryForward : 0,
     });

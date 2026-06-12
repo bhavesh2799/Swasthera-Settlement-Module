@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
-import { tcsRecordsTable, tdsRecordsTable, bagsTable, activityTable, settlementsTable, payoutsTable, onboardingsTable, settlementAdjustmentsTable } from "@workspace/db";
+import { tcsRecordsTable, tdsRecordsTable, bagsTable, activityTable, settlementsTable, payoutsTable, onboardingsTable, settlementAdjustmentsTable, invoicesTable } from "@workspace/db";
 import { eq, and, sql, inArray, like } from "drizzle-orm";
 import { reversalDeadline, isPastReversalDeadline, canReverseTDS, transactionPeriod } from "../services/tdsReversalService";
 import { authorize } from "../middlewares/rbac";
@@ -36,7 +36,7 @@ router.get("/compliance/tcs-tds", async (req, res) => {
     const dueYear = monthIndex === 11 ? year + 1 : year;
     const dueMonth = (monthIndex + 2).toString().padStart(2, "0");
 
-    res.json({
+    return res.json({
       month,
       year,
       tcsAccrued: parseFloat(tcsTotals?.tcsAccrued ?? "0"),
@@ -54,7 +54,7 @@ router.get("/compliance/tcs-tds", async (req, res) => {
     });
   } catch (err) {
     req.log.error({ err }, "tcs-tds summary error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -66,116 +66,196 @@ function cyclePrefix(month: string, year: number): string {
   return idx >= 0 ? `${MONTH_ABBREV[idx]}-${year}` : `${month.toUpperCase().slice(0, 3)}-${year}`;
 }
 
-// GET /compliance/tcs-records — brand + bank level aggregation.
-// Returns one row per brand: bank account, bag count for the cycle, total TCS accrued.
-// TCS has no reversal mechanism (reversal does not apply per BRD); only TDS is reversible.
+const STATE_NAMES: Record<string, string> = {
+  "01": "Jammu & Kashmir", "02": "Himachal Pradesh", "03": "Punjab", "04": "Chandigarh",
+  "05": "Uttarakhand", "06": "Haryana", "07": "Delhi", "08": "Rajasthan",
+  "09": "Uttar Pradesh", "10": "Bihar", "11": "Sikkim", "12": "Arunachal Pradesh",
+  "13": "Nagaland", "14": "Manipur", "15": "Mizoram", "16": "Tripura",
+  "17": "Meghalaya", "18": "Assam", "19": "West Bengal", "20": "Jharkhand",
+  "21": "Odisha", "22": "Chhattisgarh", "23": "Madhya Pradesh", "24": "Gujarat",
+  "27": "Maharashtra", "29": "Karnataka", "30": "Goa", "32": "Kerala",
+  "33": "Tamil Nadu", "36": "Telangana", "37": "Andhra Pradesh",
+};
+
+// GET /compliance/tcs-records — bag-level view aggregated by brand + warehouse state.
+// For each brand-state pair: IGST bags (interstate) vs intrastate bags broken out.
+// IGST = stateCode (ship-from) ≠ customerStateCode (place of supply).
+// TCS has no reversal mechanism per BRD; only TDS is reversible.
 router.get("/compliance/tcs-records", async (req, res) => {
   try {
     const month = (req.query.month as string) || "May";
     const year = parseInt((req.query.year as string) || "2026");
+    const prefix = cyclePrefix(month, year);
 
-    const [rawRecords, allOnboardings, cycleBags] = await Promise.all([
-      db.select().from(tcsRecordsTable)
-        .where(and(eq(tcsRecordsTable.month, month), eq(tcsRecordsTable.year, year))),
+    const [cycleBags, tcsRecs, allOnboardings] = await Promise.all([
+      db.select().from(bagsTable).where(like(bagsTable.cycle, `${prefix}%`)),
+      db.select().from(tcsRecordsTable).where(and(eq(tcsRecordsTable.month, month), eq(tcsRecordsTable.year, year))),
       db.select().from(onboardingsTable),
-      db.select({ brandId: bagsTable.brandId }).from(bagsTable)
-        .where(like(bagsTable.cycle, `${cyclePrefix(month, year)}%`)),
     ]);
 
-    const bagCountByBrand: Record<number, number> = {};
-    for (const b of cycleBags) bagCountByBrand[b.brandId] = (bagCountByBrand[b.brandId] ?? 0) + 1;
+    if (cycleBags.length === 0) return res.json([]);
 
-    // Group raw records by brandName; non-reversal only (TCS has no reversal)
-    const grouped: Record<string, typeof rawRecords> = {};
-    for (const r of rawRecords) {
-      if (!r.isReversal) {
-        (grouped[r.brandName] ??= []).push(r);
-      }
+    const obMap = new Map(allOnboardings.map((o) => [o.id, o]));
+
+    // Status lookup from tcs_records by brandName (filing/payment tracking)
+    const tcsStatusByBrand = new Map<string, { id: number; status: string; paymentRef?: string | null; paymentDate?: string | null }>();
+    for (const r of tcsRecs) {
+      if (!r.isReversal) tcsStatusByBrand.set(r.brandName, { id: r.id, status: r.status, paymentRef: r.paymentRef, paymentDate: r.paymentDate });
     }
 
-    const result = Object.entries(grouped).map(([brandName, records]) => {
-      const ob = allOnboardings.find((o) => o.brandName === brandName);
-      const first = records[0];
+    // Group bags by brandId + stateCode (each state files TCS separately)
+    const groups = new Map<string, typeof cycleBags>();
+    for (const bag of cycleBags) {
+      const key = `${bag.brandId}__${bag.stateCode ?? ""}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(bag);
+    }
+
+    const result = Array.from(groups.entries()).map(([key, bags]) => {
+      const [brandIdStr, stateCode] = key.split("__");
+      const brandId = parseInt(brandIdStr);
+      const ob = obMap.get(brandId);
+      const firstBag = bags[0];
+      const totalTcsAmount = Math.round(bags.reduce((s, b) => s + parseFloat(b.tcsAmount), 0) * 100) / 100;
+      const grossGmv = Math.round(bags.reduce((s, b) => s + parseFloat(b.esp) * b.qty, 0) * 100) / 100;
+
+      // IGST = ship-from state ≠ customer state; intrastate = same state
+      const igstBags = bags.filter((b) => stateCode && b.customerStateCode && stateCode !== b.customerStateCode);
+      const intrastateBags = bags.filter((b) => !b.customerStateCode || !stateCode || stateCode === b.customerStateCode);
+      const igstTcsAmount = Math.round(igstBags.reduce((s, b) => s + parseFloat(b.tcsAmount), 0) * 100) / 100;
+      const intrastateTcsAmount = Math.round(intrastateBags.reduce((s, b) => s + parseFloat(b.tcsAmount), 0) * 100) / 100;
+      const tcsStatus = tcsStatusByBrand.get(firstBag.brandName);
+
       return {
-        id: first.id,
-        brandName,
+        brandId,
+        brandName: firstBag.brandName,
         companyName: ob?.companyName ?? "",
-        bankAccount: ob?.bankAccount ?? "",
-        bankIfsc: ob?.bankIfsc ?? "",
-        bankName: ob?.bankName ?? "",
-        bagCount: ob ? (bagCountByBrand[ob.id] ?? 0) : 0,
-        grossGmv: Math.round(records.reduce((s, r) => s + parseFloat(r.taxableSupply), 0) * 100) / 100,
-        tcsRate: parseFloat(first.tcsRate),
-        tcsAmount: Math.round(records.reduce((s, r) => s + parseFloat(r.tcsAmount), 0) * 100) / 100,
-        status: first.status,
-        paymentDueDate: first.paymentDueDate,
-        paymentRef: first.paymentRef,
-        paymentDate: first.paymentDate,
+        stateCode,
+        stateGstin: firstBag.stateGstin ?? "",
+        stateName: STATE_NAMES[stateCode] ?? stateCode,
+        bagCount: bags.length,
+        igstBagCount: igstBags.length,
+        intrastateBagCount: intrastateBags.length,
+        grossGmv,
+        tcsRate: 1.0,
+        totalTcsAmount,
+        igstTcsAmount,
+        intrastateTcsAmount,
+        tcsRecordId: tcsStatus?.id ?? null,
+        status: tcsStatus?.status ?? "Accrued",
+        paymentRef: tcsStatus?.paymentRef ?? null,
+        paymentDate: tcsStatus?.paymentDate ?? null,
+        bags: bags.map((b) => ({
+          bagId: b.bagId,
+          orderId: b.orderId,
+          esp: parseFloat(b.esp) * b.qty,
+          stateCode: b.stateCode ?? stateCode,
+          customerStateCode: b.customerStateCode ?? "",
+          customerState: b.customerState ?? "",
+          gstType: (stateCode && b.customerStateCode && stateCode !== b.customerStateCode) ? "IGST" : "INTRA",
+          tcsAmount: parseFloat(b.tcsAmount),
+          deliveryDate: b.deliveryDate ?? "",
+          omsState: b.omsState,
+          eligibility: b.eligibility,
+          reversalStatus: b.reversalStatus ?? null,
+          isReturnPending: b.eligibility === "on_hold" || b.reversalStatus === "RETURN_INITIATED",
+        })),
       };
     });
 
-    res.json(result);
+    return res.json(result);
   } catch (err) {
     req.log.error({ err }, "tcs records error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
-// GET /compliance/tds-records — brand + bank level aggregation.
-// Aggregates forward (deducted) and reversal entries per brand.
-// TDS reversal applies when the deposit deadline (7th of following month) has not passed.
+// GET /compliance/tds-records — bag-level view aggregated by brand (TDS at company/TAN level).
+// Each brand row includes per-bag breakdown + any reversal entries from tds_records.
+// TDS is reversible before the 7th-of-following-month deposit deadline.
 router.get("/compliance/tds-records", async (req, res) => {
   try {
     const month = (req.query.month as string) || "May";
     const year = parseInt((req.query.year as string) || "2026");
+    const prefix = cyclePrefix(month, year);
 
-    const [rawRecords, allOnboardings, cycleBags] = await Promise.all([
-      db.select().from(tdsRecordsTable)
-        .where(and(eq(tdsRecordsTable.month, month), eq(tdsRecordsTable.year, year))),
+    const [cycleBags, tdsRecs, allOnboardings] = await Promise.all([
+      db.select().from(bagsTable).where(like(bagsTable.cycle, `${prefix}%`)),
+      db.select().from(tdsRecordsTable).where(and(eq(tdsRecordsTable.month, month), eq(tdsRecordsTable.year, year))),
       db.select().from(onboardingsTable),
-      db.select({ brandId: bagsTable.brandId }).from(bagsTable)
-        .where(like(bagsTable.cycle, `${cyclePrefix(month, year)}%`)),
     ]);
 
-    const bagCountByBrand: Record<number, number> = {};
-    for (const b of cycleBags) bagCountByBrand[b.brandId] = (bagCountByBrand[b.brandId] ?? 0) + 1;
+    const obMap = new Map(allOnboardings.map((o) => [o.id, o]));
 
-    // Group by companyName (TDS is tracked at company/TAN level)
-    const grouped: Record<string, typeof rawRecords> = {};
-    for (const r of rawRecords) (grouped[r.companyName] ??= []).push(r);
+    // Status/TAN lookup from tds_records by companyName
+    const tdsStatusByCompany = new Map<string, { id: number; status: string; depositRef?: string | null; depositDate?: string | null; tan?: string | null }>();
+    for (const r of tdsRecs) {
+      if (!r.isReversal) tdsStatusByCompany.set(r.companyName, { id: r.id, status: r.status, depositRef: r.depositRef, depositDate: r.depositDate, tan: r.tan });
+    }
 
-    const result = Object.entries(grouped).map(([companyName, records]) => {
-      const nonReversal = records.filter((r) => !r.isReversal);
-      const reversals = records.filter((r) => r.isReversal);
-      const ob = allOnboardings.find((o) => o.companyName === companyName);
-      const first = nonReversal[0] ?? records[0];
-      const tdsAmount = Math.round(nonReversal.reduce((s, r) => s + parseFloat(r.tdsAmount), 0) * 100) / 100;
+    // Group bags by brandId
+    const groups = new Map<number, typeof cycleBags>();
+    for (const bag of cycleBags) {
+      if (!groups.has(bag.brandId)) groups.set(bag.brandId, []);
+      groups.get(bag.brandId)!.push(bag);
+    }
+
+    const result = Array.from(groups.entries()).map(([brandId, bags]) => {
+      const ob = obMap.get(brandId);
+      const companyName = ob?.companyName ?? bags[0]?.brandName ?? "";
+      const statusInfo = tdsStatusByCompany.get(companyName);
+
+      const tdsAmount = Math.round(bags.reduce((s, b) => s + parseFloat(b.tdsAmount), 0) * 100) / 100;
+      const grossPayment = Math.round(bags.reduce((s, b) => s + parseFloat(b.esp) * b.qty, 0) * 100) / 100;
+
+      // Match reversals from tds_records to this brand's bags
+      const brandBagIds = new Set(bags.map((b) => b.bagId));
+      const reversals = tdsRecs.filter((r) => r.isReversal && (r.originalBagId ? brandBagIds.has(r.originalBagId) : r.companyName === companyName));
       const tdsReversed = Math.round(reversals.reduce((s, r) => s + Math.abs(parseFloat(r.tdsAmount)), 0) * 100) / 100;
+
       return {
-        id: first.id,
-        brandName: ob?.brandName ?? companyName,
+        brandId,
+        tdsRecordId: statusInfo?.id ?? null,
+        brandName: ob?.brandName ?? bags[0]?.brandName ?? "",
         companyName,
-        tan: first.tan ?? "",
-        bankAccount: ob?.bankAccount ?? "",
-        bankIfsc: ob?.bankIfsc ?? "",
-        bankName: ob?.bankName ?? "",
-        bagCount: ob ? (bagCountByBrand[ob.id] ?? 0) : 0,
-        grossPayment: Math.round(nonReversal.reduce((s, r) => s + parseFloat(r.grossPayment), 0) * 100) / 100,
-        tdsRate: parseFloat(first.tdsRate),
+        tan: statusInfo?.tan ?? ob?.tan ?? "",
+        bagCount: bags.length,
+        grossPayment,
+        tdsRate: 1.0,
         tdsAmount,
         tdsReversed,
         reversalCount: reversals.length,
         netTds: Math.round((tdsAmount - tdsReversed) * 100) / 100,
-        status: first.status,
-        depositRef: first.depositRef,
-        depositDate: first.depositDate,
+        status: statusInfo?.status ?? "Pending",
+        depositRef: statusInfo?.depositRef ?? null,
+        depositDate: statusInfo?.depositDate ?? null,
+        bags: bags.map((b) => ({
+          bagId: b.bagId,
+          orderId: b.orderId,
+          esp: parseFloat(b.esp) * b.qty,
+          tdsAmount: parseFloat(b.tdsAmount),
+          deliveryDate: b.deliveryDate ?? "",
+          omsState: b.omsState,
+          eligibility: b.eligibility,
+          reversalStatus: b.reversalStatus ?? null,
+          isReturnPending: b.eligibility === "on_hold" || b.reversalStatus === "RETURN_INITIATED",
+          hasReversal: tdsRecs.some((r) => r.isReversal && r.originalBagId === b.bagId),
+        })),
+        reversals: reversals.map((r) => ({
+          id: r.id,
+          bagId: r.originalBagId ?? "",
+          reason: r.reversalReason ?? "",
+          tdsAmount: parseFloat(r.tdsAmount),
+          month: r.month,
+          year: r.year,
+        })),
       };
     });
 
-    res.json(result);
+    return res.json(result);
   } catch (err) {
     req.log.error({ err }, "tds records error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -189,7 +269,7 @@ router.put("/compliance/tcs-records/:id", async (req, res) => {
     if (paymentDate) updates.paymentDate = paymentDate;
 
     const [row] = await db.update(tcsRecordsTable).set(updates)
-      .where(eq(tcsRecordsTable.id, parseInt(req.params.id)))
+      .where(eq(tcsRecordsTable.id, parseInt(String(req.params.id))))
       .returning();
     if (!row) return res.status(404).json({ error: "Not found" });
 
@@ -201,10 +281,10 @@ router.put("/compliance/tcs-records/:id", async (req, res) => {
       level: "success",
     });
 
-    res.json({ id: row.id, status: row.status, paymentRef: row.paymentRef, paymentDate: row.paymentDate });
+    return res.json({ id: row.id, status: row.status, paymentRef: row.paymentRef, paymentDate: row.paymentDate });
   } catch (err) {
     req.log.error({ err }, "update tcs record error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -218,7 +298,7 @@ router.put("/compliance/tds-records/:id", async (req, res) => {
     if (depositDate) updates.depositDate = depositDate;
 
     const [row] = await db.update(tdsRecordsTable).set(updates)
-      .where(eq(tdsRecordsTable.id, parseInt(req.params.id)))
+      .where(eq(tdsRecordsTable.id, parseInt(String(req.params.id))))
       .returning();
     if (!row) return res.status(404).json({ error: "Not found" });
 
@@ -230,10 +310,101 @@ router.put("/compliance/tds-records/:id", async (req, res) => {
       level: "success",
     });
 
-    res.json({ id: row.id, status: row.status, depositRef: row.depositRef, depositDate: row.depositDate });
+    return res.json({ id: row.id, status: row.status, depositRef: row.depositRef, depositDate: row.depositDate });
   } catch (err) {
     req.log.error({ err }, "update tds record error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// GET /compliance/gst-register — sales register by cycle/month/brand.
+// Returns per-bag invoice breakdown with CGST/SGST/IGST split and credit-note cross-reference.
+router.get("/compliance/gst-register", async (req, res) => {
+  try {
+    const month = (req.query.month as string) || "May";
+    const year = parseInt((req.query.year as string) || "2026");
+    const brandIdFilter = req.query.brandId ? parseInt(req.query.brandId as string) : undefined;
+    const prefix = cyclePrefix(month, year);
+
+    const cycleBags = await db.select().from(bagsTable).where(
+      brandIdFilter
+        ? and(like(bagsTable.cycle, `${prefix}%`), eq(bagsTable.brandId, brandIdFilter))
+        : like(bagsTable.cycle, `${prefix}%`)
+    );
+
+    if (cycleBags.length === 0) {
+      return res.json({ summary: { totalTaxableValue: 0, totalCgst: 0, totalSgst: 0, totalIgst: 0, totalGst: 0, totalInvoiceValue: 0, bagCount: 0 }, entries: [] });
+    }
+
+    const orderIds = cycleBags.map((b) => b.orderId);
+    const [invoices, creditNotes] = await Promise.all([
+      db.select().from(invoicesTable).where(and(inArray(invoicesTable.orderId, orderIds), eq(invoicesTable.invoiceType, "INVOICE"))),
+      db.select().from(invoicesTable).where(and(inArray(invoicesTable.orderId, orderIds), eq(invoicesTable.invoiceType, "CREDIT_NOTE"))),
+    ]);
+
+    const invoiceByOrder = new Map(invoices.map((i) => [i.orderId, i]));
+    const cnByOrder = new Map(creditNotes.map((c) => [c.orderId, c]));
+
+    const entries = cycleBags.map((b) => {
+      const inv = invoiceByOrder.get(b.orderId);
+      const cn = cnByOrder.get(b.orderId);
+      const esp = parseFloat(b.esp) * b.qty;
+      const warehouseState = b.stateCode ?? "";
+      const customerState = b.customerStateCode ?? "";
+      const gstType = inv?.gstType ?? (warehouseState && customerState && warehouseState !== customerState ? "INTER" : "INTRA");
+      const taxableValue = inv ? parseFloat(inv.taxableValue ?? "0") : esp;
+      const cgstAmount = inv ? parseFloat(inv.cgstAmount ?? "0") : 0;
+      const sgstAmount = inv ? parseFloat(inv.sgstAmount ?? "0") : 0;
+      const igstAmount = inv ? parseFloat(inv.igstAmount ?? "0") : 0;
+      const totalInvoiceValue = inv ? parseFloat(inv.totalInvoiceValue ?? "0") : esp;
+
+      return {
+        bagId: b.bagId,
+        orderId: b.orderId,
+        brandId: b.brandId,
+        brandName: b.brandName,
+        invoiceNumber: inv?.invoiceNumber ?? null,
+        invoiceDate: inv?.invoiceDate ?? b.invoiceDate ?? null,
+        customerName: b.customerName ?? "",
+        customerState: b.customerState ?? "",
+        customerStateCode: customerState,
+        sellerGstin: inv?.sellerGstin ?? "",
+        warehouseStateCode: warehouseState,
+        gstType,
+        esp,
+        taxableValue,
+        cgstRate: inv ? parseFloat(inv.cgstRate ?? "0") : 0,
+        cgstAmount,
+        sgstRate: inv ? parseFloat(inv.sgstRate ?? "0") : 0,
+        sgstAmount,
+        igstRate: inv ? parseFloat(inv.igstRate ?? "0") : 0,
+        igstAmount,
+        totalGstAmount: cgstAmount + sgstAmount + igstAmount,
+        totalInvoiceValue,
+        omsState: b.omsState,
+        eligibility: b.eligibility,
+        hasCreditNote: !!cn,
+        creditNoteNumber: cn?.invoiceNumber ?? null,
+        creditNoteValue: cn ? parseFloat(cn.totalInvoiceValue) : null,
+        cycle: b.cycle,
+      };
+    });
+
+    const r = (n: number) => Math.round(n * 100) / 100;
+    const totalTaxableValue = r(entries.reduce((s, e) => s + e.taxableValue, 0));
+    const totalCgst = r(entries.reduce((s, e) => s + e.cgstAmount, 0));
+    const totalSgst = r(entries.reduce((s, e) => s + e.sgstAmount, 0));
+    const totalIgst = r(entries.reduce((s, e) => s + e.igstAmount, 0));
+    const totalGst = r(totalCgst + totalSgst + totalIgst);
+    const totalInvoiceValue = r(entries.reduce((s, e) => s + e.totalInvoiceValue, 0));
+
+    return res.json({
+      summary: { totalTaxableValue, totalCgst, totalSgst, totalIgst, totalGst, totalInvoiceValue, bagCount: entries.length },
+      entries,
+    });
+  } catch (err) {
+    req.log.error({ err }, "gst register error");
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -278,10 +449,10 @@ router.get("/compliance/order-breakdown", async (req, res) => {
       };
     });
 
-    res.json(result);
+    return res.json(result);
   } catch (err) {
     req.log.error({ err }, "order breakdown error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -369,7 +540,7 @@ router.post("/compliance/reversal", authorize(["backend", "admin"]), async (req,
       level: "warning",
     });
 
-    res.json({
+    return res.json({
       success: true,
       reversalEligible: true,
       deadline,
@@ -378,12 +549,12 @@ router.post("/compliance/reversal", authorize(["backend", "admin"]), async (req,
     });
   } catch (err) {
     req.log.error({ err }, "compliance reversal error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
 router.get("/compliance/calendar", async (_req, res) => {
-  res.json([
+  return res.json([
     { id: 1, obligation: "TCS Payment — Apr 2026", section: "Section 52 GST Act", dueDate: "2026-05-07", status: "Filed" },
     { id: 2, obligation: "TDS Deposit — Apr 2026", section: "Section 194-O IT Act", dueDate: "2026-05-07", status: "Filed" },
     { id: 3, obligation: "GSTR-8 Filing — Apr 2026", section: "Section 52(4) GST Act", dueDate: "2026-05-10", status: "Filed" },
@@ -482,10 +653,10 @@ router.get("/compliance/ledger/:brandId", async (req, res) => {
     const { from, to, type, cycle } = req.query as { from?: string; to?: string; type?: string; cycle?: string };
     const ledger = await buildLedger(brandId, { from, to, type, cycle });
     if (!ledger.brand) return res.status(404).json({ error: "Brand not found" });
-    res.json(ledger);
+    return res.json(ledger);
   } catch (err) {
     req.log.error({ err }, "ledger error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -517,10 +688,10 @@ router.get("/compliance/ledger/:brandId/export", async (req, res) => {
     const fname = `ledger-${ledger.brand.brandName.replace(/[^a-z0-9]+/gi, "-")}-${new Date().toISOString().split("T")[0]}.csv`;
     res.setHeader("Content-Type", "text/csv");
     res.setHeader("Content-Disposition", `attachment; filename="${fname}"`);
-    res.send(csv);
+    return res.send(csv);
   } catch (err) {
     req.log.error({ err }, "ledger export error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 

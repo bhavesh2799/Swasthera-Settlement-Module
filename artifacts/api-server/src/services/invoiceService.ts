@@ -154,7 +154,10 @@ async function computeCustomerSnapshot(bag: Bag, brand: BrandRow) {
   const taxableValue = unitPrice * quantity;
   const gstRate = gstRateForUnitPrice(unitPrice);
 
-  const isIntra = warehouseStateCode === customerStateCode;
+  // GST type (IGST vs CGST/SGST) is determined by the company's registered state
+  // vs the customer's place of supply — not the warehouse ship-from state.
+  const companyStateCode = sellerGstin.slice(0, 2);
+  const isIntra = companyStateCode === customerStateCode;
   let cgstRate = 0, cgstAmount = 0, sgstRate = 0, sgstAmount = 0, igstRate = 0, igstAmount = 0;
   if (isIntra) {
     cgstRate = gstRate / 2;
@@ -340,10 +343,6 @@ export function buildCustomerInvoiceDocument(inv: Invoice): InvoiceDocument {
   } else {
     summary.push({ label: `IGST @ ${num(inv.igstRate)}%`, value: formatINR(num(inv.igstAmount)), negative: isCn });
   }
-  if (num(inv.tcsCollected) !== 0) {
-    summary.push({ label: "TCS Collected (Sec 52)", value: formatINR(num(inv.tcsCollected)), negative: isCn });
-  }
-
   return {
     brandHeading: inv.brandName ?? "Brand",
     docTitle: isCn ? "Credit Note" : "Tax Invoice",
@@ -406,9 +405,8 @@ export function buildCustomerInvoiceDocument(inv: Invoice): InvoiceDocument {
     netValue: formatINR(num(inv.totalInvoiceValue)),
     footerNotes: [
       isIntra
-        ? "Intra-state supply — CGST + SGST levied (place of supply equals warehouse state)."
-        : "Inter-state supply — IGST levied (place of supply differs from warehouse state).",
-      "TCS is collected at source by the marketplace operator under Section 52 of the CGST Act.",
+        ? "Intra-state supply — CGST + SGST levied (seller and buyer are in the same state)."
+        : "Inter-state supply — IGST levied (seller and buyer are in different states).",
       ...(inv.reason ? [`Reason: ${inv.reason}`] : []),
       "This is a system-generated document and does not require a physical signature.",
     ],

@@ -103,7 +103,7 @@ router.get("/onboardings", async (req, res) => {
       ? await db.select().from(onboardingsTable).where(and(...conditions)).orderBy(onboardingsTable.createdAt)
       : await db.select().from(onboardingsTable).orderBy(onboardingsTable.createdAt);
 
-    res.json(rows.map((r) => ({
+    return res.json(rows.map((r) => ({
       id: r.id,
       ref: r.ref,
       companyName: r.companyName,
@@ -119,7 +119,7 @@ router.get("/onboardings", async (req, res) => {
     })));
   } catch (err) {
     req.log.error({ err }, "list onboardings error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -288,21 +288,21 @@ router.post("/onboardings", async (req, res) => {
       level: "info",
     });
 
-    res.status(201).json(mapOnboarding(row));
+    return res.status(201).json(mapOnboarding(row));
   } catch (err) {
     req.log.error({ err }, "create onboarding error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
 router.get("/onboardings/:id", async (req, res) => {
   try {
-    const [row] = await db.select().from(onboardingsTable).where(eq(onboardingsTable.id, parseInt(req.params.id)));
+    const [row] = await db.select().from(onboardingsTable).where(eq(onboardingsTable.id, parseInt(String(req.params.id))));
     if (!row) return res.status(404).json({ error: "Not found" });
-    res.json(mapOnboarding(row));
+    return res.json(mapOnboarding(row));
   } catch (err) {
     req.log.error({ err }, "get onboarding error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -312,7 +312,7 @@ router.put("/onboardings/:id", authorize(["maker", "admin"]), async (req, res) =
     const updates = buildOnboardingUpdates(body);
 
     // Count docs uploaded
-    const current = await db.select().from(onboardingsTable).where(eq(onboardingsTable.id, parseInt(req.params.id)));
+    const current = await db.select().from(onboardingsTable).where(eq(onboardingsTable.id, parseInt(String(req.params.id))));
     if (!current[0]) return res.status(404).json({ error: "Not found" });
 
     // Governance: direct edits are only allowed pre-approval. Once SUBMITTED the
@@ -332,12 +332,12 @@ router.put("/onboardings/:id", authorize(["maker", "admin"]), async (req, res) =
     }
 
     updates.updatedAt = new Date();
-    const [row] = await db.update(onboardingsTable).set(updates).where(eq(onboardingsTable.id, parseInt(req.params.id))).returning();
+    const [row] = await db.update(onboardingsTable).set(updates).where(eq(onboardingsTable.id, parseInt(String(req.params.id)))).returning();
     if (!row) return res.status(404).json({ error: "Not found" });
-    res.json(mapOnboarding(row));
+    return res.json(mapOnboarding(row));
   } catch (err) {
     req.log.error({ err }, "update onboarding error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -351,7 +351,7 @@ router.put("/onboardings/:id", authorize(["maker", "admin"]), async (req, res) =
 router.post("/onboardings/:id/propose-changes", authorize(["maker", "admin"]), async (req, res) => {
   try {
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const [ob] = await db.select().from(onboardingsTable).where(eq(onboardingsTable.id, parseInt(req.params.id)));
+    const [ob] = await db.select().from(onboardingsTable).where(eq(onboardingsTable.id, parseInt(String(req.params.id))));
     if (!ob) return res.status(404).json({ error: "Not found" });
 
     // Governance: propose-changes is the post-approval channel. Pre-approval
@@ -395,10 +395,10 @@ router.post("/onboardings/:id/propose-changes", authorize(["maker", "admin"]), a
       link: `/onboarding/${ob.id}`,
       level: "info",
     });
-    res.json(mapOnboarding(row));
+    return res.json(mapOnboarding(row));
   } catch (err) {
     req.log.error({ err }, "propose onboarding changes error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -407,7 +407,7 @@ router.post("/onboardings/:id/approve-changes", authorize(["checker", "admin"]),
   try {
     const { checkerName } = (req.body ?? {}) as { checkerName?: string };
     const checker = checkerName || "Rajesh Kumar";
-    const [ob] = await db.select().from(onboardingsTable).where(eq(onboardingsTable.id, parseInt(req.params.id)));
+    const [ob] = await db.select().from(onboardingsTable).where(eq(onboardingsTable.id, parseInt(String(req.params.id))));
     if (!ob) return res.status(404).json({ error: "Not found" });
     const pending = parsePending(ob.pendingChanges);
     if (!pending) return res.status(400).json({ error: "No pending changes to approve" });
@@ -437,10 +437,10 @@ router.post("/onboardings/:id/approve-changes", authorize(["checker", "admin"]),
       link: `/onboarding/${ob.id}`,
       level: "success",
     });
-    res.json(mapOnboarding(row));
+    return res.json(mapOnboarding(row));
   } catch (err) {
     req.log.error({ err }, "approve onboarding changes error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -449,7 +449,7 @@ router.post("/onboardings/:id/reject-changes", authorize(["checker", "admin"]), 
   try {
     const { notes, checkerName } = (req.body ?? {}) as { notes?: string; checkerName?: string };
     const checker = checkerName || "Rajesh Kumar";
-    const [ob] = await db.select().from(onboardingsTable).where(eq(onboardingsTable.id, parseInt(req.params.id)));
+    const [ob] = await db.select().from(onboardingsTable).where(eq(onboardingsTable.id, parseInt(String(req.params.id))));
     if (!ob) return res.status(404).json({ error: "Not found" });
     if (!ob.pendingChanges) return res.status(400).json({ error: "No pending changes to reject" });
 
@@ -466,17 +466,17 @@ router.post("/onboardings/:id/reject-changes", authorize(["checker", "admin"]), 
       level: "warning",
     });
     await writeAudit(req, { entityType: "Onboarding", entityId: ob.id, action: "reject_changes", changedFields: notes ? { notes } : undefined });
-    res.json(mapOnboarding(row));
+    return res.json(mapOnboarding(row));
   } catch (err) {
     req.log.error({ err }, "reject onboarding changes error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
 // KYB simulation — BRD §3.2: triggered on PAN submission, blocks submission if failed
 router.post("/onboardings/:id/kyb-check", async (req, res) => {
   try {
-    const [ob] = await db.select().from(onboardingsTable).where(eq(onboardingsTable.id, parseInt(req.params.id)));
+    const [ob] = await db.select().from(onboardingsTable).where(eq(onboardingsTable.id, parseInt(String(req.params.id))));
     if (!ob) return res.status(404).json({ error: "Not found" });
 
     // Simulate KYB API latency
@@ -494,7 +494,7 @@ router.post("/onboardings/:id/kyb-check", async (req, res) => {
         kybAttempts: ob.kybAttempts + 1,
         updatedAt: new Date(),
       })
-      .where(eq(onboardingsTable.id, parseInt(req.params.id)))
+      .where(eq(onboardingsTable.id, parseInt(String(req.params.id))))
       .returning();
 
     await db.insert(activityTable).values({
@@ -512,7 +512,7 @@ router.post("/onboardings/:id/kyb-check", async (req, res) => {
       changedFields: { kybStatus: newStatus, checks: result.checks },
     });
 
-    res.json({
+    return res.json({
       kybStatus: newStatus,
       verifiedAt: verifiedAt.toISOString(),
       kybAttempts: updated.kybAttempts,
@@ -521,14 +521,14 @@ router.post("/onboardings/:id/kyb-check", async (req, res) => {
     });
   } catch (err) {
     req.log.error({ err }, "kyb-check error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
 router.post("/onboardings/:id/submit", authorize(["maker", "admin"]), async (req, res) => {
   try {
     const submittedBy = (req.body as { submittedBy?: string } | undefined)?.submittedBy;
-    const [ob] = await db.select().from(onboardingsTable).where(eq(onboardingsTable.id, parseInt(req.params.id)));
+    const [ob] = await db.select().from(onboardingsTable).where(eq(onboardingsTable.id, parseInt(String(req.params.id))));
     if (!ob) return res.status(404).json({ error: "Not found" });
 
     // KYB is verified up-front via the GSTIN fetch during onboarding, so there is no
@@ -545,7 +545,7 @@ router.post("/onboardings/:id/submit", authorize(["maker", "admin"]), async (req
         updatedAt: new Date(),
         ...(isResubmit ? { version: ob.version + 1 } : {}),
       })
-      .where(eq(onboardingsTable.id, parseInt(req.params.id)))
+      .where(eq(onboardingsTable.id, parseInt(String(req.params.id))))
       .returning();
     if (!row) return res.status(404).json({ error: "Not found" });
     const submitAction = isResubmit ? `Re-submitted ${row.ref} for Checker review (v${row.version})` : `Submitted ${row.ref} for Checker review`;
@@ -559,10 +559,10 @@ router.post("/onboardings/:id/submit", authorize(["maker", "admin"]), async (req
       link: `/onboarding/${row.id}`,
       level: "info",
     });
-    res.json(mapOnboarding(row));
+    return res.json(mapOnboarding(row));
   } catch (err) {
     req.log.error({ err }, "submit onboarding error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -580,7 +580,7 @@ router.post("/onboardings/:id/approve", authorize(["checker", "admin"]), async (
         fyndBrandId: `FYND-BR-${Math.floor(10000 + Math.random() * 90000)}`,
         fyndLocationId: `FYND-LOC-${Math.floor(10000 + Math.random() * 90000)}`,
       })
-      .where(eq(onboardingsTable.id, parseInt(req.params.id)))
+      .where(eq(onboardingsTable.id, parseInt(String(req.params.id))))
       .returning();
     if (!row) return res.status(404).json({ error: "Not found" });
 
@@ -599,10 +599,10 @@ router.post("/onboardings/:id/approve", authorize(["checker", "admin"]), async (
       link: `/onboarding/${row.id}`,
       level: "success",
     });
-    res.json(mapOnboarding(row));
+    return res.json(mapOnboarding(row));
   } catch (err) {
     req.log.error({ err }, "approve onboarding error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -615,7 +615,7 @@ router.post("/onboardings/:id/reject", authorize(["checker", "admin"]), async (r
     const checker = checkerName || "Rajesh Kumar";
     const [row] = await db.update(onboardingsTable)
       .set({ status: "REJECTED", checkerName: checker, checkerNotes: notes, reviewedAt: new Date(), updatedAt: new Date() })
-      .where(eq(onboardingsTable.id, parseInt(req.params.id)))
+      .where(eq(onboardingsTable.id, parseInt(String(req.params.id))))
       .returning();
     if (!row) return res.status(404).json({ error: "Not found" });
     await db.insert(activityTable).values({ user: checker, action: `Rejected onboarding ${row.ref} — ${notes ?? "No reason"}`, entityType: "onboarding", entityRef: row.ref, level: "warning" });
@@ -628,10 +628,10 @@ router.post("/onboardings/:id/reject", authorize(["checker", "admin"]), async (r
       link: `/onboarding/${row.id}`,
       level: "warning",
     });
-    res.json(mapOnboarding(row));
+    return res.json(mapOnboarding(row));
   } catch (err) {
     req.log.error({ err }, "reject onboarding error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -640,14 +640,14 @@ router.post("/onboardings/:id/request-edit", authorize(["checker", "admin"]), as
   try {
     const { notes, checkerName } = (req.body ?? {}) as { notes?: string; checkerName?: string };
     const checker = checkerName || "Rajesh Kumar";
-    const [ob] = await db.select().from(onboardingsTable).where(eq(onboardingsTable.id, parseInt(req.params.id)));
+    const [ob] = await db.select().from(onboardingsTable).where(eq(onboardingsTable.id, parseInt(String(req.params.id))));
     if (!ob) return res.status(404).json({ error: "Not found" });
     if (ob.status !== "SUBMITTED") {
       return res.status(400).json({ error: "Only submitted onboardings can be sent back for edits." });
     }
     const [row] = await db.update(onboardingsTable)
       .set({ status: "DRAFT", checkerName: checker, checkerNotes: notes, reviewedAt: new Date(), updatedAt: new Date() })
-      .where(eq(onboardingsTable.id, parseInt(req.params.id)))
+      .where(eq(onboardingsTable.id, parseInt(String(req.params.id))))
       .returning();
     if (!row) return res.status(404).json({ error: "Not found" });
     await db.insert(activityTable).values({ user: checker, action: `Requested edits on ${row.ref} — ${notes ?? "see notes"}`, entityType: "onboarding", entityRef: row.ref, level: "warning" });
@@ -660,10 +660,10 @@ router.post("/onboardings/:id/request-edit", authorize(["checker", "admin"]), as
       link: `/onboarding/${row.id}`,
       level: "warning",
     });
-    res.json(mapOnboarding(row));
+    return res.json(mapOnboarding(row));
   } catch (err) {
     req.log.error({ err }, "request-edit onboarding error");
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 

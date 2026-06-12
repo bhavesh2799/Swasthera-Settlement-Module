@@ -54,7 +54,7 @@ function maskAcct(n: string) {
 // List bank accounts for a brand
 router.get("/brands/:brandId/bank-accounts", async (req, res) => {
   try {
-    const brandId = parseInt(req.params.brandId);
+    const brandId = parseInt(String(req.params.brandId));
     const rows = await db.select().from(bankAccountsTable).where(eq(bankAccountsTable.brandId, brandId));
     return res.json({ bankAccounts: rows.map(mapBankAccount) });
   } catch (err) {
@@ -70,7 +70,7 @@ router.get("/brands/:brandId/bank-accounts", async (req, res) => {
 // silently hide the original bank.
 router.get("/onboardings/:id/bank-accounts", async (req, res) => {
   try {
-    const onboardingId = parseInt(req.params.id);
+    const onboardingId = parseInt(String(req.params.id));
     let rows = await db.select().from(bankAccountsTable).where(eq(bankAccountsTable.onboardingId, onboardingId));
 
     if (rows.length === 0) {
@@ -151,7 +151,7 @@ router.post("/onboarding/bank-account", authorize(["maker", "admin"]), async (re
 router.post("/onboarding/bank-account/:id/propose-edit", authorize(["maker", "admin"]), async (req, res) => {
   try {
     const body = req.body as Record<string, unknown>;
-    const [acct] = await db.select().from(bankAccountsTable).where(eq(bankAccountsTable.id, parseInt(req.params.id)));
+    const [acct] = await db.select().from(bankAccountsTable).where(eq(bankAccountsTable.id, parseInt(String(req.params.id))));
     if (!acct) return res.status(404).json({ error: "Bank account not found" });
 
     const proposed: Record<string, unknown> = {};
@@ -195,7 +195,7 @@ router.post("/onboarding/bank-account/:id/propose-edit", authorize(["maker", "ad
 // Checker approves a pending bank account (new account or proposed edit)
 router.post("/onboarding/bank-account/:id/approve", authorize(["checker", "admin"]), async (req, res) => {
   try {
-    const [acct] = await db.select().from(bankAccountsTable).where(eq(bankAccountsTable.id, parseInt(req.params.id)));
+    const [acct] = await db.select().from(bankAccountsTable).where(eq(bankAccountsTable.id, parseInt(String(req.params.id))));
     if (!acct) return res.status(404).json({ error: "Bank account not found" });
     if (acct.status !== "PENDING_APPROVAL") {
       return res.status(400).json({ error: "Bank account is not pending approval" });
@@ -244,7 +244,7 @@ router.post("/onboarding/bank-account/:id/approve", authorize(["checker", "admin
 router.post("/onboarding/bank-account/:id/reject", authorize(["checker", "admin"]), async (req, res) => {
   try {
     const { notes } = (req.body ?? {}) as { notes?: string };
-    const [acct] = await db.select().from(bankAccountsTable).where(eq(bankAccountsTable.id, parseInt(req.params.id)));
+    const [acct] = await db.select().from(bankAccountsTable).where(eq(bankAccountsTable.id, parseInt(String(req.params.id))));
     if (!acct) return res.status(404).json({ error: "Bank account not found" });
     if (acct.status !== "PENDING_APPROVAL") {
       return res.status(400).json({ error: "Bank account is not pending approval" });
@@ -276,7 +276,7 @@ router.post("/onboarding/bank-account/:id/reject", authorize(["checker", "admin"
 // MUST go through propose-edit so they are checker-approved (governance).
 router.post("/onboarding/bank-account/:id/primary", authorize(["checker", "admin"]), async (req, res) => {
   try {
-    const id = parseInt(req.params.id);
+    const id = parseInt(String(req.params.id));
     const [acct] = await db.select().from(bankAccountsTable).where(eq(bankAccountsTable.id, id));
     if (!acct) return res.status(404).json({ error: "Bank account not found" });
     await db.update(bankAccountsTable).set({ isPrimary: false }).where(eq(bankAccountsTable.brandId, acct.brandId));
@@ -296,7 +296,7 @@ router.post("/onboarding/bank-account/:id/primary", authorize(["checker", "admin
 // List the state→bank-account mappings for an onboarding.
 router.get("/onboardings/:id/jurisdiction-mappings", async (req, res) => {
   try {
-    const onboardingId = parseInt(req.params.id);
+    const onboardingId = parseInt(String(req.params.id));
     const rows = await db
       .select()
       .from(bankAccountJurisdictionsTable)
@@ -333,7 +333,7 @@ router.get("/onboardings/:id/jurisdiction-mappings", async (req, res) => {
 // per onboarding, so re-assigning a state replaces its previous account.
 router.post("/onboardings/:id/jurisdiction-mappings", authorize(["maker", "checker", "admin"]), async (req, res) => {
   try {
-    const onboardingId = parseInt(req.params.id);
+    const onboardingId = parseInt(String(req.params.id));
     const { stateCode, bankAccountId } = req.body as { stateCode?: string; bankAccountId?: number };
     const code = String(stateCode ?? "").trim();
     if (!/^\d{2}$/.test(code)) {
@@ -388,7 +388,7 @@ router.post("/onboardings/:id/jurisdiction-mappings", authorize(["maker", "check
 // Remove a state mapping (state then falls back to the primary account at settlement time).
 router.delete("/onboardings/:id/jurisdiction-mappings/:stateCode", authorize(["maker", "checker", "admin"]), async (req, res) => {
   try {
-    const onboardingId = parseInt(req.params.id);
+    const onboardingId = parseInt(String(req.params.id));
     const code = String(req.params.stateCode).trim();
     const [row] = await db
       .delete(bankAccountJurisdictionsTable)
@@ -406,7 +406,7 @@ router.delete("/onboardings/:id/jurisdiction-mappings/:stateCode", authorize(["m
 // Remove a bank account — privileged override only (checker/admin)
 router.delete("/onboarding/bank-account/:id", authorize(["checker", "admin"]), async (req, res) => {
   try {
-    const id = parseInt(req.params.id);
+    const id = parseInt(String(req.params.id));
     const [row] = await db.delete(bankAccountsTable).where(eq(bankAccountsTable.id, id)).returning();
     if (!row) return res.status(404).json({ error: "Bank account not found" });
     await writeAudit(req, { entityType: "BankAccount", entityId: id, action: "delete" });

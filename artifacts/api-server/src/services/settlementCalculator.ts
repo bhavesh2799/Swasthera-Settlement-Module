@@ -5,6 +5,9 @@
  * a brand is never paid a negative amount. When the raw net is below zero, the
  * payout is clamped to ₹0 and the deficit is carried forward into the next
  * cycle (returned as a negative `carryForward`).
+ *
+ * MDR (payment gateway fee) has been removed from the waterfall per product
+ * decision — it is no longer charged to brands.
  */
 
 export interface SettlementBag {
@@ -19,10 +22,6 @@ export interface SettlementInput {
   commissionRate: number; // percent
   brandPromotions?: number;
   marketplacePromotions?: number; // tracked but NOT deducted from payout
-  /** Flat MDR amount. Ignored when `mdrRate` (> 0) is supplied. */
-  mdrCharges?: number;
-  /** MDR rate (percent) applied on gross GMV; takes precedence over flat `mdrCharges`. */
-  mdrRate?: number;
   penalty?: number;
   /** Negative deficit carried in from the brand's previous cycle (≤ 0). */
   priorCarryForward?: number;
@@ -44,8 +43,6 @@ export interface SettlementResult {
   gstOnCommission: number;
   tcsAmount: number;
   tdsAmount: number;
-  mdrCharges: number;
-  mdrRate: number;
   penalty: number;
   /** Credit-note deductions and TDS/TCS carry-forwards applied this cycle. */
   creditNoteDeductions: number;
@@ -63,15 +60,11 @@ export function calculateSettlement(input: SettlementInput): SettlementResult {
   const num = (v: string) => parseFloat(v) || 0;
   const brandPromotions = input.brandPromotions ?? 0;
   const marketplacePromotions = input.marketplacePromotions ?? 0;
-  const mdrRate = input.mdrRate ?? 0;
   const penalty = input.penalty ?? 0;
   const priorCarryForward = input.priorCarryForward ?? 0;
   const creditNoteDeductions = input.creditNoteDeductions ?? 0;
 
   const grossGmv = input.bags.reduce((s, b) => s + num(b.esp) * b.qty, 0);
-  // MDR is a payment-gateway charge levied on gross GMV. A configured brand-level
-  // rate takes precedence; otherwise fall back to any flat amount passed in.
-  const mdrCharges = mdrRate > 0 ? (grossGmv * mdrRate) / 100 : (input.mdrCharges ?? 0);
   // Brand-funded promotions ARE deducted; marketplace-funded promotions are NOT.
   const netBeforeCommission = grossGmv - brandPromotions;
   const commission = (netBeforeCommission * input.commissionRate) / 100;
@@ -83,7 +76,7 @@ export function calculateSettlement(input: SettlementInput): SettlementResult {
   // settlement_adjustments — amounts the brand owes back or that were deposited
   // with authorities in a prior period and cannot be reversed.
   const rawNet =
-    netBeforeCommission - commission - gstOnCommission - tcsAmount - tdsAmount - mdrCharges - penalty - creditNoteDeductions;
+    netBeforeCommission - commission - gstOnCommission - tcsAmount - tdsAmount - penalty - creditNoteDeductions;
 
   // Apply any deficit carried in from the previous cycle, then floor at zero.
   const adjustedNet = rawNet + priorCarryForward;
@@ -101,8 +94,6 @@ export function calculateSettlement(input: SettlementInput): SettlementResult {
     gstOnCommission: round(gstOnCommission),
     tcsAmount: round(tcsAmount),
     tdsAmount: round(tdsAmount),
-    mdrCharges: round(mdrCharges),
-    mdrRate,
     penalty: round(penalty),
     creditNoteDeductions: round(creditNoteDeductions),
     rawNet: round(rawNet),

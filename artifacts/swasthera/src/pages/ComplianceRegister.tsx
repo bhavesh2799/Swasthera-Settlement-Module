@@ -200,7 +200,7 @@ export function ComplianceRegister() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  // TDS-only reversal dialog
+  // TDS/TCS reversal dialog (compliance-page manual entry for already-cancelled/returned bags)
   const [showReversalDialog, setShowReversalDialog] = useState(false);
   const [reversalLoading, setReversalLoading] = useState(false);
   const [reversalForm, setReversalForm] = useState({ bagId: "", reason: "" });
@@ -326,7 +326,7 @@ export function ComplianceRegister() {
 
       if (!res.ok) throw new Error(data.error ?? "Reversal failed");
 
-      toast({ title: "TDS Reversal logged", description: data.message });
+      toast({ title: "TDS/TCS Reversal logged", description: data.message });
       setShowReversalDialog(false);
       setReversalForm({ bagId: "", reason: "" });
       queryClient.invalidateQueries({ queryKey: summaryKey });
@@ -432,7 +432,7 @@ export function ComplianceRegister() {
             </SelectContent>
           </Select>
           <Button variant="outline" onClick={() => setShowReversalDialog(true)}>
-            <RotateCcw className="mr-2 h-4 w-4" /> Log TDS Reversal
+            <RotateCcw className="mr-2 h-4 w-4" /> Log TDS/TCS Reversal
           </Button>
         </div>
       </div>
@@ -466,7 +466,7 @@ export function ComplianceRegister() {
                   {s.tcsAccrued > s.tcsPaid ? "Unpaid — remit to govt" : "Fully paid"}
                 </span>
               </div>
-              <div className="text-xs text-slate-400 mt-0.5 italic">No reversal mechanism (§52 GST)</div>
+              <div className="text-xs text-slate-400 mt-0.5 italic">Reversible via GSTR-8 amendment within deadline</div>
             </CardContent>
           </Card>
 
@@ -1151,20 +1151,20 @@ export function ComplianceRegister() {
         </TabsContent>
       </Tabs>
 
-      {/* TDS-Only Reversal Dialog */}
+      {/* TDS/TCS Reversal Dialog */}
       <Dialog open={showReversalDialog} onOpenChange={setShowReversalDialog}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Log TDS Reversal</DialogTitle>
+            <DialogTitle>Log TDS/TCS Reversal</DialogTitle>
             <DialogDescription>
-              Only TDS (Section 194-O) can be reversed. TCS reversal does not apply — TCS
-              is remitted directly to the government and cannot be credited back to the brand.
+              For bags already cancelled or returned through the Orders page. Both TDS (§194-O IT Act)
+              and TCS (§52 GST / GSTR-8 amendment) are reversed together using the same deadline.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
             <div className="rounded-lg border border-blue-100 bg-blue-50/60 p-3 text-xs text-blue-700 space-y-1">
-              <p className="font-medium flex items-center gap-1.5"><Info className="h-3.5 w-3.5" /> Eligibility is determined by bag date</p>
-              <p>The TDS deposit deadline (7th of the following month) is enforced server-side from the bag's invoice date. If the deadline has passed, the amount will be recorded as a carry-forward adjustment for the next settlement cycle instead of a reversal.</p>
+              <p className="font-medium flex items-center gap-1.5"><Info className="h-3.5 w-3.5" /> Bag must already be cancelled or returned</p>
+              <p>Use the Orders page to cancel or return active orders first — it enforces credit-note generation and scenario rules. The 7th-of-following-month deadline is enforced server-side. Past the deadline, amounts are recorded as carry-forward adjustments for the next settlement cycle.</p>
             </div>
             <div className="space-y-1.5">
               <label className="text-sm font-medium text-slate-700">Bag ID</label>

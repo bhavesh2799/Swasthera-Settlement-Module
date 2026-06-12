@@ -2,7 +2,7 @@ import { Router } from "express";
 import { db } from "@workspace/db";
 import { tcsRecordsTable, tdsRecordsTable, bagsTable, activityTable, settlementsTable, payoutsTable, onboardingsTable, settlementAdjustmentsTable, invoicesTable } from "@workspace/db";
 import { eq, and, sql, inArray, like } from "drizzle-orm";
-import { reversalDeadline, isPastReversalDeadline, canReverseTDS, transactionPeriod } from "../services/tdsReversalService";
+import { reversalDeadline, isPastReversalDeadline, canReverseTDS, transactionPeriod, classifyCancellation } from "../services/tdsReversalService";
 import { authorize } from "../middlewares/rbac";
 
 const router = Router();
@@ -80,7 +80,7 @@ const STATE_NAMES: Record<string, string> = {
 // GET /compliance/tcs-records — bag-level view aggregated by brand + warehouse state.
 // For each brand-state pair: IGST bags (interstate) vs intrastate bags broken out.
 // IGST = stateCode (ship-from) ≠ customerStateCode (place of supply).
-// TCS has no reversal mechanism per BRD; only TDS is reversible.
+// TCS reversal uses the same deadline rules as TDS (7th of following month).
 router.get("/compliance/tcs-records", async (req, res) => {
   try {
     const month = (req.query.month as string) || "May";
@@ -478,6 +478,37 @@ router.post("/compliance/reversal", authorize(["backend", "admin"]), async (req,
     const tcsAmt = parseFloat(bag.tcsAmount);
     if (tdsAmt === 0 && tcsAmt === 0) {
       return res.status(400).json({ error: "No TDS or TCS accrual found for this bag to reverse" });
+    }
+
+    // Enforce the canonical reversal path: only bags that have already completed
+    // the order cancel/return flow may use this endpoint. Active orders must go
+    // through POST /transactions/:orderId/cancel (or /return/accept) which enforces
+    // scenario classification, credit-note generation, and brand acceptance atomically.
+    const cancellationCase = classifyCancellation(bag.deliveryDate, bag.windowExpiryDate);
+    if (bag.reversalStatus === "WINDOW_EXPIRED_REJECTED") {
+      return res.status(400).json({
+        error: `Bag ${bagId} was rejected due to an expired return window (Scenario 3 — BRD §5.4). No tax reversal can be logged.`,
+        reversalStatus: bag.reversalStatus,
+      });
+    }
+    if (bag.reversalStatus === "RETURN_INITIATED") {
+      return res.status(400).json({
+        error: `Bag ${bagId} has a return in progress. Accept or reject the return from the Orders page before logging a tax reversal.`,
+        redirectHint: "/orders",
+        reversalStatus: bag.reversalStatus,
+      });
+    }
+    if (!bag.reversalStatus && cancellationCase !== "PAST_RETURN_WINDOW") {
+      // Active order that hasn't gone through the cancel/return flow yet.
+      // Must use the Orders page to get credit-note generation + scenario enforcement.
+      const label = cancellationCase === "PRE_DELIVERY"
+        ? "not yet delivered"
+        : "within return window";
+      return res.status(400).json({
+        error: `Bag ${bagId} is ${label} and has not been cancelled or returned yet. Use the Orders page to initiate the cancellation/return flow — credit-note generation and scenario rules are enforced there.`,
+        redirectHint: "/orders",
+        cancellationCase,
+      });
     }
 
     // Eligibility derives strictly from bag data — client-supplied month/year are

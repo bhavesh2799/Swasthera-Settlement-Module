@@ -23,38 +23,26 @@ function bagTxnDate(bag: Bag): Date {
 }
 
 /**
- * Applies the TDS/TCS reversal for a cancelled/returned bag, enforcing the
- * timing rules in tdsReversalService: if still reversible (same month or 1st–7th
- * of the next month) negative reversal entries are written; otherwise the amount
- * has been deposited and is logged as an adjustment, never reversed. Eligibility
- * is computed server-side and is not user-overridable.
+ * Applies TDS reversal for a cancelled/returned bag, enforcing the timing rules
+ * in tdsReversalService.
+ *
+ * TCS reversal does NOT apply: TCS is remitted directly to the government by the
+ * marketplace operator (§52 GST) and cannot be credited back to the brand. Only
+ * TDS (§194-O IT Act) is reversible.
+ *
+ * If still within the deposit window (same month or 1st–7th of the next month) a
+ * negative TDS reversal entry is written. Past the deadline the amount has already
+ * been deposited; a TDS_CARRY_FORWARD adjustment is logged instead (consumable by
+ * the next settlement compute run). Eligibility is server-side and non-overridable.
  */
 async function applyTaxReversal(req: Request, bag: Bag, reason: string) {
   const txnDate = bagTxnDate(bag);
   const reversalEligible = canReverseTDS(txnDate, new Date());
-  const tcsAmt = parseFloat(bag.tcsAmount);
   const tdsAmt = parseFloat(bag.tdsAmount);
   const { month, year } = transactionPeriod(txnDate);
   const deadline = reversalDeadline(txnDate);
 
   if (reversalEligible) {
-    if (tcsAmt > 0) {
-      await db.insert(tcsRecordsTable).values({
-        month, year,
-        stateGstin: bag.stateGstin,
-        stateCode: bag.stateCode,
-        stateName: bag.stateCode,
-        brandName: bag.brandName,
-        taxableSupply: String(-parseFloat(bag.esp)),
-        tcsRate: "1.00",
-        tcsAmount: String(-tcsAmt),
-        status: "Accrued",
-        paymentDueDate: deadline,
-        isReversal: true,
-        reversalReason: reason,
-        originalBagId: bag.bagId,
-      });
-    }
     if (tdsAmt > 0) {
       await db.insert(tdsRecordsTable).values({
         month, year,
@@ -71,9 +59,8 @@ async function applyTaxReversal(req: Request, bag: Bag, reason: string) {
       });
     }
   } else {
-    // TDS/TCS already deposited with authorities — cannot be reversed.
-    // Write structured adjustment records (consumable by settlement compute)
-    // AND a human-readable activity log entry.
+    // TDS already deposited — record a carry-forward adjustment for the next
+    // settlement cycle. No TCS adjustment is needed (TCS reversal does not apply).
     if (tdsAmt > 0) {
       await db.insert(settlementAdjustmentsTable).values({
         onboardingId: bag.brandId,
@@ -84,19 +71,9 @@ async function applyTaxReversal(req: Request, bag: Bag, reason: string) {
         reason: `TDS deadline ${deadline} passed — deposited, cannot reverse (${reason})`,
       });
     }
-    if (tcsAmt > 0) {
-      await db.insert(settlementAdjustmentsTable).values({
-        onboardingId: bag.brandId,
-        cycle: bag.cycle,
-        bagId: bag.bagId,
-        adjustmentType: "TCS_CARRY_FORWARD",
-        amount: tcsAmt.toFixed(2),
-        reason: `TCS deadline ${deadline} passed — deposited, cannot reverse (${reason})`,
-      });
-    }
     await db.insert(activityTable).values({
       user: req.user?.name ?? "System",
-      action: `TDS/TCS already deposited for ${bag.bagId} (deadline ${deadline} passed) — recorded as carry-forward adjustment for next settlement cycle, not reversed (${reason})`,
+      action: `TDS already deposited for ${bag.bagId} (deadline ${deadline} passed) — recorded as TDS carry-forward for next settlement cycle (${reason})`,
       entityType: "compliance",
       entityRef: bag.bagId,
       level: "warning",
@@ -105,10 +82,8 @@ async function applyTaxReversal(req: Request, bag: Bag, reason: string) {
 
   return {
     reversalEligible,
-    tcsReversed: reversalEligible ? tcsAmt : 0,
     tdsReversed: reversalEligible ? tdsAmt : 0,
     tdsCarryForward: !reversalEligible ? tdsAmt : 0,
-    tcsCarryForward: !reversalEligible ? tcsAmt : 0,
     adjustmentLogged: !reversalEligible,
     deadline,
   };
@@ -319,7 +294,6 @@ router.post("/transactions/:orderId/cancel", authorize(["maker", "backend", "adm
         reason: cancelReason,
         case: cancellationCase,
         reversalEligible: reversal.reversalEligible,
-        tcsReversed: reversal.tcsReversed,
         tdsReversed: reversal.tdsReversed,
         cnAdjustmentRecorded: true,
       },
@@ -377,7 +351,6 @@ router.post("/transactions/:orderId/return/accept", authorize(["backend", "admin
         creditNote: creditNote.invoiceNumber,
         reason,
         reversalEligible: reversal.reversalEligible,
-        tcsReversed: reversal.tcsReversed,
         tdsReversed: reversal.tdsReversed,
         cnAdjustmentRecorded: true,
       },

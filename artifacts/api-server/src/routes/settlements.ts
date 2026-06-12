@@ -412,6 +412,26 @@ router.post("/settlements/:id/approve", authorize(["checker", "admin"]), async (
       return res.status(409).json({ error: `Settlement #${existing.id} is on payout hold (${existing.holdReason ?? "stopped by finance"}). Resume it before approving.` });
     }
 
+    // Guard: if the net payable is zero or negative (e.g. carry-forward adjustments
+    // fully offset the settlement) there is nothing to transfer to the brand.
+    // Approve the settlement record but do NOT create a payout row — initiating a
+    // bank transfer for a ≤0 amount is a compliance error.
+    const netPayableAmt = parseFloat(existing.netPayable);
+    if (netPayableAmt <= 0) {
+      const [row] = await db.update(settlementsTable)
+        .set({ status: "APPROVED", financeNotes, approvedBy: checker, approvedAt: new Date() })
+        .where(eq(settlementsTable.id, parseInt(req.params.id)))
+        .returning();
+      await db.insert(activityTable).values({
+        user: checker,
+        action: `Approved settlement #${row.id} for ${row.brandName} — net payable is ₹${netPayableAmt.toFixed(2)} (carry-forward); no payout created`,
+        entityType: "settlement",
+        entityRef: String(row.id),
+        level: "warning",
+      });
+      return res.json({ ...mapSettlement(row), payoutCreated: false, reason: "Net payable ≤ 0 — carry-forward adjustments applied; no bank transfer initiated" });
+    }
+
     const [row] = await db.update(settlementsTable)
       .set({ status: "APPROVED", financeNotes, approvedBy: checker, approvedAt: new Date() })
       .where(eq(settlementsTable.id, parseInt(req.params.id)))

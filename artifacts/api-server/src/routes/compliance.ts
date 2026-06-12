@@ -483,6 +483,7 @@ router.get("/compliance/commission-gst", async (req, res) => {
         const totalGst = parseFloat(inv.gstOnCommission) > 0 ? r2(parseFloat(inv.gstOnCommission)) : r2(taxable * 0.18);
         const isIntra = recipientState === COMMISSION_ISSUER_STATE;
         return {
+          invoiceId: inv.id,
           invoiceNumber: inv.invoiceNumber,
           recipientName: ob?.companyName ?? inv.brandName ?? "",
           recipientGstin,

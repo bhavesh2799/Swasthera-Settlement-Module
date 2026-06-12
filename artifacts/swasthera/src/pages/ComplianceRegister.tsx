@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
-import { Loader2, Calendar, CheckCircle2, AlertCircle, RotateCcw, TrendingDown, CreditCard, Layers, BookOpen, Download, AlertTriangle, Info, Receipt, ChevronDown, ChevronRight, Lock, Scale, Percent } from "lucide-react";
+import { Loader2, Calendar, CheckCircle2, AlertCircle, RotateCcw, TrendingDown, CreditCard, Layers, BookOpen, Download, AlertTriangle, Info, Receipt, ChevronDown, ChevronRight, Lock, Percent, ExternalLink } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 function fmt(amount: number) {
@@ -227,6 +227,7 @@ interface ReconciliationData {
 }
 
 interface CommissionGstRow {
+  invoiceId: number;
   invoiceNumber: string;
   recipientName: string;
   recipientGstin: string;
@@ -318,7 +319,7 @@ export function ComplianceRegister() {
     },
   });
 
-  const { data: reconciliation, isLoading: isLoadingRecon } = useQuery<ReconciliationData>({
+  const { data: reconciliation } = useQuery<ReconciliationData>({
     queryKey: ["/api/compliance/reconciliation", params],
     queryFn: async () => {
       const r = await fetch(`/api/compliance/reconciliation?month=${month}&year=${year}`);
@@ -629,12 +630,8 @@ export function ComplianceRegister() {
         </>
       ) : null}
 
-      <Tabs defaultValue="reconciliation" className="w-full">
+      <Tabs defaultValue="tcs" className="w-full">
         <TabsList className="bg-slate-200/50 mb-4 flex-wrap h-auto">
-          <TabsTrigger value="reconciliation" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
-            <Scale className="mr-1.5 h-3.5 w-3.5" />
-            Reconciliation
-          </TabsTrigger>
           <TabsTrigger value="tcs" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
             TCS Register
           </TabsTrigger>
@@ -671,111 +668,6 @@ export function ComplianceRegister() {
             Compliance Calendar
           </TabsTrigger>
         </TabsList>
-
-        {/* Reconciliation — month-end tie-out: liability vs discharge + challan register */}
-        <TabsContent value="reconciliation" className="m-0 space-y-4">
-          <Card className="shadow-sm border-slate-200/60 bg-white">
-            <div className="px-6 py-3 border-b border-slate-100 bg-blue-50/40 flex items-start gap-2">
-              <Info className="h-3.5 w-3.5 text-blue-500 mt-0.5 flex-shrink-0" />
-              <p className="text-xs text-blue-700">
-                Liability (computed from bags &amp; invoices) vs discharge (deposited via challan / filed in return), per tax head.
-                A non-zero variance means the head is not yet fully remitted. TCS is split into IGST / CGST / SGST by the
-                inter- vs intra-state share of bags; the deposited amount is allocated across those heads pro-rata.
-              </p>
-            </div>
-            <CardContent className="p-0">
-              {isLoadingRecon ? (
-                <div className="flex justify-center p-8"><Loader2 className="animate-spin text-slate-400" /></div>
-              ) : (
-                <Table>
-                  <TableHeader className="bg-slate-50/80">
-                    <TableRow className="border-slate-100">
-                      <TableHead className="font-medium text-slate-500 h-10 px-4">Tax head</TableHead>
-                      <TableHead className="font-medium text-slate-500 h-10 text-right">Computed</TableHead>
-                      <TableHead className="font-medium text-slate-500 h-10 text-right">Deposited</TableHead>
-                      <TableHead className="font-medium text-slate-500 h-10 text-right">Variance</TableHead>
-                      <TableHead className="font-medium text-slate-500 h-10">Challan / ref</TableHead>
-                      <TableHead className="font-medium text-slate-500 h-10">Return</TableHead>
-                      <TableHead className="font-medium text-slate-500 h-10 text-center">Status</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {(reconciliation?.rows ?? []).map((r) => (
-                      <TableRow key={r.head} className="border-slate-100">
-                        <TableCell className="px-4 font-medium text-slate-800">{r.head}</TableCell>
-                        <TableCell className="text-right tabular-nums text-slate-700">{fmt(r.computed)}</TableCell>
-                        <TableCell className="text-right tabular-nums text-slate-700">{r.deposited === null ? "—" : fmt(r.deposited)}</TableCell>
-                        <TableCell className={`text-right tabular-nums font-medium ${r.variance === null ? "text-slate-400" : r.variance < 0 ? "text-amber-700" : "text-green-700"}`}>
-                          {r.variance === null ? "n/a" : fmt(r.variance)}
-                        </TableCell>
-                        <TableCell className="text-xs text-slate-500 font-mono">{r.ref ?? "—"}</TableCell>
-                        <TableCell className="text-xs text-slate-500">{r.returnStatus}</TableCell>
-                        <TableCell className="text-center">
-                          <Badge
-                            className={`border-transparent text-[11px] ${
-                              r.status === "Matched"
-                                ? "bg-green-100 text-green-700 hover:bg-green-100"
-                                : r.status === "Short"
-                                ? "bg-amber-100 text-amber-700 hover:bg-amber-100"
-                                : r.status === "Open"
-                                ? "bg-blue-100 text-blue-700 hover:bg-blue-100"
-                                : "bg-slate-100 text-slate-500 hover:bg-slate-100"
-                            }`}
-                          >
-                            {r.status}
-                          </Badge>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              )}
-            </CardContent>
-          </Card>
-
-          <Card className="shadow-sm border-slate-200/60 bg-white">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-sm font-semibold text-slate-900 flex items-center gap-2">
-                <CreditCard className="h-4 w-4 text-slate-400" /> Challan register
-              </CardTitle>
-              <p className="text-xs text-slate-400">Government deposit references recorded against this period's tax records.</p>
-            </CardHeader>
-            <CardContent className="p-0">
-              {(reconciliation?.challanRegister?.length ?? 0) === 0 ? (
-                <div className="px-6 py-8 text-center text-sm text-slate-400">
-                  No challans recorded yet — mark TCS paid / TDS deposited (with a reference) to populate this register.
-                </div>
-              ) : (
-                <Table>
-                  <TableHeader className="bg-slate-50/80">
-                    <TableRow className="border-slate-100">
-                      <TableHead className="font-medium text-slate-500 h-10 px-4">Challan ref</TableHead>
-                      <TableHead className="font-medium text-slate-500 h-10">Head</TableHead>
-                      <TableHead className="font-medium text-slate-500 h-10">Period</TableHead>
-                      <TableHead className="font-medium text-slate-500 h-10 text-right">Amount</TableHead>
-                      <TableHead className="font-medium text-slate-500 h-10">Date</TableHead>
-                      <TableHead className="font-medium text-slate-500 h-10 text-center">Status</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {(reconciliation?.challanRegister ?? []).map((c) => (
-                      <TableRow key={`${c.head}-${c.ref}`} className="border-slate-100">
-                        <TableCell className="px-4 font-mono text-xs text-slate-700">{c.ref}</TableCell>
-                        <TableCell className="text-slate-700">{c.head}</TableCell>
-                        <TableCell className="text-slate-500">{c.period}</TableCell>
-                        <TableCell className="text-right tabular-nums text-slate-700">{fmt(c.amount)}</TableCell>
-                        <TableCell className="text-slate-500">{c.date ? new Date(c.date).toLocaleDateString() : "—"}</TableCell>
-                        <TableCell className="text-center">
-                          <Badge className="border-transparent text-[11px] bg-green-100 text-green-700 hover:bg-green-100">{c.status}</Badge>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              )}
-            </CardContent>
-          </Card>
-        </TabsContent>
 
         {/* TCS Register — flat bag-level view grouped by brand × state */}
         <TabsContent value="tcs" className="m-0">
@@ -1238,7 +1130,17 @@ export function ComplianceRegister() {
                   <TableBody>
                     {(commissionGst?.rows ?? []).map((r) => (
                       <TableRow key={r.invoiceNumber} className="border-slate-100">
-                        <TableCell className="px-4 font-mono text-xs text-slate-700">{r.invoiceNumber}</TableCell>
+                        <TableCell className="px-4 font-mono text-xs">
+                          <a
+                            href={`/api/invoices/${r.invoiceId}/brand-pdf`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-700 hover:underline"
+                          >
+                            {r.invoiceNumber}
+                            <ExternalLink className="h-3 w-3" />
+                          </a>
+                        </TableCell>
                         <TableCell className="text-slate-800">{r.recipientName}</TableCell>
                         <TableCell className="font-mono text-xs text-slate-500">{r.recipientGstin}</TableCell>
                         <TableCell className="text-slate-600">{r.posName} <span className="text-slate-400">({r.posCode})</span></TableCell>

@@ -26,6 +26,12 @@ export interface SettlementInput {
   penalty?: number;
   /** Negative deficit carried in from the brand's previous cycle (≤ 0). */
   priorCarryForward?: number;
+  /**
+   * Sum of credit-note deductions and carry-forward TDS/TCS amounts from
+   * settlement_adjustments for this brand+cycle. Applied as an additional
+   * reduction against rawNet before the zero-floor/carry-forward logic.
+   */
+  creditNoteDeductions?: number;
 }
 
 export interface SettlementResult {
@@ -41,6 +47,8 @@ export interface SettlementResult {
   mdrCharges: number;
   mdrRate: number;
   penalty: number;
+  /** Credit-note deductions and TDS/TCS carry-forwards applied this cycle. */
+  creditNoteDeductions: number;
   /** Raw net before applying the prior carry-forward and the zero-floor. */
   rawNet: number;
   /** Final amount actually payable to the brand — never negative. */
@@ -58,6 +66,7 @@ export function calculateSettlement(input: SettlementInput): SettlementResult {
   const mdrRate = input.mdrRate ?? 0;
   const penalty = input.penalty ?? 0;
   const priorCarryForward = input.priorCarryForward ?? 0;
+  const creditNoteDeductions = input.creditNoteDeductions ?? 0;
 
   const grossGmv = input.bags.reduce((s, b) => s + num(b.esp) * b.qty, 0);
   // MDR is a payment-gateway charge levied on gross GMV. A configured brand-level
@@ -70,8 +79,11 @@ export function calculateSettlement(input: SettlementInput): SettlementResult {
   const tcsAmount = input.bags.reduce((s, b) => s + num(b.tcsAmount), 0);
   const tdsAmount = input.bags.reduce((s, b) => s + num(b.tdsAmount), 0);
 
+  // creditNoteDeductions covers CN reversals and TDS/TCS carry-forwards from
+  // settlement_adjustments — amounts the brand owes back or that were deposited
+  // with authorities in a prior period and cannot be reversed.
   const rawNet =
-    netBeforeCommission - commission - gstOnCommission - tcsAmount - tdsAmount - mdrCharges - penalty;
+    netBeforeCommission - commission - gstOnCommission - tcsAmount - tdsAmount - mdrCharges - penalty - creditNoteDeductions;
 
   // Apply any deficit carried in from the previous cycle, then floor at zero.
   const adjustedNet = rawNet + priorCarryForward;
@@ -92,6 +104,7 @@ export function calculateSettlement(input: SettlementInput): SettlementResult {
     mdrCharges: round(mdrCharges),
     mdrRate,
     penalty: round(penalty),
+    creditNoteDeductions: round(creditNoteDeductions),
     rawNet: round(rawNet),
     netPayable: round(netPayable),
     carryForward: round(carryForward),

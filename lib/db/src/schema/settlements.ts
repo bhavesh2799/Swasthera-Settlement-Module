@@ -76,6 +76,38 @@ export const payoutsTable = pgTable("payouts", {
   bagIds: text("bag_ids").notNull().default("[]"),
 });
 
+// ---------------------------------------------------------------------------
+// Settlement Adjustments — structured records for events that affect a brand's
+// net payable for a given cycle but happen outside the main settlement compute
+// run (credit notes issued on returns/cancellations; blocked TDS/TCS that was
+// already deposited). The compute route sums these before calling the calculator
+// so the final waterfall reflects all in-cycle adjustments.
+// ---------------------------------------------------------------------------
+export const settlementAdjustmentsTable = pgTable("settlement_adjustments", {
+  id: serial("id").primaryKey(),
+  /** Onboarding that owns the brand. Used to link adjustments to the right settlement. */
+  onboardingId: integer("onboarding_id").notNull(),
+  /** Settlement cycle the adjustment belongs to (e.g. "MAY-2026-C1" or "2026-05"). */
+  cycle: text("cycle").notNull(),
+  /** The bag that triggered this adjustment. */
+  bagId: text("bag_id").notNull(),
+  /** Set once the adjustment has been consumed by a settlement compute run. */
+  settlementId: integer("settlement_id"),
+  /**
+   * CREDIT_NOTE          — brand owes this amount back; deducted from cycle net.
+   * TDS_CARRY_FORWARD    — TDS that cannot be reversed (past the 7th); will be
+   *                        deducted from the next cycle's settlement instead.
+   * TCS_CARRY_FORWARD    — same, for TCS.
+   */
+  adjustmentType: text("adjustment_type").notNull(),
+  /** Positive amount (the deduction magnitude). Applied as a reduction from rawNet. */
+  amount: numeric("amount", { precision: 14, scale: 2 }).notNull(),
+  reason: text("reason"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export type SettlementAdjustment = typeof settlementAdjustmentsTable.$inferSelect;
+
 export const insertSettlementSchema = createInsertSchema(settlementsTable).omit({ id: true, createdAt: true });
 export type InsertSettlement = z.infer<typeof insertSettlementSchema>;
 export type Settlement = typeof settlementsTable.$inferSelect;

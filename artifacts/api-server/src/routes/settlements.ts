@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
-import { settlementsTable, onboardingsTable, bagsTable, payoutsTable, activityTable, brandsTable, invoicesTable } from "@workspace/db";
-import { eq, and, inArray, desc, like, sql } from "drizzle-orm";
+import { settlementsTable, onboardingsTable, bagsTable, payoutsTable, activityTable, brandsTable, invoicesTable, settlementAdjustmentsTable } from "@workspace/db";
+import { eq, and, inArray, desc, like, sql, isNull } from "drizzle-orm";
 import { authorize } from "../middlewares/rbac";
 import { writeAudit } from "../services/audit";
 import { calculateSettlement } from "../services/settlementCalculator";
@@ -101,6 +101,18 @@ router.post("/settlements", async (req, res) => {
       .limit(1);
     const priorCarryForward = prior ? parseFloat(prior.carryForward) : 0;
 
+    // Query un-consumed settlement adjustments (CN deductions + TDS/TCS carry-forwards)
+    // for this brand+cycle. These arise from returns/cancellations where credit notes
+    // were issued or TDS could not be reversed because the deposit deadline had passed.
+    const adjustments = await db.select()
+      .from(settlementAdjustmentsTable)
+      .where(and(
+        eq(settlementAdjustmentsTable.onboardingId, ob.id),
+        eq(settlementAdjustmentsTable.cycle, cycle),
+        isNull(settlementAdjustmentsTable.settlementId),
+      ));
+    const creditNoteDeductions = adjustments.reduce((sum, a) => sum + parseFloat(a.amount), 0);
+
     // MDR rate is sourced from the onboarding's commercial terms, consistent with
     // how commissionRate/tcsRate/tdsRate are read here. Blank coerces to 0.
     const mdrRate = parseFloat(String(ob.mdrRate)) || 0;
@@ -110,6 +122,7 @@ router.post("/settlements", async (req, res) => {
       commissionRate: parseFloat(ob.commissionRate),
       mdrRate,
       priorCarryForward,
+      creditNoteDeductions,
     });
 
     const [row] = await db.insert(settlementsTable).values({
@@ -139,9 +152,18 @@ router.post("/settlements", async (req, res) => {
       status: "PENDING_APPROVAL",
     }).returning();
 
+    // Mark all consumed adjustments with this settlement's ID so they won't be
+    // double-counted in any future recompute of the same cycle.
+    if (adjustments.length > 0) {
+      await db.update(settlementAdjustmentsTable)
+        .set({ settlementId: row.id })
+        .where(inArray(settlementAdjustmentsTable.id, adjustments.map((a) => a.id)));
+    }
+
     const cfNote = priorCarryForward < 0 ? ` (applied ₹${Math.abs(priorCarryForward).toFixed(0)} carry-forward)` : "";
+    const cnNote = creditNoteDeductions > 0 ? ` (₹${creditNoteDeductions.toFixed(0)} CN/TDS adjustments applied)` : "";
     const negNote = calc.carryForward < 0 ? ` — net negative, ₹${Math.abs(calc.carryForward).toFixed(0)} carried to next cycle, payout floored at ₹0` : "";
-    await db.insert(activityTable).values({ user: req.user?.name ?? "Anjali Patel", action: `Computed settlement for ${ob.brandName} — ${cycle} (${eligibleBags.length} bags, GMV ₹${calc.grossGmv.toFixed(0)})${cfNote}${negNote}`, entityType: "settlement", entityRef: String(row.id), level: calc.carryForward < 0 ? "warning" : "info" });
+    await db.insert(activityTable).values({ user: req.user?.name ?? "Anjali Patel", action: `Computed settlement for ${ob.brandName} — ${cycle} (${eligibleBags.length} bags, GMV ₹${calc.grossGmv.toFixed(0)})${cfNote}${cnNote}${negNote}`, entityType: "settlement", entityRef: String(row.id), level: calc.carryForward < 0 ? "warning" : "info" });
 
     res.status(201).json(mapSettlement(row));
   } catch (err) {

@@ -1,6 +1,6 @@
 import { Router } from "express";
-import { db, bagsTable, invoicesTable, tcsRecordsTable, tdsRecordsTable, activityTable } from "@workspace/db";
-import { eq, and } from "drizzle-orm";
+import { db, bagsTable, invoicesTable, tcsRecordsTable, tdsRecordsTable, activityTable, settlementsTable, settlementAdjustmentsTable } from "@workspace/db";
+import { eq, and, desc } from "drizzle-orm";
 import { authorize } from "../middlewares/rbac";
 import { writeAudit } from "../services/audit";
 import { generateInvoice, generateCreditNote, renderInvoiceHtml } from "../services/invoiceService";
@@ -35,6 +35,7 @@ async function applyTaxReversal(req: Request, bag: Bag, reason: string) {
   const tcsAmt = parseFloat(bag.tcsAmount);
   const tdsAmt = parseFloat(bag.tdsAmount);
   const { month, year } = transactionPeriod(txnDate);
+  const deadline = reversalDeadline(txnDate);
 
   if (reversalEligible) {
     if (tcsAmt > 0) {
@@ -48,7 +49,7 @@ async function applyTaxReversal(req: Request, bag: Bag, reason: string) {
         tcsRate: "1.00",
         tcsAmount: String(-tcsAmt),
         status: "Accrued",
-        paymentDueDate: reversalDeadline(txnDate),
+        paymentDueDate: deadline,
         isReversal: true,
         reversalReason: reason,
         originalBagId: bag.bagId,
@@ -70,10 +71,32 @@ async function applyTaxReversal(req: Request, bag: Bag, reason: string) {
       });
     }
   } else {
-    // Already deposited with authorities — log an adjustment, do NOT reverse.
+    // TDS/TCS already deposited with authorities — cannot be reversed.
+    // Write structured adjustment records (consumable by settlement compute)
+    // AND a human-readable activity log entry.
+    if (tdsAmt > 0) {
+      await db.insert(settlementAdjustmentsTable).values({
+        onboardingId: bag.brandId,
+        cycle: bag.cycle,
+        bagId: bag.bagId,
+        adjustmentType: "TDS_CARRY_FORWARD",
+        amount: tdsAmt.toFixed(2),
+        reason: `TDS deadline ${deadline} passed — deposited, cannot reverse (${reason})`,
+      });
+    }
+    if (tcsAmt > 0) {
+      await db.insert(settlementAdjustmentsTable).values({
+        onboardingId: bag.brandId,
+        cycle: bag.cycle,
+        bagId: bag.bagId,
+        adjustmentType: "TCS_CARRY_FORWARD",
+        amount: tcsAmt.toFixed(2),
+        reason: `TCS deadline ${deadline} passed — deposited, cannot reverse (${reason})`,
+      });
+    }
     await db.insert(activityTable).values({
       user: req.user?.name ?? "System",
-      action: `TDS/TCS already deposited for ${bag.bagId} (deadline ${reversalDeadline(txnDate)} passed) — carried as adjustment, not reversed (${reason})`,
+      action: `TDS/TCS already deposited for ${bag.bagId} (deadline ${deadline} passed) — recorded as carry-forward adjustment for next settlement cycle, not reversed (${reason})`,
       entityType: "compliance",
       entityRef: bag.bagId,
       level: "warning",
@@ -84,9 +107,27 @@ async function applyTaxReversal(req: Request, bag: Bag, reason: string) {
     reversalEligible,
     tcsReversed: reversalEligible ? tcsAmt : 0,
     tdsReversed: reversalEligible ? tdsAmt : 0,
+    tdsCarryForward: !reversalEligible ? tdsAmt : 0,
+    tcsCarryForward: !reversalEligible ? tcsAmt : 0,
     adjustmentLogged: !reversalEligible,
-    deadline: reversalDeadline(txnDate),
+    deadline,
   };
+}
+
+/**
+ * Records a CREDIT_NOTE adjustment in settlement_adjustments for the bag's
+ * onboarding+cycle. Called immediately after any credit note is generated so
+ * the next settlement compute run can deduct the CN amount from the brand's net.
+ */
+async function recordCreditNoteAdjustment(bag: Bag, cnNetPayable: number, reason: string) {
+  await db.insert(settlementAdjustmentsTable).values({
+    onboardingId: bag.brandId,
+    cycle: bag.cycle,
+    bagId: bag.bagId,
+    adjustmentType: "CREDIT_NOTE",
+    amount: Math.abs(cnNetPayable).toFixed(2),
+    reason,
+  });
 }
 
 /**
@@ -262,6 +303,9 @@ router.post("/transactions/:orderId/cancel", authorize(["maker", "backend", "adm
       throw err;
     }
     const reversal = await applyTaxReversal(req, bag, cancelReason);
+    // Record the credit note amount as a structured settlement adjustment so
+    // the next settlement compute run deducts it from the brand's cycle net.
+    await recordCreditNoteAdjustment(bag, parseFloat(creditNote.netPayable), `Cancellation CN ${creditNote.invoiceNumber}`);
 
     await db.update(bagsTable)
       .set({ omsState: "cancelled", eligibility: "on_hold", reversalStatus: "CANCELLED", reversalReason: cancelReason })
@@ -277,6 +321,7 @@ router.post("/transactions/:orderId/cancel", authorize(["maker", "backend", "adm
         reversalEligible: reversal.reversalEligible,
         tcsReversed: reversal.tcsReversed,
         tdsReversed: reversal.tdsReversed,
+        cnAdjustmentRecorded: true,
       },
     });
 
@@ -318,6 +363,8 @@ router.post("/transactions/:orderId/return/accept", authorize(["backend", "admin
       throw err;
     }
     const reversal = await applyTaxReversal(req, bag, reason);
+    // Record the credit note amount as a structured settlement adjustment.
+    await recordCreditNoteAdjustment(bag, parseFloat(creditNote.netPayable), `Return accept CN ${creditNote.invoiceNumber}`);
 
     await db.update(bagsTable)
       .set({ reversalStatus: "RETURNED", omsState: "return_accepted", eligibility: "on_hold" })
@@ -332,6 +379,7 @@ router.post("/transactions/:orderId/return/accept", authorize(["backend", "admin
         reversalEligible: reversal.reversalEligible,
         tcsReversed: reversal.tcsReversed,
         tdsReversed: reversal.tdsReversed,
+        cnAdjustmentRecorded: true,
       },
     });
 
@@ -366,21 +414,24 @@ router.post("/transactions/:orderId/return/reject", authorize(["backend", "admin
     const today = new Date().toISOString().split("T")[0];
     const restored = bag.windowExpiryDate && bag.windowExpiryDate >= today ? "in_window" : "eligible";
 
+    // Clear reversalStatus so the bag is not locked — the customer may re-initiate
+    // within the window. The audit log captures the rejection; omsState reverts to
+    // delivery_done (Delivered) per BRD requirement.
     await db.update(bagsTable)
-      .set({ reversalStatus: "RETURN_REJECTED", reversalReason: reason ?? bag.reversalReason, omsState: "delivery_done", eligibility: restored })
+      .set({ reversalStatus: null, reversalReason: reason ?? bag.reversalReason, omsState: "delivery_done", eligibility: restored })
       .where(eq(bagsTable.orderId, orderId));
     await writeAudit(req, {
       entityType: "transaction",
       entityId: orderId,
       action: "RETURN_REJECTED",
-      changedFields: { reason: reason ?? bag.reversalReason, restoredEligibility: restored },
+      changedFields: { reason: reason ?? bag.reversalReason, restoredEligibility: restored, reversalStatusCleared: true },
     });
 
     return res.json({
       order_id: orderId,
       scenario: 2,
-      reversalStatus: "RETURN_REJECTED",
-      message: "Return rejected by brand — order remains Delivered, no credit note or reversal issued.",
+      reversalStatus: null,
+      message: "Return rejected by brand — order reverts to Delivered. No credit note or reversal issued. Customer may re-initiate if still within window.",
     });
   } catch (err) {
     req.log.error({ err }, "return reject failed");

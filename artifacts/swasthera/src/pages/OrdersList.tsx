@@ -9,7 +9,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
-import { Search, Loader2, Plus, Trash2, RefreshCw, Database, PackageSearch, Pencil, Upload, Download, RefreshCcw, Receipt, RotateCcw, AlertTriangle, Check, X, Wand2, FlaskConical, Info } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Search, Loader2, Plus, Trash2, RefreshCw, Database, PackageSearch, Pencil, Upload, Download, RefreshCcw, Receipt, RotateCcw, AlertTriangle, Check, X, Wand2, FlaskConical, Info, Minus } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useRole } from "@/contexts/RoleContext";
 
@@ -145,6 +146,233 @@ function parseCsv(text: string): Record<string, string>[] {
   });
 }
 
+// ─── Demo Order Factory ───────────────────────────────────────────────────────
+
+const MONTHS = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
+function getCycleOptions(): string[] {
+  const result: string[] = [];
+  const now = new Date();
+  for (let i = 0; i < 4; i++) {
+    const m = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    result.push(`${MONTHS[m.getMonth()]}-${m.getFullYear()}`);
+  }
+  return result;
+}
+
+const SEED_STAGES: Array<{ key: string; label: string; description: string; color: string }> = [
+  { key: "awaiting_delivery",  label: "Awaiting Delivery",             color: "bg-blue-100 text-blue-800",   description: "Payment confirmed, not yet shipped. No invoice generated." },
+  { key: "in_window",          label: "In Return Window",              color: "bg-amber-100 text-amber-800", description: "Delivered 3 days ago; return window still open. Invoice captured." },
+  { key: "eligible",           label: "Eligible for Settlement",       color: "bg-green-100 text-green-800", description: "Delivered 30 days ago; window closed. Ready for settlement." },
+  { key: "on_hold",            label: "Finance Hold",                  color: "bg-orange-100 text-orange-800", description: "Delivered but placed on hold by finance." },
+  { key: "settled",            label: "Already Settled",               color: "bg-slate-100 text-slate-700", description: "Included in a prior settlement cycle." },
+  { key: "cancelled",          label: "Pre-delivery Cancellation",     color: "bg-red-100 text-red-800",     description: "Cancelled before delivery. Reversal status: CANCELLED. No invoice." },
+  { key: "return_accepted",    label: "Return Accepted",               color: "bg-purple-100 text-purple-800", description: "Return journey completed. Reversal status: RETURNED." },
+  { key: "return_rejected",    label: "Return Rejected (Expired)",     color: "bg-slate-100 text-slate-600", description: "Return attempted after window expired. Status: WINDOW_EXPIRED_REJECTED." },
+];
+
+interface SeedResult {
+  message: string;
+  created: number;
+  brandName: string;
+  cycle: string;
+  bags: Array<{ orderId: string; bagId: string; stage: string; eligibility: string; omsState: string; invoice: string | null }>;
+}
+
+function SeedOrdersDialog({ open, onClose, brands, onSuccess }: {
+  open: boolean;
+  onClose: () => void;
+  brands: ActiveBrand[] | undefined;
+  onSuccess: () => void;
+}) {
+  const [brandId, setBrandId] = useState("");
+  const [cycle, setCycle] = useState(() => getCycleOptions()[0]);
+  const [selections, setSelections] = useState<Record<string, number>>({});
+  const [result, setResult] = useState<SeedResult | null>(null);
+  const { toast } = useToast();
+  const cycleOptions = getCycleOptions();
+
+  const mutation = useMutation({
+    mutationFn: async (payload: { onboardingId: number; cycle: string; stages: Array<{ stage: string; count: number }> }) => {
+      const r = await fetch("/api/demo/seed-orders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Role": "backend" },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) throw new Error((await r.json()).error ?? "Seed failed");
+      return r.json() as Promise<SeedResult>;
+    },
+    onSuccess: (data) => { setResult(data); onSuccess(); },
+    onError: (err: Error) => toast({ title: "Seed failed", description: err.message, variant: "destructive" }),
+  });
+
+  function handleClose() { setResult(null); setSelections({}); setBrandId(""); onClose(); }
+
+  function toggleStage(key: string) {
+    setSelections((prev) => {
+      const next = { ...prev };
+      if (next[key]) { delete next[key]; } else { next[key] = 3; }
+      return next;
+    });
+  }
+
+  function setCount(key: string, n: number) {
+    if (n < 1 || n > 20) return;
+    setSelections((prev) => ({ ...prev, [key]: n }));
+  }
+
+  const totalBags = Object.values(selections).reduce((s, n) => s + n, 0);
+  const canSubmit = !!brandId && totalBags > 0 && !mutation.isPending;
+  const STAGE_LABEL = Object.fromEntries(SEED_STAGES.map((s) => [s.key, s.label]));
+
+  function handleSubmit() {
+    if (!canSubmit) return;
+    mutation.mutate({
+      onboardingId: parseInt(brandId),
+      cycle,
+      stages: Object.entries(selections).map(([stage, count]) => ({ stage, count })),
+    });
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && handleClose()}>
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <FlaskConical className="h-5 w-5 text-violet-600" />
+            Seed Demo Orders
+          </DialogTitle>
+          <DialogDescription>
+            Instantly populate the order register with bags at any lifecycle stage — no manual entry needed.
+          </DialogDescription>
+        </DialogHeader>
+
+        {result ? (
+          <div className="space-y-4">
+            <div className="flex items-center gap-2 rounded-lg bg-green-50 border border-green-200 px-4 py-3 text-green-800">
+              <Check className="h-5 w-5 text-green-600 shrink-0" />
+              <span className="font-medium">{result.message}</span>
+            </div>
+            <p className="text-sm text-slate-500">
+              <span className="font-medium text-slate-700">{result.created}</span> bag{result.created !== 1 ? "s" : ""} created for <span className="font-medium text-slate-700">{result.brandName}</span> · {result.cycle}
+            </p>
+            <div className="rounded-lg border border-slate-200 overflow-hidden">
+              <Table>
+                <TableHeader>
+                  <TableRow className="bg-slate-50">
+                    <TableHead className="text-xs">Order ID</TableHead>
+                    <TableHead className="text-xs">Stage</TableHead>
+                    <TableHead className="text-xs">Eligibility</TableHead>
+                    <TableHead className="text-xs">Invoice</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {result.bags.map((b) => (
+                    <TableRow key={b.orderId}>
+                      <TableCell className="font-mono text-xs text-slate-700">{b.orderId}</TableCell>
+                      <TableCell className="text-xs">{STAGE_LABEL[b.stage] ?? b.stage}</TableCell>
+                      <TableCell className="text-xs"><EligibilityBadge status={b.eligibility} /></TableCell>
+                      <TableCell className="font-mono text-xs">{b.invoice ?? <span className="text-slate-400">—</span>}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-5">
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <Label className="text-sm font-medium">Brand</Label>
+                <Select value={brandId} onValueChange={setBrandId}>
+                  <SelectTrigger className="h-9"><SelectValue placeholder="Select a brand…" /></SelectTrigger>
+                  <SelectContent>
+                    {(brands ?? []).map((b) => (
+                      <SelectItem key={b.id} value={String(b.id)}>{b.brandName}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-sm font-medium">Settlement Cycle</Label>
+                <Select value={cycle} onValueChange={setCycle}>
+                  <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {cycleOptions.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div>
+              <Label className="text-sm font-medium mb-2 block">Lifecycle Stages to Seed</Label>
+              <div className="space-y-1.5">
+                {SEED_STAGES.map((s) => {
+                  const checked = !!selections[s.key];
+                  const count = selections[s.key] ?? 3;
+                  return (
+                    <div
+                      key={s.key}
+                      className={`flex items-center gap-3 rounded-lg border px-3 py-2.5 cursor-pointer transition-colors select-none ${checked ? "border-violet-300 bg-violet-50/60" : "border-slate-200 hover:bg-slate-50"}`}
+                      onClick={() => toggleStage(s.key)}
+                    >
+                      <Checkbox
+                        checked={checked}
+                        onCheckedChange={() => toggleStage(s.key)}
+                        onClick={(e) => e.stopPropagation()}
+                        className="shrink-0"
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-sm font-medium text-slate-900">{s.label}</span>
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded font-mono font-medium ${s.color}`}>{s.key}</span>
+                        </div>
+                        <p className="text-xs text-slate-500 mt-0.5 leading-snug">{s.description}</p>
+                      </div>
+                      {checked && (
+                        <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+                          <Button variant="outline" size="icon" className="h-6 w-6" onClick={() => setCount(s.key, count - 1)} disabled={count <= 1}>
+                            <Minus className="h-3 w-3" />
+                          </Button>
+                          <span className="w-6 text-center text-sm font-medium tabular-nums">{count}</span>
+                          <Button variant="outline" size="icon" className="h-6 w-6" onClick={() => setCount(s.key, count + 1)} disabled={count >= 20}>
+                            <Plus className="h-3 w-3" />
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {totalBags > 0 && (
+              <div className="flex items-center gap-2 rounded-lg bg-violet-50 border border-violet-200 px-3 py-2 text-sm text-violet-700">
+                <FlaskConical className="h-4 w-4 shrink-0" />
+                <span>Ready to seed <strong>{totalBags}</strong> bag{totalBags !== 1 ? "s" : ""} across <strong>{Object.keys(selections).length}</strong> stage{Object.keys(selections).length !== 1 ? "s" : ""}</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        <DialogFooter className="pt-2">
+          {result ? (
+            <Button variant="outline" onClick={handleClose}>Close</Button>
+          ) : (
+            <>
+              <Button variant="outline" onClick={handleClose}>Cancel</Button>
+              <Button onClick={handleSubmit} disabled={!canSubmit} className="bg-violet-600 hover:bg-violet-700 text-white">
+                {mutation.isPending
+                  ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Seeding…</>
+                  : <><FlaskConical className="h-4 w-4 mr-2" />Generate {totalBags > 0 ? `${totalBags} ` : ""}Order{totalBags !== 1 ? "s" : ""}</>}
+              </Button>
+            </>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function SimulatorBanner() {
   return (
     <div className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
@@ -165,6 +393,7 @@ export function OrdersList() {
   const [eligibility, setEligibility] = useState<string>("all");
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [showBulkDialog, setShowBulkDialog] = useState(false);
+  const [showSeedDialog, setShowSeedDialog] = useState(false);
   const [editingBag, setEditingBag] = useState<BagRow | null>(null);
   const [invoiceBag, setInvoiceBag] = useState<BagRow | null>(null);
   const [reversalBag, setReversalBag] = useState<BagRow | null>(null);
@@ -363,6 +592,15 @@ export function OrdersList() {
                 {resetDemoMutation.isPending
                   ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Resetting...</>
                   : <><Wand2 className="h-4 w-4 mr-2" /> Reset Demo Bags</>}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setShowSeedDialog(true)}
+                className="border-violet-300 text-violet-700 hover:bg-violet-50"
+                title="Generate demo bags at any lifecycle stage for any active brand"
+              >
+                <FlaskConical className="h-4 w-4 mr-2" /> Seed Demo Orders
               </Button>
             </>
           )}
@@ -611,6 +849,16 @@ export function OrdersList() {
           brands={brands ?? []}
           onSubmit={(bags) => bulkCreateMutation.mutate(bags)}
           isPending={bulkCreateMutation.isPending}
+        />
+      )}
+
+      {/* Demo Order Factory */}
+      {isBackend && (
+        <SeedOrdersDialog
+          open={showSeedDialog}
+          onClose={() => setShowSeedDialog(false)}
+          brands={brands}
+          onSuccess={() => queryClient.invalidateQueries({ queryKey: ["listOrders"] })}
         />
       )}
 

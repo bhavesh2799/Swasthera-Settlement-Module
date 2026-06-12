@@ -705,14 +705,24 @@ function InvoiceDialog({
                         {isCn ? "Credit Note" : "Invoice"}
                       </Badge>
                     </div>
-                    <a
-                      href={`/api/invoices/${inv.id}/download`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-xs text-blue-600 hover:underline flex items-center gap-1"
-                    >
-                      <Download className="h-3 w-3" /> Download
-                    </a>
+                    <div className="flex items-center gap-3">
+                      <a
+                        href={`/api/invoices/${inv.id}/pdf`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-xs text-blue-600 hover:underline flex items-center gap-1"
+                      >
+                        <Download className="h-3 w-3" /> Customer PDF
+                      </a>
+                      <a
+                        href={`/api/invoices/${inv.id}/brand-pdf`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-xs text-blue-600 hover:underline flex items-center gap-1"
+                      >
+                        <Download className="h-3 w-3" /> Brand PDF
+                      </a>
+                    </div>
                   </div>
                   {inv.reason && <p className="text-xs text-amber-700 italic mb-2">{inv.reason}</p>}
                   <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">

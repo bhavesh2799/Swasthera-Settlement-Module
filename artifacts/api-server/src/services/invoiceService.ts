@@ -424,6 +424,85 @@ export async function renderInvoicePdf(inv: Invoice): Promise<Uint8Array> {
   return generateInvoicePdf(buildCustomerInvoiceDocument(inv));
 }
 
+/**
+ * Builds a brand-facing settlement invoice document — the deduction waterfall
+ * (GMV → commission → GST on commission → TDS → TCS → net payable to brand) that
+ * the marketplace operator raises against the brand. This is distinct from the
+ * customer GST tax invoice produced by `buildCustomerInvoiceDocument`.
+ */
+export function buildBrandInvoiceDocument(inv: Invoice): InvoiceDocument {
+  const isCn = inv.invoiceType === "CREDIT_NOTE";
+
+  return {
+    brandHeading: inv.brandName ?? "Brand",
+    docTitle: isCn ? "Brand Settlement Credit Note" : "Brand Settlement Invoice",
+    invoiceNumber: inv.invoiceNumber,
+    metaItems: [
+      { label: "Invoice Date", value: inv.invoiceDate ?? "" },
+      { label: "Order ID", value: inv.orderId },
+      { label: "Order Status", value: (inv.orderStatus ?? "").toUpperCase() },
+      { label: "Payment", value: inv.paymentMethod ?? "" },
+      { label: "Settlement Period", value: inv.settlementCycle ?? "" },
+    ],
+    parties: [
+      {
+        heading: "Raised By (Marketplace Operator)",
+        name: inv.platformName ?? PLATFORM_NAME,
+        lines: [`GSTIN: ${inv.platformGstin ?? PLATFORM_GSTIN}`],
+      },
+      {
+        heading: "Billed To (Brand / Seller)",
+        name: inv.brandName ?? "",
+        lines: [
+          `Seller GSTIN: ${inv.sellerGstin ?? "-"}`,
+          inv.warehouseName ? `Warehouse: ${inv.warehouseName}` : "",
+        ].filter(Boolean),
+      },
+    ],
+    columns: [
+      { key: "product", header: "Product", width: 4 },
+      { key: "hsn", header: "HSN", width: 1.4 },
+      { key: "qty", header: "Qty", width: 1, align: "right" },
+      { key: "gmv", header: "GMV", width: 2, align: "right" },
+    ],
+    rows: [
+      {
+        negative: isCn,
+        cells: {
+          product: inv.productName ?? "",
+          hsn: inv.hsnCode ?? "",
+          qty: String(inv.quantity ?? 1),
+          gmv: formatINR(num(inv.gmv)),
+        },
+      },
+    ],
+    summary: [
+      { label: "Gross Merchandise Value (GMV)", value: formatINR(num(inv.gmv)), negative: isCn },
+      { label: "Less: Commission", value: formatINR(num(inv.commissionAmount)), negative: isCn },
+      { label: "Less: GST on Commission @ 18%", value: formatINR(num(inv.gstOnCommission)), negative: isCn },
+      { label: "Less: TDS Deducted (Sec 194-O)", value: formatINR(num(inv.tdsDeducted)), negative: isCn },
+      { label: "Less: TCS Collected (Sec 52)", value: formatINR(num(inv.tcsCollected)), negative: isCn },
+    ],
+    netLabel: isCn ? "Net Reversal to Brand" : "Net Payable to Brand",
+    netValue: formatINR(num(inv.netPayable)),
+    footerNotes: [
+      "Commission and 18% GST on commission are charged by the marketplace operator on the GMV.",
+      "TDS is deducted under Section 194-O of the IT Act; TCS is collected at source under Section 52 of the CGST Act.",
+      ...(inv.reason ? [`Reason: ${inv.reason}`] : []),
+      "This is a system-generated settlement document and does not require a physical signature.",
+    ],
+    signatory: {
+      heading: `For ${inv.platformName ?? PLATFORM_NAME}`,
+      lines: ["Authorised Signatory"],
+    },
+  };
+}
+
+/** Renders a brand settlement invoice / credit note as a PDF byte buffer. */
+export async function renderBrandInvoicePdf(inv: Invoice): Promise<Uint8Array> {
+  return generateInvoicePdf(buildBrandInvoiceDocument(inv));
+}
+
 /** Renders an invoice as a simple HTML document for download/preview. */
 export function renderInvoiceHtml(inv: Invoice): string {
   const isCn = inv.invoiceType === "CREDIT_NOTE";

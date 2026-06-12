@@ -2,7 +2,7 @@ import { Router } from "express";
 import { db, invoicesTable } from "@workspace/db";
 import { and, desc, eq, gte, lte, inArray, type SQL } from "drizzle-orm";
 import JSZip from "jszip";
-import { renderInvoicePdf } from "../services/invoiceService";
+import { renderInvoicePdf, renderBrandInvoicePdf } from "../services/invoiceService";
 import type { Invoice } from "@workspace/db";
 
 const router = Router();
@@ -130,6 +130,24 @@ router.get("/invoices/:invoiceId/pdf", async (req, res) => {
   } catch (err) {
     req.log.error({ err }, "invoice pdf failed");
     return res.status(500).json({ error: "failed to render pdf" });
+  }
+});
+
+/** GET /invoices/:invoiceId/brand-pdf — brand settlement invoice (deduction waterfall) as PDF. */
+router.get("/invoices/:invoiceId/brand-pdf", async (req, res) => {
+  try {
+    const id = parseInt(req.params.invoiceId, 10);
+    if (Number.isNaN(id)) return res.status(400).json({ error: "invalid invoice id" });
+    const [invoice] = await db.select().from(invoicesTable).where(eq(invoicesTable.id, id)).limit(1);
+    if (!invoice) return res.status(404).json({ error: "invoice not found" });
+
+    const pdf = await renderBrandInvoicePdf(invoice);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${invoice.invoiceNumber}-brand.pdf"`);
+    return res.send(Buffer.from(pdf));
+  } catch (err) {
+    req.log.error({ err }, "brand invoice pdf failed");
+    return res.status(500).json({ error: "failed to render brand pdf" });
   }
 });
 

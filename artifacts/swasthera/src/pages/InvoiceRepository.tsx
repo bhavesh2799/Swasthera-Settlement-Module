@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
-  Search, Loader2, FileText, Download, FileArchive, FileSpreadsheet, Receipt, ChevronDown, RefreshCw,
+  Search, Loader2, FileText, Download, FileArchive, FileSpreadsheet, Receipt, ChevronDown, RefreshCw, Building2,
 } from "lucide-react";
 
 interface InvoiceRow {
@@ -352,11 +352,18 @@ export function InvoiceRepository() {
                       <TableCell className={`text-right text-sm font-medium ${isCn ? "text-red-600" : "text-slate-900"}`}>{inr(r.totalInvoiceValue)}</TableCell>
                       <TableCell><StatusBadge status={r.orderStatus} /></TableCell>
                       <TableCell className="px-4 text-right">
-                        <a href={`/api/invoices/${r.id}/pdf`} title="Download PDF">
-                          <Button variant="ghost" size="icon" className="h-7 w-7 text-slate-500 hover:text-amber-700">
-                            <Download className="h-3.5 w-3.5" />
-                          </Button>
-                        </a>
+                        <div className="flex items-center justify-end gap-1">
+                          <a href={`/api/invoices/${r.id}/pdf`} title="Download customer tax invoice (PDF)">
+                            <Button variant="ghost" size="icon" className="h-7 w-7 text-slate-500 hover:text-amber-700">
+                              <Download className="h-3.5 w-3.5" />
+                            </Button>
+                          </a>
+                          <a href={`/api/invoices/${r.id}/brand-pdf`} title="Download brand settlement invoice (PDF)">
+                            <Button variant="ghost" size="icon" className="h-7 w-7 text-slate-500 hover:text-blue-700">
+                              <Building2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </a>
+                        </div>
                       </TableCell>
                     </TableRow>
                   );

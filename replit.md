@@ -113,6 +113,17 @@ Role switcher (Maker / Checker toggle) in the sidebar footer — active role lab
 - **Maker**: can create drafts, run KYB, upload documents, submit for review
 - **Checker**: can approve or reject submitted onboardings, approve settlements
 
+## Invoice PDFs (two distinct documents)
+
+Every captured order generates an `invoices` row. Each row can be downloaded as TWO different PDFs:
+- **Customer tax invoice** — `GET /api/invoices/:id/pdf` (`buildCustomerInvoiceDocument`): GST tax invoice to the end customer (CGST/SGST/IGST, Bill To customer, HSN). Credit notes use the same builder.
+- **Brand settlement invoice** — `GET /api/invoices/:id/brand-pdf` (`buildBrandInvoiceDocument`): the deduction waterfall the marketplace raises against the brand (GMV → commission → GST on commission → TDS → TCS → net payable to brand).
+- A legacy HTML preview still exists at `GET /api/invoices/:id/download` but the UI no longer links to it — both the Orders invoice dialog and the Invoice Repository download PDFs.
+
+## Seeing reversals manually (UI)
+
+Reversal actions live on the **Orders page** (`/orders`) and require the **Backend** role (switch via the role toggle in the sidebar footer — the Actions/Reverse column only renders for Backend). Each bag row has a Reverse (↺) button → opens the ReversalDialog, which calls `GET /transactions/:orderId/reversal-preview` (read-only) and shows the classified scenario + statutory deadline before you confirm. The Return Window column also shows a red "Reversal by <date>" warning when the deadline has passed.
+
 ## Seed Data (MAY-2026-C1 cycle)
 
 Active brands: Zara India, H&M India, Fabindia + 2 new onboardings (Manyavar, Biba)
@@ -120,6 +131,15 @@ Active brands: Zara India, H&M India, Fabindia + 2 new onboardings (Manyavar, Bi
 - 3 settlements (1 APPROVED, 1 PENDING_APPROVAL, 1 COMPUTED)
 - 1 completed payout with UTR for Zara India
 - TCS/TDS records for May 2026 (3 entries each) and April 2026
+
+### Reversal demo bags (JUN-2026-DEMO cycle)
+
+Three Zara India bags (each with a captured invoice) are seeded so all reversal cases are runnable live from the Orders page in the Backend role:
+- `DEMO-PREDELIVERY-CANCEL` — not yet delivered (delivery_date NULL) → Reverse triggers Pre-delivery cancellation (scenario 1) → CANCELLED + credit note + reversal (deadline in the future, eligible).
+- `DEMO-RETURN-INWINDOW` — delivered, return window open → Reverse initiates a return (scenario 2); then accept (credit note + reversal) or reject (window restored).
+- `DEMO-RETURN-PASTWINDOW` — delivered, window expired, reversal deadline already past (red warning) → Reverse is rejected (scenario 3): no credit note, audit log only.
+
+These are inserted directly in Postgres (no seed script exists); recreate via `POST /bags` + `POST /transactions/capture` (X-Role: backend), and `UPDATE bags SET delivery_date=NULL` for the pre-delivery one (POST /bags always defaults a delivery date).
 
 ## Codegen
 

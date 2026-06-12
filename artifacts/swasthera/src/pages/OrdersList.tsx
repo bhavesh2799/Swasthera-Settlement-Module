@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
-import { Search, Loader2, Plus, Trash2, RefreshCw, Database, PackageSearch, Pencil, Upload, Download, RefreshCcw, Receipt, RotateCcw, AlertTriangle, Check, X, Wand2 } from "lucide-react";
+import { Search, Loader2, Plus, Trash2, RefreshCw, Database, PackageSearch, Pencil, Upload, Download, RefreshCcw, Receipt, RotateCcw, AlertTriangle, Check, X, Wand2, FlaskConical, Info } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useRole } from "@/contexts/RoleContext";
 
@@ -168,6 +168,7 @@ export function OrdersList() {
   const [editingBag, setEditingBag] = useState<BagRow | null>(null);
   const [invoiceBag, setInvoiceBag] = useState<BagRow | null>(null);
   const [reversalBag, setReversalBag] = useState<BagRow | null>(null);
+  const [scenarioBag, setScenarioBag] = useState<BagRow | null>(null);
   const [recalcLoading, setRecalcLoading] = useState(false);
   const { isBackend } = useRole();
   const { toast } = useToast();
@@ -547,6 +548,15 @@ export function OrdersList() {
                             <Button
                               variant="ghost"
                               size="icon"
+                              className="h-7 w-7 text-purple-500 hover:text-purple-700 hover:bg-purple-50"
+                              title="Set scenario state (Cases 1–4)"
+                              onClick={() => setScenarioBag(row)}
+                            >
+                              <FlaskConical className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
                               className="h-7 w-7 text-slate-500 hover:text-amber-700"
                               title="Reverse / cancel order"
                               onClick={() => setReversalBag(row)}
@@ -634,7 +644,224 @@ export function OrdersList() {
           onDone={() => queryClient.invalidateQueries({ queryKey: ["listOrders"] })}
         />
       )}
+
+      {/* Set scenario state dialog (Backend role) */}
+      {scenarioBag && (
+        <SetScenarioDialog
+          bag={scenarioBag}
+          open={!!scenarioBag}
+          onOpenChange={(open) => !open && setScenarioBag(null)}
+          onApplied={() => {
+            queryClient.invalidateQueries({ queryKey: ["listOrders"] });
+            setScenarioBag(null);
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+// ---------- Set Scenario Dialog ----------
+
+interface SetScenarioResult {
+  scenario: number;
+  invoice: { invoiceNumber: string; netPayable: number };
+  reversalEligible: boolean;
+  reversalDeadline: string;
+}
+
+interface SetScenarioDialogProps {
+  bag: BagRow;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onApplied: () => void;
+}
+
+function SetScenarioDialog({ bag, open, onOpenChange, onApplied }: SetScenarioDialogProps) {
+  const [pastDeadline, setPastDeadline] = useState(false);
+  const [applying, setApplying] = useState<number | null>(null);
+  const [result, setResult] = useState<SetScenarioResult | null>(null);
+  const { toast } = useToast();
+
+  const applyScenario = async (scenario: 1 | 2 | 4) => {
+    setApplying(scenario);
+    setResult(null);
+    try {
+      const r = await fetch(`/api/bags/${bag.id}/set-scenario`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Role": "backend" },
+        body: JSON.stringify({ scenario, pastDeadline }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error ?? "Failed to apply scenario");
+      setResult(data as SetScenarioResult);
+      toast({
+        title: `Bag set to Case ${scenario === 2 ? "2/3" : scenario} state`,
+        description: `${bag.bagId} ready. Now click ↺ Reverse to run the flow.`,
+      });
+      onApplied();
+    } catch (err) {
+      toast({ title: "Apply failed", description: (err as Error).message, variant: "destructive" });
+    } finally {
+      setApplying(null);
+    }
+  };
+
+  const cases: Array<{
+    n: 1 | 2 | 4;
+    label: string;
+    state: string;
+    nextStep: string;
+    description: string;
+    borderColor: string;
+    bgColor: string;
+    labelColor: string;
+    tagColor: string;
+  }> = [
+    {
+      n: 1,
+      label: "Case 1 — Pre-delivery cancellation",
+      state: "Awaiting Delivery",
+      nextStep: "↺ Reverse → Confirm Cancellation",
+      description:
+        "Sets delivery_date = NULL, oms_state = bag_confirmed. On cancel: voids invoice, issues credit note, reverses TDS if within the 7th-of-month deadline.",
+      borderColor: "border-blue-200",
+      bgColor: "bg-blue-50/50",
+      labelColor: "text-blue-900",
+      tagColor: "bg-blue-100 text-blue-700",
+    },
+    {
+      n: 2,
+      label: "Cases 2 & 3 — In-window return",
+      state: "In Window (8 days left)",
+      nextStep: "↺ Reverse → Initiate Return → Brand Accepts (Case 2) or Brand Rejects (Case 3)",
+      description:
+        "Delivered 7 days ago, window expires in 8 days. Brand Accepts → credit note + TDS if eligible. Brand Rejects → no credit note, bag restored to Delivered.",
+      borderColor: "border-amber-200",
+      bgColor: "bg-amber-50/50",
+      labelColor: "text-amber-900",
+      tagColor: "bg-amber-100 text-amber-700",
+    },
+    {
+      n: 4,
+      label: "Case 4 — Past return window",
+      state: "Eligible (window expired 30 days ago)",
+      nextStep: "↺ Reverse → Log Rejected Request",
+      description:
+        "Delivered 45 days ago, window closed 30 days ago. TDS reversal deadline also past. Cancel attempt is logged and rejected — no credit note, no reversal.",
+      borderColor: "border-slate-200",
+      bgColor: "bg-slate-50/50",
+      labelColor: "text-slate-900",
+      tagColor: "bg-slate-200 text-slate-700",
+    },
+  ];
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!o) { setResult(null); setPastDeadline(false); } onOpenChange(o); }}>
+      <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <FlaskConical className="h-4 w-4 text-purple-600" />
+            Set Scenario State
+          </DialogTitle>
+          <DialogDescription className="font-mono text-xs">{bag.bagId} / {bag.orderId}</DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-3 py-1">
+          {/* TDS deadline toggle */}
+          <div className="flex items-start gap-3 rounded-md border border-orange-200 bg-orange-50 p-3">
+            <input
+              id="pastDeadline"
+              type="checkbox"
+              checked={pastDeadline}
+              onChange={(e) => setPastDeadline(e.target.checked)}
+              className="mt-0.5 h-4 w-4 accent-orange-600 shrink-0"
+            />
+            <label htmlFor="pastDeadline" className="cursor-pointer select-none">
+              <span className="text-sm font-semibold text-orange-900 block">
+                Past TDS deposit deadline (prior-month invoice)
+              </span>
+              <span className="text-xs text-orange-700 mt-0.5 block">
+                Sets invoice date to the 15th of last month, pushing the TDS reversal deadline (7th of this month) into the past.
+                Credit note still issues normally — but TDS is <em>not</em> reversed; logged as carry-forward adjustment instead.
+                Use this to demo the "Case 1b / late return" timing path.
+              </span>
+            </label>
+          </div>
+
+          {/* Case cards */}
+          {cases.map((c) => (
+            <div key={c.n} className={`rounded-lg border p-3.5 ${c.borderColor} ${c.bgColor}`}>
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex-1 min-w-0">
+                  <p className={`text-sm font-semibold ${c.labelColor}`}>{c.label}</p>
+                  <p className="text-xs text-slate-600 mt-1">{c.description}</p>
+                  <div className="flex flex-wrap gap-1.5 mt-2">
+                    <span className={`inline-flex text-[11px] font-medium px-1.5 py-0.5 rounded ${c.tagColor}`}>
+                      → {c.state}
+                    </span>
+                    <span className="inline-flex text-[11px] font-medium px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">
+                      then: {c.nextStep}
+                    </span>
+                  </div>
+                  {c.n === 4 && (
+                    <p className="text-[11px] text-slate-400 mt-1.5 italic">
+                      Case 4 always sets invoice to 47 days ago — TDS deadline is inherently expired regardless of the toggle above.
+                    </p>
+                  )}
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="shrink-0 mt-0.5"
+                  disabled={applying !== null}
+                  onClick={() => applyScenario(c.n)}
+                >
+                  {applying === c.n
+                    ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    : "Apply"}
+                </Button>
+              </div>
+            </div>
+          ))}
+
+          {/* Case 5 — info only */}
+          <div className="rounded-lg border border-purple-200 bg-purple-50/50 p-3.5">
+            <div className="flex items-start gap-2">
+              <Info className="h-4 w-4 text-purple-600 mt-0.5 shrink-0" />
+              <div>
+                <p className="text-sm font-semibold text-purple-900">Case 5 — Negative net settlement (carry-forward)</p>
+                <p className="text-xs text-slate-600 mt-1">
+                  Apply <strong>Cases 2/3</strong> state above, then ↺ Reverse → Brand Accepts.
+                  Then go to <strong>Settlements → Compute New Run</strong>. If the credit note
+                  value exceeds the brand's remaining cycle GMV, the settlement detail will show
+                  net payable in red with a carry-forward note. TDS reversal eligibility follows
+                  normal deadline rules — a negative net does not exempt TDS.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Result panel after applying */}
+          {result && (
+            <div className="rounded-md border border-green-200 bg-green-50 p-3 text-xs space-y-1">
+              <p className="font-semibold text-green-900">
+                ✓ Applied — bag ready for Case {result.scenario === 2 ? "2/3" : result.scenario}
+              </p>
+              <p className="text-green-700">New invoice: <span className="font-mono">{result.invoice.invoiceNumber}</span> · Net payable: ₹{Number(result.invoice.netPayable).toLocaleString("en-IN")}</p>
+              <p className={result.reversalEligible ? "text-green-700" : "text-amber-700 font-medium"}>
+                TDS reversal: {result.reversalEligible ? `✓ eligible (deadline ${result.reversalDeadline})` : `✗ deadline ${result.reversalDeadline} has passed — TDS will be logged as carry-forward`}
+              </p>
+              <p className="text-green-600 mt-1">Now click <strong>↺ Reverse</strong> on this row to run the flow.</p>
+            </div>
+          )}
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Close</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

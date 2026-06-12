@@ -1,0 +1,58 @@
+Case 1 — Simple Cancellation (before delivery)
+Order is cancelled before dispatch or delivery.
+
+Generate credit note against the original invoice
+Check TDS reversal eligibility: if credit note is generated on or before the 7th of the month following the order date → reverse TDS fully
+If credit note is generated after the 7th → do not reverse TDS, log as adjustment carry-forward
+TCS is never reversed
+Order status → Cancelled
+
+
+Case 2 — Cancellation after delivery, within return window, brand accepts
+Order delivered, customer raises return request within the return window, brand accepts the return.
+
+Initiate return journey
+On brand acceptance, generate credit note
+At the moment of credit note generation, check TDS reversal eligibility against the original order/transaction date:
+
+If on or before the 7th of the following month → reverse TDS fully
+If after the 7th → do not reverse TDS, log as adjustment carry-forward
+
+
+TCS is never reversed
+Order status → Returned
+Critical timing scenario: if the return request was raised within the return window but brand acceptance comes after the 7th of the following month, TDS reversal is still not allowed. The check is on credit note generation date, not return request date. The system must warn the finance user at the time of return initiation if the 7th deadline is at risk of being crossed before brand acceptance.
+
+
+Case 3 — Cancellation after delivery, within return window, brand rejects
+Order delivered, customer raises return request within the return window, brand rejects the return.
+
+No credit note generated
+No TDS reversal
+No TCS reversal
+Order status → Delivered (unchanged)
+Log the rejection in the audit trail with reason and timestamp
+
+
+Case 4 — Cancellation attempt after return window has expired
+Order delivered, return window has closed, cancellation or return is attempted.
+
+Do not initiate a return journey
+Do not generate a credit note
+Do not reverse TDS or TCS
+Log the attempt in the audit trail
+Order status → Cancellation Rejected — Window Expired
+Display message to user: return window closed on [date], no reversal is possible
+
+
+Case 5 — Credit note generates a negative net settlement
+A valid credit note is generated from Case 1 or Case 2 but its value exceeds the brand's remaining settlement amount for the current cycle, pushing the net payout into negative.
+
+Generate the credit note normally
+Calculate revised net settlement for the cycle
+If net settlement is negative: do not transfer a negative amount to the bank
+Carry the negative balance forward as an adjustment line item in the next settlement cycle
+Deduct it automatically from the next cycle's payout before computing the final transfer amount
+Label it in the settlement invoice: "Adjustment carried forward from [original cycle period]"
+TDS reversal eligibility check still applies normally per the rules above — a negative net settlement does not change the TDS logic
+

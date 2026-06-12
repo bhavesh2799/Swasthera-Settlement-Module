@@ -1,9 +1,11 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
-import { bagsTable, onboardingsTable, brandsTable, warehousesTable } from "@workspace/db";
+import { bagsTable, invoicesTable, onboardingsTable, brandsTable, warehousesTable } from "@workspace/db";
 import { eq, and, like, lt, inArray, SQL } from "drizzle-orm";
 import { sql } from "drizzle-orm";
-import { reversalDeadline, isPastReversalDeadline } from "../services/tdsReversalService";
+import { reversalDeadline, isPastReversalDeadline, canReverseTDS } from "../services/tdsReversalService";
+import { generateInvoice } from "../services/invoiceService";
+import { authorize } from "../middlewares/rbac";
 
 const router = Router();
 
@@ -330,6 +332,119 @@ router.put("/bags/:id", async (req, res) => {
   } catch (err) {
     req.log.error({ err }, "update bag error");
     res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+/**
+ * POST /bags/:id/set-scenario
+ * Resets a bag to one of the canonical return/cancellation states so any of
+ * the 5 BRD reversal cases can be demonstrated from the UI without SQL access.
+ *
+ * body: { scenario: 1 | 2 | 4, pastDeadline?: boolean }
+ *   scenario 1  — pre-delivery cancel
+ *   scenario 2  — in-window return (accept = Case 2, reject = Case 3)
+ *   scenario 4  — past-window rejection (always has expired deadline)
+ *   pastDeadline — set invoice date to prior month so TDS is NOT reversible
+ *
+ * Side-effects: deletes any existing invoices for the order and re-captures a
+ * fresh one (sequential, not parallel, to avoid invoice-number race condition).
+ */
+router.post("/bags/:id/set-scenario", authorize(["backend", "admin"]), async (req, res) => {
+  try {
+    const bagId = parseInt(req.params.id);
+    const { scenario, pastDeadline = false } = req.body as { scenario: 1 | 2 | 4; pastDeadline?: boolean };
+
+    if (![1, 2, 4].includes(scenario)) {
+      return res.status(400).json({ error: "scenario must be 1, 2, or 4" });
+    }
+
+    const [bag] = await db.select().from(bagsTable).where(eq(bagsTable.id, bagId)).limit(1);
+    if (!bag) return res.status(404).json({ error: "Bag not found" });
+
+    const todayDt = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const fmtDate = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+
+    const dAgo = (days: number) => {
+      const d = new Date(todayDt);
+      d.setDate(d.getDate() - days);
+      return fmtDate(d);
+    };
+    const dAhead = (days: number) => {
+      const d = new Date(todayDt);
+      d.setDate(d.getDate() + days);
+      return fmtDate(d);
+    };
+
+    // Prior-month 15th — puts the TDS deposit deadline in the past (7th of this month).
+    const priorMonth15th = (() => {
+      const d = new Date(todayDt);
+      d.setDate(1);
+      d.setMonth(d.getMonth() - 1);
+      d.setDate(15);
+      return fmtDate(d);
+    })();
+
+    let deliveryDate: string | null;
+    let windowExpiryDate: string | null;
+    let omsState: string;
+    let eligibility: "awaiting_delivery" | "in_window" | "eligible";
+    let invoiceDate: string;
+
+    if (scenario === 1) {
+      // Case 1 — pre-delivery: not yet dispatched.
+      deliveryDate = null;
+      windowExpiryDate = null;
+      omsState = "bag_confirmed";
+      eligibility = "awaiting_delivery";
+      invoiceDate = pastDeadline ? priorMonth15th : fmtDate(todayDt);
+    } else if (scenario === 2) {
+      // Cases 2 & 3 — delivered, return window still open (15-day window).
+      deliveryDate = dAgo(7);
+      windowExpiryDate = dAhead(8);          // 8 days left
+      omsState = "delivered";
+      eligibility = "in_window";
+      invoiceDate = pastDeadline ? priorMonth15th : dAgo(9);
+    } else {
+      // Case 4 — past return window; TDS deadline inherently expired.
+      deliveryDate = dAgo(45);
+      windowExpiryDate = dAgo(30);
+      omsState = "delivered";
+      eligibility = "eligible";
+      invoiceDate = dAgo(47);                // always past the 7th deadline
+    }
+
+    // Wipe existing invoices so we can re-capture a clean one.
+    await db.delete(invoicesTable).where(eq(invoicesTable.orderId, bag.orderId));
+
+    const [updated] = await db
+      .update(bagsTable)
+      .set({
+        deliveryDate,
+        windowExpiryDate,
+        invoiceDate,
+        omsState,
+        eligibility,
+        reversalStatus: null,
+        reversalReason: null,
+      })
+      .where(eq(bagsTable.id, bagId))
+      .returning();
+
+    const invoice = await generateInvoice(bag.orderId);
+
+    const txnDate = new Date(invoiceDate);
+    return res.json({
+      scenario,
+      pastDeadline,
+      bag: mapBag(updated),
+      invoice: { invoiceNumber: invoice.invoiceNumber, netPayable: invoice.netPayable },
+      reversalEligible: canReverseTDS(txnDate, new Date()),
+      reversalDeadline: reversalDeadline(txnDate),
+    });
+  } catch (err) {
+    req.log.error({ err }, "set-scenario failed");
+    return res.status(500).json({ error: err instanceof Error ? err.message : "set-scenario failed" });
   }
 });
 

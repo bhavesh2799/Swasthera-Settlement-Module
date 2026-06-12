@@ -403,6 +403,11 @@ export function Dashboard() {
                 <Button variant="outline"><Download className="h-4 w-4 mr-2" />Download SoC</Button>
               </a>
             )}
+            {invoiceDialogId && (
+              <a href={`/api/settlements/${invoiceDialogId}/invoice-pdf`} target="_blank" rel="noreferrer">
+                <Button variant="outline"><Download className="h-4 w-4 mr-2" />Download Invoice PDF</Button>
+              </a>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

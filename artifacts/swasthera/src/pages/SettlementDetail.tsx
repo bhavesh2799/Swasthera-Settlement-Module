@@ -537,6 +537,9 @@ export function SettlementDetail() {
             <a href={socUrl} download>
               <Button variant="outline"><Download className="h-4 w-4 mr-2" />Download SoC</Button>
             </a>
+            <a href={`/api/settlements/${settlement?.id}/invoice-pdf`} target="_blank" rel="noreferrer">
+              <Button variant="outline"><Download className="h-4 w-4 mr-2" />Download Invoice PDF</Button>
+            </a>
           </DialogFooter>
         </DialogContent>
       </Dialog>

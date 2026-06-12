@@ -403,7 +403,7 @@ router.post("/settlements/bulk/approve", authorize(["checker", "admin"]), async 
     const checker = approvedBy || "Rajesh Kumar";
     const now = new Date();
 
-    const results: { id: number; status: "ok" | "skipped"; reason?: string }[] = [];
+    const results: { id: number; status: "ok" | "skipped"; payoutCreated?: boolean; reason?: string }[] = [];
     for (const settlementId of ids) {
       const [settlement] = await db.select().from(settlementsTable).where(eq(settlementsTable.id, settlementId));
       if (!settlement || settlement.status !== "PENDING_APPROVAL") {
@@ -414,6 +414,22 @@ router.post("/settlements/bulk/approve", authorize(["checker", "admin"]), async 
       await db.update(settlementsTable)
         .set({ status: "APPROVED", financeNotes: financeNotes ?? null, approvedBy: checker, approvedAt: now })
         .where(eq(settlementsTable.id, settlementId));
+
+      // Guard: if net payable is zero or negative (carry-forward adjustments fully
+      // offset the settlement) approve the record but do NOT create a payout — same
+      // rule as the single-approve path (BRD §7 Scenario 4).
+      const netPayableAmt = parseFloat(settlement.netPayable);
+      if (netPayableAmt <= 0) {
+        await db.insert(activityTable).values({
+          user: checker,
+          action: `Approved settlement #${settlementId} for ${settlement.brandName} — ${settlement.cycle} (bulk) · net payable ₹${netPayableAmt.toFixed(2)} ≤ 0; no payout created`,
+          entityType: "settlement",
+          entityRef: String(settlementId),
+          level: "warning",
+        });
+        results.push({ id: settlementId, status: "ok", payoutCreated: false, reason: "Net payable ≤ 0 — carry-forward adjustments applied; no bank transfer initiated" });
+        continue;
+      }
 
       const paymentRef = `PAY-${settlement.cycle}-${String(settlementId).padStart(4, "0")}`;
       await db.insert(payoutsTable).values({
@@ -439,7 +455,7 @@ router.post("/settlements/bulk/approve", authorize(["checker", "admin"]), async 
         entityRef: String(settlementId),
         level: "success",
       });
-      results.push({ id: settlementId, status: "ok" });
+      results.push({ id: settlementId, status: "ok", payoutCreated: true });
     }
 
     return res.json({ processed: results.filter((r) => r.status === "ok").length, total: ids.length, results });

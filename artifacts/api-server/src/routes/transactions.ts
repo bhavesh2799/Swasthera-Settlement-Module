@@ -11,6 +11,7 @@ import {
   reversalDeadline,
   isPastReversalDeadline,
 } from "../services/tdsReversalService";
+import { stateName } from "../services/stateCodes";
 import type { Request } from "express";
 
 const router = Router();
@@ -23,26 +24,28 @@ function bagTxnDate(bag: Bag): Date {
 }
 
 /**
- * Applies TDS reversal for a cancelled/returned bag, enforcing the timing rules
- * in tdsReversalService.
+ * Applies TDS and TCS reversal for a cancelled/returned bag, enforcing the timing
+ * rules in tdsReversalService. Both taxes use the same 7th-of-following-month
+ * deposit deadline (TDS per §194-O IT Act; TCS per §52 GST / GSTR-8 amendment).
  *
- * TCS reversal does NOT apply: TCS is remitted directly to the government by the
- * marketplace operator (§52 GST) and cannot be credited back to the brand. Only
- * TDS (§194-O IT Act) is reversible.
+ * Within the deadline: negative TDS entry written to tds_records; negative TCS
+ * entry written to tcs_records (GSTR-8 amendment reduces the marketplace's TCS
+ * liability and credits the brand's electronic credit ledger).
  *
- * If still within the deposit window (same month or 1st–7th of the next month) a
- * negative TDS reversal entry is written. Past the deadline the amount has already
- * been deposited; a TDS_CARRY_FORWARD adjustment is logged instead (consumable by
- * the next settlement compute run). Eligibility is server-side and non-overridable.
+ * Past the deadline: both amounts have already been deposited/filed. A
+ * TDS_CARRY_FORWARD and TCS_CARRY_FORWARD adjustment are logged so the next
+ * settlement compute run can credit the brand. Eligibility is server-side only.
  */
 async function applyTaxReversal(req: Request, bag: Bag, reason: string) {
   const txnDate = bagTxnDate(bag);
   const reversalEligible = canReverseTDS(txnDate, new Date());
   const tdsAmt = parseFloat(bag.tdsAmount);
+  const tcsAmt = parseFloat(bag.tcsAmount);
   const { month, year } = transactionPeriod(txnDate);
   const deadline = reversalDeadline(txnDate);
 
   if (reversalEligible) {
+    // TDS: within deposit window — write negative reversal entry.
     if (tdsAmt > 0) {
       await db.insert(tdsRecordsTable).values({
         month, year,
@@ -58,9 +61,27 @@ async function applyTaxReversal(req: Request, bag: Bag, reason: string) {
         originalBagId: bag.bagId,
       });
     }
+    // TCS: within GSTR-8 filing window — write negative reversal entry (§52 GST).
+    if (tcsAmt > 0) {
+      await db.insert(tcsRecordsTable).values({
+        month, year,
+        stateGstin: bag.stateGstin,
+        stateCode: bag.stateCode,
+        stateName: stateName(bag.stateCode),
+        brandName: bag.brandName,
+        taxableSupply: String(-parseFloat(bag.esp)),
+        tcsRate: "1.00",
+        tcsAmount: String(-tcsAmt),
+        status: "Accrued",
+        paymentDueDate: deadline,
+        isReversal: true,
+        reversalReason: reason,
+        originalBagId: bag.bagId,
+      });
+    }
   } else {
-    // TDS already deposited — record a carry-forward adjustment for the next
-    // settlement cycle. No TCS adjustment is needed (TCS reversal does not apply).
+    // Past deposit deadline — record carry-forward adjustments for the next
+    // settlement cycle so the brand receives the credit there instead.
     if (tdsAmt > 0) {
       await db.insert(settlementAdjustmentsTable).values({
         onboardingId: bag.brandId,
@@ -71,9 +92,19 @@ async function applyTaxReversal(req: Request, bag: Bag, reason: string) {
         reason: `TDS deadline ${deadline} passed — deposited, cannot reverse (${reason})`,
       });
     }
+    if (tcsAmt > 0) {
+      await db.insert(settlementAdjustmentsTable).values({
+        onboardingId: bag.brandId,
+        cycle: bag.cycle,
+        bagId: bag.bagId,
+        adjustmentType: "TCS_CARRY_FORWARD",
+        amount: tcsAmt.toFixed(2),
+        reason: `TCS deadline ${deadline} passed — GSTR-8 filed, credit carried forward (${reason})`,
+      });
+    }
     await db.insert(activityTable).values({
       user: req.user?.name ?? "System",
-      action: `TDS already deposited for ${bag.bagId} (deadline ${deadline} passed) — recorded as TDS carry-forward for next settlement cycle (${reason})`,
+      action: `TDS/TCS already deposited for ${bag.bagId} (deadline ${deadline} passed) — carry-forwards recorded for next settlement cycle (${reason})`,
       entityType: "compliance",
       entityRef: bag.bagId,
       level: "warning",
@@ -84,6 +115,8 @@ async function applyTaxReversal(req: Request, bag: Bag, reason: string) {
     reversalEligible,
     tdsReversed: reversalEligible ? tdsAmt : 0,
     tdsCarryForward: !reversalEligible ? tdsAmt : 0,
+    tcsReversed: reversalEligible ? tcsAmt : 0,
+    tcsCarryForward: !reversalEligible ? tcsAmt : 0,
     adjustmentLogged: !reversalEligible,
     deadline,
   };
@@ -295,6 +328,7 @@ router.post("/transactions/:orderId/cancel", authorize(["maker", "backend", "adm
         case: cancellationCase,
         reversalEligible: reversal.reversalEligible,
         tdsReversed: reversal.tdsReversed,
+        tcsReversed: reversal.tcsReversed,
         cnAdjustmentRecorded: true,
       },
     });
@@ -352,6 +386,7 @@ router.post("/transactions/:orderId/return/accept", authorize(["backend", "admin
         reason,
         reversalEligible: reversal.reversalEligible,
         tdsReversed: reversal.tdsReversed,
+        tcsReversed: reversal.tcsReversed,
         cnAdjustmentRecorded: true,
       },
     });

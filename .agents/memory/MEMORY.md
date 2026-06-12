@@ -1,3 +1,4 @@
 - [Swasthera data model](swasthera-data-model.md) — settlement domain quirks: bag→onboarding linkage, bank-account/jurisdiction routing, and the cycle-value mismatch gotcha.
 - [Invoice PDF document types](invoice-pdf-types.md) — one invoices row → two PDFs: customer tax invoice (`/pdf`) vs brand settlement waterfall (`/brand-pdf`); legacy `/download` is HTML, unused by UI.
 - [Bank account lazy migration](bank-lazy-migration.md) — seed / legacy onboardings store bank data in denormalized columns only; bankAccountsTable may be empty even when a bank exists.
+- [Invoice number race condition](invoice-number-race.md) — generateInvoice reads MAX(invoice_number) then inserts; parallel calls get same MAX → duplicate key. Always call sequentially (for loop, not Promise.all).

@@ -14,6 +14,7 @@ import bankAccountsRouter from "./bank-accounts";
 import transactionsRouter from "./transactions";
 import invoicesRouter from "./invoices";
 import notificationsRouter from "./notifications";
+import demoRouter from "./demo";
 
 const router: IRouter = Router();
 
@@ -32,5 +33,6 @@ router.use(bankAccountsRouter);
 router.use(invoicesRouter);
 router.use(transactionsRouter);
 router.use(notificationsRouter);
+router.use(demoRouter);
 
 export default router;

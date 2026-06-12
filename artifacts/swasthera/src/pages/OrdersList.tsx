@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
-import { Search, Loader2, Plus, Trash2, RefreshCw, Database, PackageSearch, Pencil, Upload, Download, RefreshCcw, Receipt, RotateCcw, AlertTriangle, Check, X } from "lucide-react";
+import { Search, Loader2, Plus, Trash2, RefreshCw, Database, PackageSearch, Pencil, Upload, Download, RefreshCcw, Receipt, RotateCcw, AlertTriangle, Check, X, Wand2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useRole } from "@/contexts/RoleContext";
 
@@ -275,6 +275,25 @@ export function OrdersList() {
     onError: () => toast({ title: "Delete failed", variant: "destructive" }),
   });
 
+  const resetDemoMutation = useMutation({
+    mutationFn: async () => {
+      const r = await fetch("/api/demo/reset", {
+        method: "POST",
+        headers: { "X-Role": "backend" },
+      });
+      if (!r.ok) throw new Error((await r.json()).error ?? "Reset failed");
+      return r.json();
+    },
+    onSuccess: () => {
+      toast({
+        title: "Demo bags reset",
+        description: "All 3 reversal demo bags are back to their pristine state.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["listOrders"] });
+    },
+    onError: (err: Error) => toast({ title: "Reset failed", description: err.message, variant: "destructive" }),
+  });
+
   const handleRecalculate = async () => {
     setRecalcLoading(true);
     try {
@@ -331,6 +350,18 @@ export function OrdersList() {
               </Button>
               <Button size="sm" onClick={() => setShowCreateDialog(true)} className="bg-amber-600 hover:bg-amber-700 text-white">
                 <Plus className="h-4 w-4 mr-2" /> Simulate Fynd Order
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => resetDemoMutation.mutate()}
+                disabled={resetDemoMutation.isPending}
+                className="border-purple-300 text-purple-700 hover:bg-purple-50"
+                title="Reset the 3 DEMO-* reversal bags to pristine state so all 4 scenarios can be re-run"
+              >
+                {resetDemoMutation.isPending
+                  ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Resetting...</>
+                  : <><Wand2 className="h-4 w-4 mr-2" /> Reset Demo Bags</>}
               </Button>
             </>
           )}

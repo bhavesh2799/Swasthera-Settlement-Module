@@ -1,10 +1,8 @@
 import { useState } from "react";
-import { 
-  useGetTcsTdsSummary, 
-  useListTcsRecords, 
-  useListTdsRecords,
+import {
+  useGetTcsTdsSummary,
   useGetComplianceCalendar,
-  useListOnboardings
+  useListOnboardings,
 } from "@workspace/api-client-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -15,10 +13,10 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
-import { Loader2, Calendar, FileText, CheckCircle2, AlertCircle, RotateCcw, ArrowDownUp, TrendingDown, CreditCard, Layers, BookOpen, Download, AlertTriangle } from "lucide-react";
+import { Loader2, Calendar, CheckCircle2, AlertCircle, RotateCcw, TrendingDown, CreditCard, Layers, BookOpen, Download, AlertTriangle, Info } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
-function formatCurrency(amount: number) {
+function fmt(amount: number) {
   return new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR" }).format(amount);
 }
 
@@ -41,38 +39,43 @@ function StatusBadge({ status }: { status: string }) {
   }
 }
 
+// Brand + bank level — one row per brand per month
 interface TcsRecord {
   id: number;
-  stateGstin: string;
-  stateCode: string;
-  stateName: string;
   brandName: string;
-  taxableSupply: number;
+  companyName: string;
+  bankAccount: string;
+  bankIfsc: string;
+  bankName: string;
+  bagCount: number;
+  grossGmv: number;
   tcsRate: number;
   tcsAmount: number;
   status: string;
   paymentDueDate: string;
   paymentRef?: string | null;
   paymentDate?: string | null;
-  isReversal?: boolean;
-  reversalReason?: string | null;
-  originalBagId?: string | null;
 }
 
+// Brand + bank level — aggregates forward + reversal entries
 interface TdsRecord {
   id: number;
+  brandName: string;
   companyName: string;
   tan: string;
+  bankAccount: string;
+  bankIfsc: string;
+  bankName: string;
+  bagCount: number;
   grossPayment: number;
   tdsRate: number;
   tdsAmount: number;
-  netPaid: number;
+  tdsReversed: number;
+  reversalCount: number;
+  netTds: number;
   status: string;
   depositRef?: string | null;
   depositDate?: string | null;
-  isReversal?: boolean;
-  reversalReason?: string | null;
-  originalBagId?: string | null;
 }
 
 interface OrderBreakdownRow {
@@ -120,10 +123,12 @@ export function ComplianceRegister() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
+  // TDS-only reversal dialog
   const [showReversalDialog, setShowReversalDialog] = useState(false);
   const [reversalLoading, setReversalLoading] = useState(false);
   const [reversalForm, setReversalForm] = useState({ bagId: "", reason: "" });
 
+  // Mark paid / deposited dialogs
   const [tcsMarkDialog, setTcsMarkDialog] = useState<TcsRecord | null>(null);
   const [tdsMarkDialog, setTdsMarkDialog] = useState<TdsRecord | null>(null);
   const [markForm, setMarkForm] = useState({ ref: "", date: new Date().toISOString().split("T")[0] });
@@ -136,8 +141,25 @@ export function ComplianceRegister() {
   const breakdownKey = ["/api/compliance/order-breakdown", params];
 
   const { data: summary, isLoading: isLoadingSummary } = useGetTcsTdsSummary(params);
-  const { data: tcsRecords, isLoading: isLoadingTcs } = useListTcsRecords(params);
-  const { data: tdsRecords, isLoading: isLoadingTds } = useListTdsRecords(params);
+
+  const { data: tcsRecordsRaw, isLoading: isLoadingTcs } = useQuery<TcsRecord[]>({
+    queryKey: tcsKey,
+    queryFn: async () => {
+      const r = await fetch(`/api/compliance/tcs-records?month=${month}&year=${year}`);
+      if (!r.ok) throw new Error("Failed to load TCS records");
+      return r.json();
+    },
+  });
+
+  const { data: tdsRecordsRaw, isLoading: isLoadingTds } = useQuery<TdsRecord[]>({
+    queryKey: tdsKey,
+    queryFn: async () => {
+      const r = await fetch(`/api/compliance/tds-records?month=${month}&year=${year}`);
+      if (!r.ok) throw new Error("Failed to load TDS records");
+      return r.json();
+    },
+  });
+
   const { data: calendar, isLoading: isLoadingCalendar } = useGetComplianceCalendar();
 
   const { data: orderBreakdown, isLoading: isLoadingBreakdown } = useQuery<OrderBreakdownRow[]>({
@@ -148,7 +170,11 @@ export function ComplianceRegister() {
     },
   });
 
-  const { data: onboardings } = useListOnboardings();
+  // Only show ACTIVE / APPROVED brands in the ledger dropdown
+  const { data: allOnboardings } = useListOnboardings();
+  const activeOnboardings = (allOnboardings ?? []).filter(
+    (o) => o.status === "ACTIVE" || o.status === "APPROVED",
+  );
 
   const ledgerQuery = new URLSearchParams();
   if (ledgerType !== "ALL") ledgerQuery.set("type", ledgerType);
@@ -171,11 +197,7 @@ export function ComplianceRegister() {
     window.open(`/api/compliance/ledger/${ledgerBrandId}/export${ledgerQs ? `?${ledgerQs}` : ""}`, "_blank");
   };
 
-  const s = summary as (typeof summary & {
-    tcsReversed?: number; tcsNet?: number;
-    tdsReversed?: number; tdsNet?: number; tdsDeposited?: number;
-  }) | undefined;
-
+  // Handle 422 carry-forward gracefully (not as an error)
   const handleReversal = async () => {
     if (!reversalForm.bagId.trim() || !reversalForm.reason.trim()) return;
     setReversalLoading(true);
@@ -183,15 +205,35 @@ export function ComplianceRegister() {
       const res = await fetch("/api/compliance/reversal", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ bagId: reversalForm.bagId.trim(), reason: reversalForm.reason.trim(), month, year: parseInt(year) }),
+        body: JSON.stringify({
+          bagId: reversalForm.bagId.trim(),
+          reason: reversalForm.reason.trim(),
+          month,
+          year: parseInt(year),
+        }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      toast({ title: "Reversal logged", description: data.message });
+
+      if (res.status === 422 && !data.reversalEligible) {
+        // Deposit deadline passed — carry-forward recorded; show info, not error
+        toast({
+          title: "Carry-Forward Recorded",
+          description: data.message,
+        });
+        setShowReversalDialog(false);
+        setReversalForm({ bagId: "", reason: "" });
+        queryClient.invalidateQueries({ queryKey: summaryKey });
+        queryClient.invalidateQueries({ queryKey: tdsKey });
+        queryClient.invalidateQueries({ queryKey: breakdownKey });
+        return;
+      }
+
+      if (!res.ok) throw new Error(data.error ?? "Reversal failed");
+
+      toast({ title: "TDS Reversal logged", description: data.message });
       setShowReversalDialog(false);
       setReversalForm({ bagId: "", reason: "" });
       queryClient.invalidateQueries({ queryKey: summaryKey });
-      queryClient.invalidateQueries({ queryKey: tcsKey });
       queryClient.invalidateQueries({ queryKey: tdsKey });
       queryClient.invalidateQueries({ queryKey: breakdownKey });
     } catch (err: unknown) {
@@ -247,12 +289,16 @@ export function ComplianceRegister() {
     }
   };
 
-  const tcsEntries = (tcsRecords ?? []) as TcsRecord[];
-  const tdsEntries = (tdsRecords ?? []) as TdsRecord[];
-  const tcsReversals = tcsEntries.filter((r) => r.isReversal);
-  const tdsReversals = tdsEntries.filter((r) => r.isReversal);
+  const tcsEntries = (tcsRecordsRaw ?? []) as TcsRecord[];
+  const tdsEntries = (tdsRecordsRaw ?? []) as TdsRecord[];
+  const totalTdsReversals = tdsEntries.reduce((s, r) => s + r.reversalCount, 0);
   const breakdownRows = (orderBreakdown ?? []) as OrderBreakdownRow[];
   const returnedBags = breakdownRows.filter((r) => r.isReturned);
+
+  const s = summary as (typeof summary & {
+    tcsReversed?: number; tcsNet?: number;
+    tdsReversed?: number; tdsNet?: number; tdsDeposited?: number;
+  }) | undefined;
 
   return (
     <div className="flex-1 overflow-auto bg-slate-50/50 p-6 md:p-8 space-y-6">
@@ -260,7 +306,7 @@ export function ComplianceRegister() {
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
           <h1 className="text-3xl font-bold tracking-tight text-slate-900">Compliance & Tax</h1>
-          <p className="text-slate-500 mt-1">TCS/TDS registers, reversal entries, and GSTR-8 filing status</p>
+          <p className="text-slate-500 mt-1">TCS/TDS registers at brand & bank level, order breakdown, and GSTR-8 filing status</p>
         </div>
         <div className="flex gap-2 flex-wrap">
           <Select value={month} onValueChange={setMonth}>
@@ -280,7 +326,7 @@ export function ComplianceRegister() {
             </SelectContent>
           </Select>
           <Button variant="outline" onClick={() => setShowReversalDialog(true)}>
-            <RotateCcw className="mr-2 h-4 w-4" /> Log Reversal
+            <RotateCcw className="mr-2 h-4 w-4" /> Log TDS Reversal
           </Button>
         </div>
       </div>
@@ -295,31 +341,26 @@ export function ComplianceRegister() {
               <CardTitle className="text-sm font-medium text-slate-500">TCS Accrued (Section 52)</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-slate-900">{formatCurrency(s.tcsAccrued)}</div>
-              {(s.tcsReversed ?? 0) > 0 && (
-                <div className="flex items-center gap-1 mt-1 text-xs text-red-600">
-                  <TrendingDown className="h-3 w-3" />
-                  Reversals: −{formatCurrency(s.tcsReversed ?? 0)}
-                </div>
-              )}
-              {(s.tcsNet ?? 0) !== s.tcsAccrued && (
-                <div className="text-sm font-semibold text-green-700 mt-1">Net: {formatCurrency(s.tcsNet ?? s.tcsAccrued)}</div>
-              )}
-              <div className="text-xs text-slate-500 mt-1">Due: <span className="font-medium text-slate-700">{new Date(s.tcsPaymentDue).toLocaleDateString()}</span></div>
+              <div className="text-2xl font-bold text-slate-900">{fmt(s.tcsAccrued)}</div>
+              <div className="text-xs text-slate-500 mt-1">
+                Paid: <span className={`font-medium ${s.tcsPaid < s.tcsAccrued ? "text-amber-700" : "text-green-700"}`}>{fmt(s.tcsPaid)}</span>
+              </div>
+              <div className="text-xs text-slate-500 mt-0.5">Due: <span className="font-medium text-slate-700">{new Date(s.tcsPaymentDue).toLocaleDateString()}</span></div>
             </CardContent>
           </Card>
 
           <Card className="shadow-sm border-slate-200/60 bg-white">
             <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium text-slate-500">TCS Paid to Govt.</CardTitle>
+              <CardTitle className="text-sm font-medium text-slate-500">TCS Liability</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-slate-900">{formatCurrency(s.tcsPaid)}</div>
+              <div className="text-2xl font-bold text-slate-900">{fmt(Math.max(0, s.tcsAccrued - s.tcsPaid))}</div>
               <div className="text-xs text-slate-500 mt-1">
-                Liability: <span className={`font-medium ${(s.tcsNet ?? s.tcsAccrued) > s.tcsPaid ? "text-amber-700" : "text-green-700"}`}>
-                  {formatCurrency(Math.max(0, (s.tcsNet ?? s.tcsAccrued) - s.tcsPaid))} remaining
+                <span className={`font-medium ${s.tcsAccrued > s.tcsPaid ? "text-amber-700" : "text-green-700"}`}>
+                  {s.tcsAccrued > s.tcsPaid ? "Unpaid — remit to govt" : "Fully paid"}
                 </span>
               </div>
+              <div className="text-xs text-slate-400 mt-0.5 italic">No reversal mechanism (§52 GST)</div>
             </CardContent>
           </Card>
 
@@ -328,17 +369,17 @@ export function ComplianceRegister() {
               <CardTitle className="text-sm font-medium text-slate-500">TDS Deducted (Section 194-O)</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-slate-900">{formatCurrency(s.tdsDeducted)}</div>
+              <div className="text-2xl font-bold text-slate-900">{fmt(s.tdsDeducted)}</div>
               {(s.tdsReversed ?? 0) > 0 && (
                 <div className="flex items-center gap-1 mt-1 text-xs text-red-600">
                   <TrendingDown className="h-3 w-3" />
-                  Reversals: −{formatCurrency(s.tdsReversed ?? 0)}
+                  Reversed: −{fmt(s.tdsReversed ?? 0)}
                 </div>
               )}
               {(s.tdsNet ?? 0) !== s.tdsDeducted && (
-                <div className="text-sm font-semibold text-green-700 mt-1">Net: {formatCurrency(s.tdsNet ?? s.tdsDeducted)}</div>
+                <div className="text-sm font-semibold text-green-700 mt-0.5">Net: {fmt(s.tdsNet ?? s.tdsDeducted)}</div>
               )}
-              <div className="text-xs text-slate-500 mt-1">Deposit Due: <span className="font-medium text-slate-700">{new Date(s.tdsDepositDue).toLocaleDateString()}</span></div>
+              <div className="text-xs text-slate-500 mt-0.5">Deposit Due: <span className="font-medium text-slate-700">{new Date(s.tdsDepositDue).toLocaleDateString()}</span></div>
             </CardContent>
           </Card>
 
@@ -365,82 +406,88 @@ export function ComplianceRegister() {
         <TabsList className="bg-slate-200/50 mb-4">
           <TabsTrigger value="tcs" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
             TCS Register
-            {tcsReversals.length > 0 && (
-              <Badge className="ml-2 text-[10px] h-4 bg-amber-100 text-amber-700 border-transparent hover:bg-amber-100">{tcsReversals.length} rev</Badge>
-            )}
           </TabsTrigger>
           <TabsTrigger value="tds" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
             TDS Register
-            {tdsReversals.length > 0 && (
-              <Badge className="ml-2 text-[10px] h-4 bg-amber-100 text-amber-700 border-transparent hover:bg-amber-100">{tdsReversals.length} rev</Badge>
+            {totalTdsReversals > 0 && (
+              <Badge className="ml-2 text-[10px] h-4 bg-amber-100 text-amber-700 border-transparent hover:bg-amber-100">
+                {totalTdsReversals} rev
+              </Badge>
             )}
           </TabsTrigger>
           <TabsTrigger value="breakdown" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
             <Layers className="mr-1.5 h-3.5 w-3.5" />
             Order Breakdown
             {returnedBags.length > 0 && (
-              <Badge className="ml-2 text-[10px] h-4 bg-red-100 text-red-700 border-transparent hover:bg-red-100">{returnedBags.length} returned</Badge>
+              <Badge className="ml-2 text-[10px] h-4 bg-red-100 text-red-700 border-transparent hover:bg-red-100">
+                {returnedBags.length} returned
+              </Badge>
             )}
           </TabsTrigger>
           <TabsTrigger value="ledger" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
             <BookOpen className="mr-1.5 h-4 w-4" /> Brand Ledger
           </TabsTrigger>
-          <TabsTrigger value="calendar" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">Compliance Calendar</TabsTrigger>
+          <TabsTrigger value="calendar" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
+            <Calendar className="mr-1.5 h-3.5 w-3.5" />
+            Compliance Calendar
+          </TabsTrigger>
         </TabsList>
 
-        {/* TCS Register */}
+        {/* TCS Register — brand + bank level, no reversal */}
         <TabsContent value="tcs" className="m-0">
           <Card className="shadow-sm border-slate-200/60 bg-white">
+            <div className="px-6 py-3 border-b border-slate-100 bg-blue-50/40 flex items-start gap-2">
+              <Info className="h-3.5 w-3.5 text-blue-500 mt-0.5 flex-shrink-0" />
+              <p className="text-xs text-blue-700">
+                TCS is remitted directly to the government by the marketplace operator under Section 52 GST.
+                TCS reversal does not apply — entries are accrued and paid only.
+              </p>
+            </div>
             <CardContent className="p-0">
               <Table>
                 <TableHeader className="bg-slate-50/80">
                   <TableRow className="border-slate-100">
-                    <TableHead className="font-medium text-slate-500 h-10 px-6">State</TableHead>
-                    <TableHead className="font-medium text-slate-500 h-10">GSTIN</TableHead>
-                    <TableHead className="font-medium text-slate-500 h-10">Brand</TableHead>
-                    <TableHead className="font-medium text-slate-500 h-10 text-right">Taxable Supply</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10 px-6">Brand</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10">Company</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10">Bank Account</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10 text-center">Bags</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10 text-right">Gross GMV</TableHead>
                     <TableHead className="font-medium text-slate-500 h-10 text-right">TCS Amount</TableHead>
-                    <TableHead className="font-medium text-slate-500 h-10 text-center">Type</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10">Due Date</TableHead>
                     <TableHead className="font-medium text-slate-500 h-10 text-center">Status</TableHead>
                     <TableHead className="font-medium text-slate-500 h-10 text-center">Action</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {isLoadingTcs ? (
-                    <TableRow><TableCell colSpan={8} className="h-32 text-center"><Loader2 className="animate-spin mx-auto text-slate-400" /></TableCell></TableRow>
+                    <TableRow><TableCell colSpan={9} className="h-32 text-center"><Loader2 className="animate-spin mx-auto text-slate-400" /></TableCell></TableRow>
                   ) : tcsEntries.length === 0 ? (
-                    <TableRow><TableCell colSpan={8} className="h-24 text-center text-slate-400 text-sm">No TCS records for {month} {year}</TableCell></TableRow>
+                    <TableRow><TableCell colSpan={9} className="h-24 text-center text-slate-400 text-sm">No TCS records for {month} {year}</TableCell></TableRow>
                   ) : tcsEntries.map((row) => (
-                    <TableRow key={row.id} className={`border-slate-100/50 ${row.isReversal ? "bg-amber-50/50" : ""}`}>
-                      <TableCell className="px-6 font-medium text-slate-900">{row.stateName} ({row.stateCode})</TableCell>
-                      <TableCell className="font-mono text-sm">{row.stateGstin}</TableCell>
-                      <TableCell className="text-slate-600">
-                        {row.brandName}
-                        {row.originalBagId && <p className="text-[10px] text-slate-400">Bag: {row.originalBagId}</p>}
-                        {row.reversalReason && <p className="text-[10px] text-amber-600 italic">{row.reversalReason}</p>}
-                        {row.paymentRef && <p className="text-[10px] text-green-600">Ref: {row.paymentRef} · {row.paymentDate}</p>}
-                      </TableCell>
-                      <TableCell className={`text-right ${row.isReversal ? "text-red-600" : "text-slate-600"}`}>
-                        {formatCurrency(row.taxableSupply)}
-                      </TableCell>
-                      <TableCell className={`text-right font-medium ${row.isReversal ? "text-red-700" : "text-slate-900"}`}>
-                        {row.isReversal && "−"}{formatCurrency(Math.abs(row.tcsAmount))}
-                        <span className="text-xs text-slate-400 font-normal ml-1">@{row.tcsRate}%</span>
-                      </TableCell>
-                      <TableCell className="text-center">
-                        {row.isReversal ? (
-                          <Badge className="bg-amber-100 text-amber-700 border-transparent hover:bg-amber-100 text-xs">
-                            <RotateCcw className="mr-1 h-3 w-3" />Reversal
-                          </Badge>
-                        ) : (
-                          <Badge className="bg-blue-100 text-blue-700 border-transparent hover:bg-blue-100 text-xs">
-                            <ArrowDownUp className="mr-1 h-3 w-3" />Entry
-                          </Badge>
+                    <TableRow key={row.id} className="border-slate-100/50">
+                      <TableCell className="px-6">
+                        <div className="font-medium text-slate-900">{row.brandName}</div>
+                        {row.paymentRef && (
+                          <div className="text-[10px] text-green-600 mt-0.5">Ref: {row.paymentRef} · {row.paymentDate}</div>
                         )}
                       </TableCell>
+                      <TableCell className="text-sm text-slate-600">{row.companyName}</TableCell>
+                      <TableCell>
+                        <div className="font-mono text-xs text-slate-700">{row.bankAccount}</div>
+                        <div className="text-[10px] text-slate-400">{row.bankIfsc} · {row.bankName}</div>
+                      </TableCell>
+                      <TableCell className="text-center">
+                        <span className="text-sm font-medium text-slate-700">{row.bagCount}</span>
+                      </TableCell>
+                      <TableCell className="text-right text-slate-600">{fmt(row.grossGmv)}</TableCell>
+                      <TableCell className="text-right">
+                        <span className="font-semibold text-slate-900">{fmt(row.tcsAmount)}</span>
+                        <span className="text-xs text-slate-400 font-normal ml-1">@{row.tcsRate}%</span>
+                      </TableCell>
+                      <TableCell className="text-sm text-slate-600">{row.paymentDueDate}</TableCell>
                       <TableCell className="text-center"><StatusBadge status={row.status} /></TableCell>
                       <TableCell className="text-center">
-                        {!row.isReversal && row.status === "Accrued" && (
+                        {row.status === "Accrued" ? (
                           <Button
                             size="sm"
                             variant="outline"
@@ -449,8 +496,7 @@ export function ComplianceRegister() {
                           >
                             <CreditCard className="h-3 w-3 mr-1" /> Mark Paid
                           </Button>
-                        )}
-                        {row.status !== "Accrued" && !row.isReversal && (
+                        ) : (
                           <span className="text-xs text-green-600">✓ {row.status}</span>
                         )}
                       </TableCell>
@@ -458,69 +504,84 @@ export function ComplianceRegister() {
                   ))}
                 </TableBody>
               </Table>
-              {tcsReversals.length > 0 && (
-                <div className="px-6 py-3 bg-amber-50/50 border-t border-amber-100 text-xs text-amber-700 flex items-center gap-2">
-                  <RotateCcw className="h-3.5 w-3.5" />
-                  {tcsReversals.length} reversal entr{tcsReversals.length !== 1 ? "ies" : "y"} — per BRD §5.4, reversal entries reduce the net TCS liability for this month.
+              {tcsEntries.length > 0 && (
+                <div className="px-6 py-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+                  <span>{tcsEntries.length} brand(s) · {tcsEntries.reduce((s, r) => s + r.bagCount, 0)} bags total</span>
+                  <span className="font-medium text-slate-700">
+                    Total TCS: {fmt(tcsEntries.reduce((s, r) => s + r.tcsAmount, 0))}
+                  </span>
                 </div>
               )}
             </CardContent>
           </Card>
         </TabsContent>
 
-        {/* TDS Register */}
+        {/* TDS Register — brand + bank level with reversal aggregation */}
         <TabsContent value="tds" className="m-0">
           <Card className="shadow-sm border-slate-200/60 bg-white">
             <CardContent className="p-0">
               <Table>
                 <TableHeader className="bg-slate-50/80">
                   <TableRow className="border-slate-100">
-                    <TableHead className="font-medium text-slate-500 h-10 px-6">Company</TableHead>
-                    <TableHead className="font-medium text-slate-500 h-10">TAN</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10 px-6">Brand</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10">Company / TAN</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10">Bank Account</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10 text-center">Bags</TableHead>
                     <TableHead className="font-medium text-slate-500 h-10 text-right">Gross Payment</TableHead>
-                    <TableHead className="font-medium text-slate-500 h-10 text-right">TDS Amount</TableHead>
-                    <TableHead className="font-medium text-slate-500 h-10 text-right">Net Paid</TableHead>
-                    <TableHead className="font-medium text-slate-500 h-10 text-center">Type</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10 text-right">TDS Deducted</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10 text-right">Reversed</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10 text-right">Net TDS</TableHead>
                     <TableHead className="font-medium text-slate-500 h-10 text-center">Status</TableHead>
                     <TableHead className="font-medium text-slate-500 h-10 text-center">Action</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {isLoadingTds ? (
-                    <TableRow><TableCell colSpan={8} className="h-32 text-center"><Loader2 className="animate-spin mx-auto text-slate-400" /></TableCell></TableRow>
+                    <TableRow><TableCell colSpan={10} className="h-32 text-center"><Loader2 className="animate-spin mx-auto text-slate-400" /></TableCell></TableRow>
                   ) : tdsEntries.length === 0 ? (
-                    <TableRow><TableCell colSpan={8} className="h-24 text-center text-slate-400 text-sm">No TDS records for {month} {year}</TableCell></TableRow>
+                    <TableRow><TableCell colSpan={10} className="h-24 text-center text-slate-400 text-sm">No TDS records for {month} {year}</TableCell></TableRow>
                   ) : tdsEntries.map((row) => (
-                    <TableRow key={row.id} className={`border-slate-100/50 ${row.isReversal ? "bg-amber-50/50" : ""}`}>
-                      <TableCell className="px-6 font-medium text-slate-900">
-                        {row.companyName}
-                        {row.originalBagId && <p className="text-[10px] text-slate-400">Bag: {row.originalBagId}</p>}
-                        {row.reversalReason && <p className="text-[10px] text-amber-600 italic">{row.reversalReason}</p>}
-                        {row.depositRef && <p className="text-[10px] text-green-600">Ref: {row.depositRef} · {row.depositDate}</p>}
+                    <TableRow key={row.id} className={`border-slate-100/50 ${row.reversalCount > 0 ? "bg-amber-50/30" : ""}`}>
+                      <TableCell className="px-6">
+                        <div className="font-medium text-slate-900">{row.brandName}</div>
+                        {row.depositRef && (
+                          <div className="text-[10px] text-green-600 mt-0.5">Ref: {row.depositRef} · {row.depositDate}</div>
+                        )}
                       </TableCell>
-                      <TableCell className="font-mono text-sm">{row.tan}</TableCell>
-                      <TableCell className={`text-right ${row.isReversal ? "text-red-600" : "text-slate-600"}`}>
-                        {formatCurrency(row.grossPayment)}
+                      <TableCell>
+                        <div className="text-sm text-slate-600">{row.companyName}</div>
+                        <div className="font-mono text-[10px] text-slate-400">{row.tan}</div>
                       </TableCell>
-                      <TableCell className={`text-right font-medium ${row.isReversal ? "text-red-700" : "text-slate-900"}`}>
-                        {row.isReversal && "−"}{formatCurrency(Math.abs(row.tdsAmount))}
+                      <TableCell>
+                        <div className="font-mono text-xs text-slate-700">{row.bankAccount}</div>
+                        <div className="text-[10px] text-slate-400">{row.bankIfsc} · {row.bankName}</div>
+                      </TableCell>
+                      <TableCell className="text-center">
+                        <span className="text-sm font-medium text-slate-700">{row.bagCount}</span>
+                      </TableCell>
+                      <TableCell className="text-right text-slate-600">{fmt(row.grossPayment)}</TableCell>
+                      <TableCell className="text-right">
+                        <span className="font-semibold text-slate-900">{fmt(row.tdsAmount)}</span>
                         <span className="text-xs text-slate-400 font-normal ml-1">@{row.tdsRate}%</span>
                       </TableCell>
-                      <TableCell className="text-right text-slate-600">{formatCurrency(row.netPaid)}</TableCell>
-                      <TableCell className="text-center">
-                        {row.isReversal ? (
-                          <Badge className="bg-amber-100 text-amber-700 border-transparent hover:bg-amber-100 text-xs">
-                            <RotateCcw className="mr-1 h-3 w-3" />Reversal
-                          </Badge>
+                      <TableCell className="text-right">
+                        {row.tdsReversed > 0 ? (
+                          <span className="text-red-600 font-medium flex items-center justify-end gap-1">
+                            <RotateCcw className="h-3 w-3" />
+                            −{fmt(row.tdsReversed)}
+                          </span>
                         ) : (
-                          <Badge className="bg-blue-100 text-blue-700 border-transparent hover:bg-blue-100 text-xs">
-                            <ArrowDownUp className="mr-1 h-3 w-3" />Entry
-                          </Badge>
+                          <span className="text-slate-400 text-xs">—</span>
                         )}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <span className={`font-semibold ${row.tdsReversed > 0 ? "text-green-700" : "text-slate-900"}`}>
+                          {fmt(row.netTds)}
+                        </span>
                       </TableCell>
                       <TableCell className="text-center"><StatusBadge status={row.status} /></TableCell>
                       <TableCell className="text-center">
-                        {!row.isReversal && row.status === "Pending" && (
+                        {row.status === "Pending" ? (
                           <Button
                             size="sm"
                             variant="outline"
@@ -529,8 +590,7 @@ export function ComplianceRegister() {
                           >
                             <CreditCard className="h-3 w-3 mr-1" /> Mark Deposited
                           </Button>
-                        )}
-                        {row.status !== "Pending" && !row.isReversal && (
+                        ) : (
                           <span className="text-xs text-green-600">✓ {row.status}</span>
                         )}
                       </TableCell>
@@ -538,10 +598,18 @@ export function ComplianceRegister() {
                   ))}
                 </TableBody>
               </Table>
-              {tdsReversals.length > 0 && (
+              {tdsEntries.length > 0 && (
+                <div className="px-6 py-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+                  <span>{tdsEntries.length} brand(s) · {tdsEntries.reduce((s, r) => s + r.bagCount, 0)} bags · {totalTdsReversals} reversal(s)</span>
+                  <span className="font-medium text-slate-700">
+                    Net TDS payable: {fmt(tdsEntries.reduce((s, r) => s + r.netTds, 0))}
+                  </span>
+                </div>
+              )}
+              {totalTdsReversals > 0 && (
                 <div className="px-6 py-3 bg-amber-50/50 border-t border-amber-100 text-xs text-amber-700 flex items-center gap-2">
-                  <RotateCcw className="h-3.5 w-3.5" />
-                  {tdsReversals.length} reversal entr{tdsReversals.length !== 1 ? "ies" : "y"} — TDS credit will be restored to brand on next payout cycle.
+                  <RotateCcw className="h-3.5 w-3.5 flex-shrink-0" />
+                  {totalTdsReversals} TDS reversal(s) this month — credit restored to brand in the next payout cycle.
                 </div>
               )}
             </CardContent>
@@ -567,7 +635,7 @@ export function ComplianceRegister() {
                     <TableHead className="font-medium text-slate-500 h-10 text-right">TCS</TableHead>
                     <TableHead className="font-medium text-slate-500 h-10 text-right">TDS</TableHead>
                     <TableHead className="font-medium text-slate-500 h-10">Delivery</TableHead>
-                    <TableHead className="font-medium text-slate-500 h-10">Reversal Deadline</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10">TDS Reversal Deadline</TableHead>
                     <TableHead className="font-medium text-slate-500 h-10 text-center">Status</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -589,24 +657,29 @@ export function ComplianceRegister() {
                       <TableCell>
                         <span className="text-xs font-mono bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded">{row.cycle}</span>
                       </TableCell>
-                      <TableCell className="text-right text-slate-700">{formatCurrency(row.esp)}</TableCell>
+                      <TableCell className="text-right text-slate-700">{fmt(row.esp)}</TableCell>
                       <TableCell className={`text-right font-medium ${row.isReturned ? "text-red-600 line-through" : "text-slate-900"}`}>
-                        {formatCurrency(row.tcsAmount)}
+                        {fmt(row.tcsAmount)}
                       </TableCell>
                       <TableCell className={`text-right font-medium ${row.isReturned ? "text-red-600 line-through" : "text-slate-900"}`}>
-                        {formatCurrency(row.tdsAmount)}
+                        {fmt(row.tdsAmount)}
                       </TableCell>
-                      <TableCell className="text-xs text-slate-600">{row.deliveryDate}</TableCell>
+                      <TableCell className="text-xs text-slate-600">{row.deliveryDate || "—"}</TableCell>
                       <TableCell className="text-xs">
                         {row.reversalDeadline ? (
                           <span className={`flex items-center gap-1 ${row.reversalDeadlinePast ? "text-red-600 font-medium" : "text-slate-500"}`}>
-                            {row.reversalDeadlinePast && <AlertTriangle className="h-3 w-3" />}
+                            {row.reversalDeadlinePast && <AlertTriangle className="h-3 w-3 flex-shrink-0" />}
                             {row.reversalDeadline}
+                            {row.reversalDeadlinePast && <span className="text-[10px] text-red-500">(past)</span>}
                           </span>
                         ) : <span className="text-slate-400">—</span>}
                       </TableCell>
                       <TableCell className="text-center">
-                        {row.isReturned ? (
+                        {row.reversalStatus === "CARRY_FORWARD" ? (
+                          <Badge className="bg-orange-100 text-orange-700 border-transparent hover:bg-orange-100 text-xs">
+                            Carry-Forward
+                          </Badge>
+                        ) : row.isReturned ? (
                           <Badge className="bg-red-100 text-red-700 border-transparent hover:bg-red-100 text-xs">
                             <RotateCcw className="mr-1 h-3 w-3" />Returned
                           </Badge>
@@ -626,10 +699,10 @@ export function ComplianceRegister() {
               </Table>
               {breakdownRows.length > 0 && (
                 <div className="px-6 py-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
-                  <span>{breakdownRows.length} bag(s) · {returnedBags.length} returned (TCS/TDS reversal pending)</span>
+                  <span>{breakdownRows.length} bag(s) · {returnedBags.length} returned</span>
                   <span className="font-medium text-slate-700">
-                    Total TCS: {formatCurrency(breakdownRows.reduce((s, r) => s + (r.isReturned ? 0 : r.tcsAmount), 0))} ·
-                    TDS: {formatCurrency(breakdownRows.reduce((s, r) => s + (r.isReturned ? 0 : r.tdsAmount), 0))}
+                    TCS: {fmt(breakdownRows.reduce((s, r) => s + (r.isReturned ? 0 : r.tcsAmount), 0))} ·
+                    TDS: {fmt(breakdownRows.reduce((s, r) => s + (r.isReturned ? 0 : r.tdsAmount), 0))}
                   </span>
                 </div>
               )}
@@ -637,7 +710,7 @@ export function ComplianceRegister() {
           </Card>
         </TabsContent>
 
-        {/* Brand Ledger */}
+        {/* Brand Ledger — filtered to ACTIVE/APPROVED brands only */}
         <TabsContent value="ledger" className="m-0 space-y-4">
           <Card className="shadow-sm border-slate-200/60 bg-white">
             <CardHeader className="border-b border-slate-100 py-4">
@@ -646,10 +719,12 @@ export function ComplianceRegister() {
                   <div className="space-y-1.5">
                     <label className="text-xs font-medium text-slate-500">Brand</label>
                     <Select value={ledgerBrandId} onValueChange={setLedgerBrandId}>
-                      <SelectTrigger className="w-56 h-9"><SelectValue placeholder="Select a brand" /></SelectTrigger>
+                      <SelectTrigger className="w-64 h-9"><SelectValue placeholder="Select an active brand" /></SelectTrigger>
                       <SelectContent>
-                        {onboardings?.map((o) => (
-                          <SelectItem key={o.id} value={String(o.id)}>{o.brandName} — {o.companyName}</SelectItem>
+                        {activeOnboardings.map((o) => (
+                          <SelectItem key={o.id} value={String(o.id)}>
+                            {o.brandName} — {o.companyName}
+                          </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
@@ -682,12 +757,29 @@ export function ComplianceRegister() {
             <CardContent className="p-0">
               {!ledgerBrandId ? (
                 <div className="h-40 flex items-center justify-center text-slate-500 text-sm gap-2">
-                  <BookOpen className="h-4 w-4" /> Select a brand to view its running ledger.
+                  <BookOpen className="h-4 w-4" /> Select a brand above to view its running ledger.
                 </div>
               ) : isLoadingLedger ? (
                 <div className="h-40 flex items-center justify-center"><Loader2 className="animate-spin text-slate-400" /></div>
               ) : (
                 <>
+                  {ledger?.brand && (
+                    <div className="px-6 py-3 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
+                      <div>
+                        <span className="font-semibold text-slate-900">{ledger.brand.brandName}</span>
+                        <span className="text-slate-500 text-sm ml-2">— {ledger.brand.companyName}</span>
+                      </div>
+                      <div className="text-sm">
+                        Closing Balance:{" "}
+                        <span className={`font-semibold ${ledger.closingBalance > 0 ? "text-amber-700" : "text-green-700"}`}>
+                          {fmt(ledger.closingBalance)}
+                        </span>
+                        {ledger.closingBalance > 0 && (
+                          <span className="text-xs text-amber-600 ml-1">(outstanding to brand)</span>
+                        )}
+                      </div>
+                    </div>
+                  )}
                   <Table>
                     <TableHeader className="bg-slate-50/80">
                       <TableRow className="border-slate-100">
@@ -697,79 +789,78 @@ export function ComplianceRegister() {
                         <TableHead className="font-medium text-slate-500 h-10">Reference</TableHead>
                         <TableHead className="font-medium text-slate-500 h-10">Description</TableHead>
                         <TableHead className="font-medium text-slate-500 h-10 text-right">Amount</TableHead>
-                        <TableHead className="font-medium text-slate-500 h-10 text-right px-6">Running Balance</TableHead>
+                        <TableHead className="font-medium text-slate-500 h-10 text-right">Running Balance</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {ledger?.entries?.length === 0 ? (
-                        <TableRow><TableCell colSpan={7} className="h-32 text-center text-slate-500">No ledger entries for the selected filters.</TableCell></TableRow>
-                      ) : ledger?.entries?.map((e, i) => (
+                      {!ledger?.entries?.length ? (
+                        <TableRow>
+                          <TableCell colSpan={7} className="h-24 text-center text-slate-400 text-sm">
+                            No ledger entries found for this brand.
+                          </TableCell>
+                        </TableRow>
+                      ) : ledger.entries.map((entry, i) => (
                         <TableRow key={i} className="border-slate-100/50">
-                          <TableCell className="px-6 text-slate-900 whitespace-nowrap">{new Date(e.date).toLocaleDateString()}</TableCell>
+                          <TableCell className="px-6 text-xs text-slate-600">
+                            {new Date(entry.date).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}
+                          </TableCell>
                           <TableCell>
-                            <Badge className={e.type === "SETTLEMENT" ? "bg-green-100 text-green-800 border-transparent" : "bg-blue-100 text-blue-800 border-transparent"}>{e.type}</Badge>
+                            <Badge className={`text-xs border-transparent ${entry.type === "SETTLEMENT" ? "bg-green-100 text-green-800" : "bg-blue-100 text-blue-700"}`}>
+                              {entry.type === "SETTLEMENT" ? "Settlement" : "Payout"}
+                            </Badge>
                           </TableCell>
-                          <TableCell className="font-mono text-xs text-slate-600">{e.cycle}</TableCell>
-                          <TableCell className="font-mono text-xs text-slate-600">{e.ref}</TableCell>
-                          <TableCell className="text-slate-600 text-sm">{e.description}</TableCell>
-                          <TableCell className={`text-right font-medium ${e.amount < 0 ? "text-red-700" : "text-green-700"}`}>
-                            {e.amount < 0 ? "− " : "+ "}{formatCurrency(Math.abs(e.amount))}
+                          <TableCell>
+                            <span className="font-mono text-xs bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded">{entry.cycle}</span>
                           </TableCell>
-                          <TableCell className="text-right px-6 font-semibold text-slate-900">{formatCurrency(e.runningBalance)}</TableCell>
+                          <TableCell className="font-mono text-xs text-slate-600">{entry.ref}</TableCell>
+                          <TableCell className="text-xs text-slate-600 max-w-xs truncate">{entry.description}</TableCell>
+                          <TableCell className={`text-right font-medium text-sm ${entry.amount >= 0 ? "text-green-700" : "text-red-600"}`}>
+                            {entry.amount >= 0 ? "+" : ""}{fmt(entry.amount)}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <span className={`font-semibold text-sm ${entry.runningBalance > 0 ? "text-amber-700" : entry.runningBalance < 0 ? "text-red-600" : "text-slate-500"}`}>
+                              {fmt(entry.runningBalance)}
+                            </span>
+                          </TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
                   </Table>
-                  {ledger && ledger.entries.length > 0 && (
-                    <div className="flex justify-between items-center px-6 py-4 border-t border-slate-100 bg-slate-50/50">
-                      <span className="text-sm text-slate-500">Closing balance (outstanding to brand)</span>
-                      <span className="text-lg font-bold text-slate-900">{formatCurrency(ledger.closingBalance)}</span>
-                    </div>
-                  )}
                 </>
               )}
             </CardContent>
           </Card>
         </TabsContent>
 
+        {/* Compliance Calendar */}
         <TabsContent value="calendar" className="m-0">
           <Card className="shadow-sm border-slate-200/60 bg-white">
             <CardContent className="p-0">
               <Table>
                 <TableHeader className="bg-slate-50/80">
                   <TableRow className="border-slate-100">
-                    <TableHead className="font-medium text-slate-500 h-10 px-6">Due Date</TableHead>
-                    <TableHead className="font-medium text-slate-500 h-10">Obligation</TableHead>
-                    <TableHead className="font-medium text-slate-500 h-10">Legal Section</TableHead>
-                    <TableHead className="font-medium text-slate-500 h-10">Status</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10 px-6">Obligation</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10">Section</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10">Due Date</TableHead>
+                    <TableHead className="font-medium text-slate-500 h-10 text-center">Status</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {isLoadingCalendar ? (
                     <TableRow><TableCell colSpan={4} className="h-32 text-center"><Loader2 className="animate-spin mx-auto text-slate-400" /></TableCell></TableRow>
-                  ) : calendar?.map((row) => {
-                    const isOverdue = row.status === "Upcoming" && new Date(row.dueDate) < new Date();
-                    return (
-                      <TableRow key={row.id} className={`border-slate-100/50 ${isOverdue ? "bg-red-50/30" : ""}`}>
-                        <TableCell className="px-6 font-medium text-slate-900">
-                          <div className="flex items-center gap-2">
-                            <Calendar className="h-4 w-4 text-slate-400" />
-                            {new Date(row.dueDate).toLocaleDateString(undefined, { weekday: "short", year: "numeric", month: "short", day: "numeric" })}
-                          </div>
-                        </TableCell>
-                        <TableCell className="text-slate-900">{row.obligation}</TableCell>
-                        <TableCell>
-                          <div className="flex items-center gap-1.5 font-mono text-xs text-slate-500">
-                            <FileText className="h-3 w-3 shrink-0" />
-                            {row.section}
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <StatusBadge status={isOverdue ? "Overdue" : row.status} />
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
+                  ) : (calendar ?? []).map((item) => (
+                    <TableRow key={item.id} className={`border-slate-100/50 ${item.status === "Filed" ? "opacity-60" : ""}`}>
+                      <TableCell className="px-6 font-medium text-slate-900">{item.obligation}</TableCell>
+                      <TableCell className="text-sm text-slate-500">{item.section}</TableCell>
+                      <TableCell className="text-sm text-slate-700">
+                        <div className="flex items-center gap-1.5">
+                          <Calendar className="h-3.5 w-3.5 text-slate-400" />
+                          {new Date(item.dueDate).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-center"><StatusBadge status={item.status} /></TableCell>
+                    </TableRow>
+                  ))}
                 </TableBody>
               </Table>
             </CardContent>
@@ -777,41 +868,36 @@ export function ComplianceRegister() {
         </TabsContent>
       </Tabs>
 
-      {/* Reversal Dialog */}
+      {/* TDS-Only Reversal Dialog */}
       <Dialog open={showReversalDialog} onOpenChange={setShowReversalDialog}>
-        <DialogContent>
+        <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Log TCS/TDS Reversal — BRD §5.4</DialogTitle>
+            <DialogTitle>Log TDS Reversal</DialogTitle>
             <DialogDescription>
-              Triggered by: return_bag_delivered, RTO, or post-invoice cancellation. Inserts a negative TCS/TDS entry that reduces the net liability for {month} {year}.
+              Only TDS (Section 194-O) can be reversed. TCS reversal does not apply — TCS
+              is remitted directly to the government and cannot be credited back to the brand.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
+            <div className="rounded-lg border border-blue-100 bg-blue-50/60 p-3 text-xs text-blue-700 space-y-1">
+              <p className="font-medium flex items-center gap-1.5"><Info className="h-3.5 w-3.5" /> Eligibility is determined by bag date</p>
+              <p>The TDS deposit deadline (7th of the following month) is enforced server-side from the bag's invoice date. If the deadline has passed, the amount will be recorded as a carry-forward adjustment for the next settlement cycle instead of a reversal.</p>
+            </div>
             <div className="space-y-1.5">
-              <label className="text-sm font-medium">Bag ID <span className="text-red-500">*</span></label>
+              <label className="text-sm font-medium text-slate-700">Bag ID</label>
               <Input
-                placeholder="B2026050012345"
+                placeholder="e.g. BAG-2026-00001"
                 value={reversalForm.bagId}
-                onChange={(e) => setReversalForm((p) => ({ ...p, bagId: e.target.value }))}
+                onChange={(e) => setReversalForm({ ...reversalForm, bagId: e.target.value })}
               />
-              <p className="text-xs text-slate-500">Enter the Bag ID from the Orders register that was returned or cancelled.</p>
             </div>
             <div className="space-y-1.5">
-              <label className="text-sm font-medium">Reversal Reason <span className="text-red-500">*</span></label>
+              <label className="text-sm font-medium text-slate-700">Reason</label>
               <Input
-                placeholder="Customer return — return_bag_delivered"
+                placeholder="e.g. Order cancelled, return accepted"
                 value={reversalForm.reason}
-                onChange={(e) => setReversalForm((p) => ({ ...p, reason: e.target.value }))}
+                onChange={(e) => setReversalForm({ ...reversalForm, reason: e.target.value })}
               />
-            </div>
-            <div className="rounded-lg bg-amber-50 border border-amber-100 p-3 text-xs text-amber-700 space-y-1">
-              <p className="font-medium">What happens on reversal:</p>
-              <ul className="space-y-0.5 list-disc pl-4">
-                <li>Negative TCS entry inserted against this bag in {month} {year}</li>
-                <li>Negative TDS entry inserted against this bag</li>
-                <li>Bag marked as <strong>on_hold</strong> — excluded from next settlement</li>
-                <li>Net TCS/TDS liability for {month} reduces accordingly</li>
-              </ul>
             </div>
           </div>
           <DialogFooter>
@@ -819,77 +905,65 @@ export function ComplianceRegister() {
             <Button
               onClick={handleReversal}
               disabled={reversalLoading || !reversalForm.bagId.trim() || !reversalForm.reason.trim()}
-              className="bg-amber-600 hover:bg-amber-700"
             >
-              {reversalLoading ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Processing...</> : <><RotateCcw className="mr-2 h-4 w-4" />Log Reversal</>}
+              {reversalLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Submit Reversal
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* TCS Mark Paid Dialog */}
-      <Dialog open={!!tcsMarkDialog} onOpenChange={(o) => !o && setTcsMarkDialog(null)}>
-        <DialogContent className="max-w-sm">
+      {/* Mark TCS Paid Dialog */}
+      <Dialog open={!!tcsMarkDialog} onOpenChange={(open) => !open && setTcsMarkDialog(null)}>
+        <DialogContent className="sm:max-w-sm">
           <DialogHeader>
             <DialogTitle>Mark TCS as Paid</DialogTitle>
-            <DialogDescription>Record government payment details for this TCS entry.</DialogDescription>
+            <DialogDescription>
+              {tcsMarkDialog?.brandName} — {fmt(tcsMarkDialog?.tcsAmount ?? 0)} to govt.
+            </DialogDescription>
           </DialogHeader>
-          {tcsMarkDialog && (
-            <div className="space-y-4 py-2">
-              <div className="bg-slate-50 rounded p-3 text-sm space-y-1">
-                <div className="flex justify-between"><span className="text-slate-500">Brand</span><span className="font-medium">{tcsMarkDialog.brandName}</span></div>
-                <div className="flex justify-between"><span className="text-slate-500">TCS Amount</span><span className="font-medium text-slate-900">{formatCurrency(tcsMarkDialog.tcsAmount)}</span></div>
-                <div className="flex justify-between"><span className="text-slate-500">Due Date</span><span>{tcsMarkDialog.paymentDueDate}</span></div>
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium">Challan / Payment Reference</label>
-                <Input placeholder="OLTAS/BSR-Code/Challan No." value={markForm.ref} onChange={(e) => setMarkForm((f) => ({ ...f, ref: e.target.value }))} />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium">Payment Date</label>
-                <Input type="date" value={markForm.date} onChange={(e) => setMarkForm((f) => ({ ...f, date: e.target.value }))} />
-              </div>
+          <div className="space-y-3 py-2">
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-slate-700">Payment Reference</label>
+              <Input placeholder="Challan / BSR reference" value={markForm.ref} onChange={(e) => setMarkForm({ ...markForm, ref: e.target.value })} />
             </div>
-          )}
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-slate-700">Payment Date</label>
+              <Input type="date" value={markForm.date} onChange={(e) => setMarkForm({ ...markForm, date: e.target.value })} />
+            </div>
+          </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setTcsMarkDialog(null)}>Cancel</Button>
-            <Button onClick={handleMarkTcsPaid} disabled={markLoading} className="bg-green-600 hover:bg-green-700">
-              {markLoading ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <CreditCard className="h-4 w-4 mr-2" />}
-              Confirm Payment
+            <Button onClick={handleMarkTcsPaid} disabled={markLoading}>
+              {markLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />} Confirm
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* TDS Mark Deposited Dialog */}
-      <Dialog open={!!tdsMarkDialog} onOpenChange={(o) => !o && setTdsMarkDialog(null)}>
-        <DialogContent className="max-w-sm">
+      {/* Mark TDS Deposited Dialog */}
+      <Dialog open={!!tdsMarkDialog} onOpenChange={(open) => !open && setTdsMarkDialog(null)}>
+        <DialogContent className="sm:max-w-sm">
           <DialogHeader>
             <DialogTitle>Mark TDS as Deposited</DialogTitle>
-            <DialogDescription>Record the challan details for this TDS deposit to government.</DialogDescription>
+            <DialogDescription>
+              {tdsMarkDialog?.brandName} — Net TDS {fmt(tdsMarkDialog?.netTds ?? 0)} to be deposited.
+            </DialogDescription>
           </DialogHeader>
-          {tdsMarkDialog && (
-            <div className="space-y-4 py-2">
-              <div className="bg-slate-50 rounded p-3 text-sm space-y-1">
-                <div className="flex justify-between"><span className="text-slate-500">Company</span><span className="font-medium">{tdsMarkDialog.companyName}</span></div>
-                <div className="flex justify-between"><span className="text-slate-500">TDS Amount</span><span className="font-medium text-slate-900">{formatCurrency(tdsMarkDialog.tdsAmount)}</span></div>
-                <div className="flex justify-between"><span className="text-slate-500">TAN</span><span className="font-mono text-xs">{tdsMarkDialog.tan}</span></div>
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium">Challan / Deposit Reference</label>
-                <Input placeholder="OLTAS BSR Code / Challan No." value={markForm.ref} onChange={(e) => setMarkForm((f) => ({ ...f, ref: e.target.value }))} />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium">Deposit Date</label>
-                <Input type="date" value={markForm.date} onChange={(e) => setMarkForm((f) => ({ ...f, date: e.target.value }))} />
-              </div>
+          <div className="space-y-3 py-2">
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-slate-700">Deposit Reference</label>
+              <Input placeholder="Challan / NSDL reference" value={markForm.ref} onChange={(e) => setMarkForm({ ...markForm, ref: e.target.value })} />
             </div>
-          )}
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-slate-700">Deposit Date</label>
+              <Input type="date" value={markForm.date} onChange={(e) => setMarkForm({ ...markForm, date: e.target.value })} />
+            </div>
+          </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setTdsMarkDialog(null)}>Cancel</Button>
-            <Button onClick={handleMarkTdsDeposited} disabled={markLoading} className="bg-green-600 hover:bg-green-700">
-              {markLoading ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <CreditCard className="h-4 w-4 mr-2" />}
-              Confirm Deposit
+            <Button onClick={handleMarkTdsDeposited} disabled={markLoading}>
+              {markLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />} Confirm
             </Button>
           </DialogFooter>
         </DialogContent>

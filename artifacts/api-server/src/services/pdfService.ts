@@ -61,6 +61,8 @@ export interface InvoiceDocument {
   netValue: string;
   footerNotes?: string[];
   signatory?: { heading: string; lines: string[] };
+  /** When true, renders the signatory block as a green "DIGITALLY SIGNED" stamp box. */
+  digitalSignature?: boolean;
 }
 
 const A4: [number, number] = [595.28, 841.89];
@@ -265,17 +267,42 @@ export async function generateInvoicePdf(doc: InvoiceDocument): Promise<Uint8Arr
 
   // ---- Authorised signatory block (bottom-right) ----
   if (doc.signatory) {
-    ensureSpace(60);
-    const sigX = pageWidth - MARGIN - 180;
-    let sy = Math.max(y, bottomLimit + 50);
-    page.drawLine({ start: { x: sigX, y: sy }, end: { x: pageWidth - MARGIN, y: sy }, thickness: 0.75, color: LINE });
-    sy -= 12;
-    text(doc.signatory.heading, sigX, sy, { size: 8, font: bold });
-    sy -= 11;
-    doc.signatory.lines.forEach((ln) => {
-      text(ln, sigX, sy, { size: 7.5, color: MUTED });
-      sy -= 10;
-    });
+    const sigWidth = 185;
+    const sigX = pageWidth - MARGIN - sigWidth;
+
+    if (doc.digitalSignature) {
+      // Styled "DIGITALLY SIGNED" stamp box
+      const lineCount = doc.signatory.lines.length;
+      const boxH = 20 + 14 + lineCount * 11 + 10;
+      ensureSpace(boxH + 12);
+      let sy = Math.max(y, bottomLimit + boxH + 6);
+      page.drawRectangle({
+        x: sigX - 6, y: sy - boxH,
+        width: sigWidth + 6, height: boxH,
+        borderColor: GREEN, borderWidth: 0.85,
+        color: rgb(0.95, 0.99, 0.97),
+      });
+      text("DIGITALLY SIGNED", sigX, sy - 12, { size: 7.5, font: bold, color: GREEN });
+      page.drawLine({ start: { x: sigX - 6, y: sy - 17 }, end: { x: sigX + sigWidth, y: sy - 17 }, thickness: 0.5, color: GREEN });
+      sy -= 26;
+      text(doc.signatory.heading, sigX, sy, { size: 8, font: bold });
+      sy -= 12;
+      doc.signatory.lines.forEach((ln) => {
+        text(ln, sigX, sy, { size: 7.5, color: MUTED });
+        sy -= 11;
+      });
+    } else {
+      ensureSpace(60);
+      let sy = Math.max(y, bottomLimit + 50);
+      page.drawLine({ start: { x: sigX, y: sy }, end: { x: pageWidth - MARGIN, y: sy }, thickness: 0.75, color: LINE });
+      sy -= 12;
+      text(doc.signatory.heading, sigX, sy, { size: 8, font: bold });
+      sy -= 11;
+      doc.signatory.lines.forEach((ln) => {
+        text(ln, sigX, sy, { size: 7.5, color: MUTED });
+        sy -= 10;
+      });
+    }
   }
 
   return pdf.save();

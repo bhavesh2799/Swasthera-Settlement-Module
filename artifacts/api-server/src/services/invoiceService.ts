@@ -416,6 +416,7 @@ export function buildCustomerInvoiceDocument(inv: Invoice): InvoiceDocument {
       heading: `For ${inv.brandName ?? "Brand"}`,
       lines: ["Authorised Signatory", `via ${inv.platformName ?? PLATFORM_NAME}`],
     },
+    digitalSignature: true,
   };
 }
 

@@ -468,6 +468,11 @@ export function PayoutList() {
                 <Button variant="outline"><Download className="h-4 w-4 mr-2" />Download SoC</Button>
               </a>
             )}
+            {invoicePayoutRow?.settlementId && (
+              <a href={`/api/settlements/${invoicePayoutRow.settlementId}/invoice-pdf`} download target="_blank" rel="noreferrer">
+                <Button variant="default"><FileText className="h-4 w-4 mr-2" />Download Invoice PDF</Button>
+              </a>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { db, bankAccountsTable, brandsTable, activityTable, bankAccountJurisdictionsTable } from "@workspace/db";
+import { db, bankAccountsTable, brandsTable, activityTable, bankAccountJurisdictionsTable, onboardingsTable } from "@workspace/db";
 import { eq, and, ne } from "drizzle-orm";
 import { writeAudit } from "../services/audit";
 import { authorize } from "../middlewares/rbac";
@@ -63,11 +63,37 @@ router.get("/brands/:brandId/bank-accounts", async (req, res) => {
   }
 });
 
-// List all bank accounts for an onboarding (across all its brands)
+// List all bank accounts for an onboarding (across all its brands).
+// Lazy-migrate: if the table is empty but the onboarding row has denormalized bank
+// fields (legacy seed / pre-bankAccountsTable data), seed a primary ACTIVE entry so the
+// detail page always shows at least one card and a second "Add Account" doesn't
+// silently hide the original bank.
 router.get("/onboardings/:id/bank-accounts", async (req, res) => {
   try {
     const onboardingId = parseInt(req.params.id);
-    const rows = await db.select().from(bankAccountsTable).where(eq(bankAccountsTable.onboardingId, onboardingId));
+    let rows = await db.select().from(bankAccountsTable).where(eq(bankAccountsTable.onboardingId, onboardingId));
+
+    if (rows.length === 0) {
+      const [ob] = await db.select().from(onboardingsTable).where(eq(onboardingsTable.id, onboardingId));
+      if (ob?.bankAccount && ob?.bankIfsc && ob?.bankName) {
+        const [brand] = await db.select().from(brandsTable).where(eq(brandsTable.onboardingId, onboardingId)).limit(1);
+        if (brand) {
+          const [seeded] = await db.insert(bankAccountsTable).values({
+            brandId: brand.id,
+            onboardingId,
+            accountNumber: ob.bankAccount,
+            ifsc: ob.bankIfsc.toUpperCase(),
+            bankName: ob.bankName,
+            branchName: null,
+            accountType: "current",
+            isPrimary: true,
+            status: "ACTIVE",
+          }).returning();
+          rows = [seeded];
+        }
+      }
+    }
+
     return res.json({ bankAccounts: rows.map(mapBankAccount) });
   } catch (err) {
     req.log.error({ err }, "list onboarding bank accounts failed");

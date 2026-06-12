@@ -23,6 +23,12 @@ export const bagsTable = pgTable("bags", {
   cycle: text("cycle").notNull(),
   stateCode: text("state_code").notNull(),
   stateGstin: text("state_gstin").notNull(),
+  // OMS order attributes — customer / ship-to & payment (source for customer invoice)
+  customerName: text("customer_name"),
+  customerAddress: text("customer_address"),
+  customerStateCode: text("customer_state_code"),
+  customerState: text("customer_state"),
+  paymentMethod: text("payment_method"),
   settledAt: timestamp("settled_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });

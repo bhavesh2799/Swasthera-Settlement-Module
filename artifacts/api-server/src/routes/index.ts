@@ -12,6 +12,7 @@ import brandsRouter from "./brands";
 import utilsRouter from "./utils";
 import bankAccountsRouter from "./bank-accounts";
 import transactionsRouter from "./transactions";
+import invoicesRouter from "./invoices";
 import notificationsRouter from "./notifications";
 
 const router: IRouter = Router();
@@ -28,6 +29,7 @@ router.use(commissionMasterRouter);
 router.use(brandsRouter);
 router.use(utilsRouter);
 router.use(bankAccountsRouter);
+router.use(invoicesRouter);
 router.use(transactionsRouter);
 router.use(notificationsRouter);
 

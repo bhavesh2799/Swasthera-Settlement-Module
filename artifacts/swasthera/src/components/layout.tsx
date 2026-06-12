@@ -9,6 +9,7 @@ import {
   ChevronRight,
   Users2,
   Database,
+  Receipt,
 } from "lucide-react";
 import { useRole } from "@/contexts/RoleContext";
 import { NotificationBell } from "@/components/NotificationBell";
@@ -57,6 +58,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
     { label: "Compliance", href: "/compliance", icon: ShieldCheck },
     { label: "Settlements", href: "/settlements", icon: Calculator, prefix: "/settlements" },
     { label: "Payouts", href: "/payouts", icon: Banknote },
+    { label: "Invoices", href: "/invoices", icon: Receipt },
   ];
 
   const roleDescriptions: Record<string, string> = {

@@ -1,8 +1,59 @@
-import { db, invoicesTable, bagsTable, brandsTable } from "@workspace/db";
+import { db, invoicesTable, bagsTable, brandsTable, warehousesTable, onboardingsTable } from "@workspace/db";
 import { eq, and, desc, like } from "drizzle-orm";
-import type { Invoice } from "@workspace/db";
+import type { Invoice, Bag } from "@workspace/db";
+import { generateInvoicePdf, formatINR, type InvoiceDocument } from "./pdfService";
 
 const GST_ON_COMMISSION_RATE = 0.18;
+
+export const PLATFORM_NAME = "Swasthera Marketplace Pvt. Ltd.";
+export const PLATFORM_GSTIN = "27AABCS1234A1Z5";
+
+/** GST state code → state name (used to render warehouse/customer place of supply). */
+const STATE_NAMES: Record<string, string> = {
+  "01": "Jammu & Kashmir", "02": "Himachal Pradesh", "03": "Punjab", "04": "Chandigarh",
+  "05": "Uttarakhand", "06": "Haryana", "07": "Delhi", "08": "Rajasthan", "09": "Uttar Pradesh",
+  "10": "Bihar", "19": "West Bengal", "21": "Odisha", "23": "Madhya Pradesh", "24": "Gujarat",
+  "27": "Maharashtra", "29": "Karnataka", "32": "Kerala", "33": "Tamil Nadu", "36": "Telangana",
+  "37": "Andhra Pradesh",
+};
+
+/** Map a free OMS state string to a normalized order status for filtering/snapshot. */
+function normalizeOrderStatus(omsState: string): string {
+  const s = (omsState || "").toLowerCase();
+  if (s.includes("cancel")) return "cancelled";
+  if (s.includes("rto") || s.includes("return")) return "returned";
+  if (s.includes("delivered") || s.includes("delivery_done")) return "delivered";
+  return "in_transit";
+}
+
+/** HSN code for a brand category (apparel-leaning marketplace defaults). */
+function hsnForCategory(category: string | null | undefined): string {
+  const c = (category || "").toLowerCase();
+  if (c.includes("footwear") || c.includes("shoe")) return "6403";
+  if (c.includes("accessor") || c.includes("bag")) return "4202";
+  if (c.includes("beauty") || c.includes("cosmet")) return "3304";
+  if (c.includes("home") || c.includes("decor")) return "6304";
+  if (c.includes("electronic")) return "8517";
+  // Apparel / fashion / textile default.
+  return "6109";
+}
+
+/** Humanize a SKU into a readable product name. */
+function productNameFromSku(sku: string, brandName: string): string {
+  const parts = (sku || "").split("-");
+  // Drop a leading brand token and a trailing numeric token, title-case the rest.
+  const middle = parts.slice(1, parts.length > 2 ? -1 : undefined).filter(Boolean);
+  const words = (middle.length ? middle : parts).map(
+    (w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase(),
+  );
+  const label = words.join(" ").trim();
+  return label ? `${brandName} ${label}` : `${brandName} Product`;
+}
+
+/** Output-GST slab on apparel/goods: 5% up to INR 1000/unit, else 12%. */
+function gstRateForUnitPrice(unitPrice: number): number {
+  return unitPrice <= 1000 ? 5 : 12;
+}
 
 function num(v: string | number | null | undefined): number {
   if (v === null || v === undefined) return 0;
@@ -40,38 +91,112 @@ async function nextInvoiceNumber(
   return `${prefix}${String(next).padStart(4, "0")}`;
 }
 
-interface BagRow {
-  bagId: string;
-  orderId: string;
-  brandId: number;
-  brandName: string;
-  esp: string;
-  qty: number;
-  tcsAmount: string;
-  tdsAmount: string;
-}
-
 interface BrandRow {
   id: number;
   brandCode: string | null;
+  brandName: string;
+  brandLegalName: string | null;
+  brandCategory: string;
+  onboardingId: number;
   commissionRate: string;
   tcsRate: string;
   tdsRate: string;
 }
 
 /**
- * Computes invoice financials for a bag using the brand's commercial terms.
+ * Computes marketplace financials for a bag using the brand's commercial terms.
  * net_payable = gmv - commission - gst_on_commission - tds - tcs
  */
-function computeFinancials(bag: BagRow, brand: BrandRow) {
+function computeFinancials(bag: Bag, brand: BrandRow) {
   const gmv = num(bag.esp) * num(bag.qty);
   const commissionAmount = (gmv * num(brand.commissionRate)) / 100;
   const gstOnCommission = commissionAmount * GST_ON_COMMISSION_RATE;
-  // Prefer the bag's pre-accrued amounts; fall back to brand rates.
   const tdsDeducted = num(bag.tdsAmount) || (gmv * num(brand.tdsRate)) / 100;
   const tcsCollected = num(bag.tcsAmount) || (gmv * num(brand.tcsRate)) / 100;
   const netPayable = gmv - commissionAmount - gstOnCommission - tdsDeducted - tcsCollected;
   return { gmv, commissionAmount, gstOnCommission, tdsDeducted, tcsCollected, netPayable };
+}
+
+/**
+ * Builds the customer-invoice snapshot (parties, line item, GST breakup) from
+ * the OMS bag + brand + warehouse + onboarding. Intra-state (CGST+SGST) vs
+ * inter-state (IGST) is derived by comparing the ship-from warehouse state code
+ * against the customer's billing/place-of-supply state code.
+ */
+async function computeCustomerSnapshot(bag: Bag, brand: BrandRow) {
+  const [onboarding] = await db
+    .select({ masterGstin: onboardingsTable.masterGstin, companyName: onboardingsTable.companyName })
+    .from(onboardingsTable)
+    .where(eq(onboardingsTable.id, brand.onboardingId))
+    .limit(1);
+
+  const [warehouse] = await db
+    .select()
+    .from(warehousesTable)
+    .where(eq(warehousesTable.brandId, brand.id))
+    .orderBy(desc(warehousesTable.isPrimary))
+    .limit(1);
+
+  // bag.stateGstin is the authoritative ship-from warehouse GSTIN.
+  const warehouseGstin = warehouse?.warehouseGstin || bag.stateGstin;
+  const warehouseStateCode = warehouseGstin.slice(0, 2);
+  const warehouseState =
+    warehouse?.warehouseState || STATE_NAMES[warehouseStateCode] || bag.stateCode;
+  const warehouseName = warehouse?.warehouseName || `${bag.brandName} Warehouse`;
+
+  const sellerGstin = onboarding?.masterGstin || warehouseGstin;
+
+  const customerStateCode = bag.customerStateCode || warehouseStateCode;
+  const customerState = bag.customerState || STATE_NAMES[customerStateCode] || customerStateCode;
+
+  const unitPrice = num(bag.esp);
+  const quantity = num(bag.qty);
+  const taxableValue = unitPrice * quantity;
+  const gstRate = gstRateForUnitPrice(unitPrice);
+
+  const isIntra = warehouseStateCode === customerStateCode;
+  let cgstRate = 0, cgstAmount = 0, sgstRate = 0, sgstAmount = 0, igstRate = 0, igstAmount = 0;
+  if (isIntra) {
+    cgstRate = gstRate / 2;
+    sgstRate = gstRate / 2;
+    cgstAmount = (taxableValue * cgstRate) / 100;
+    sgstAmount = (taxableValue * sgstRate) / 100;
+  } else {
+    igstRate = gstRate;
+    igstAmount = (taxableValue * igstRate) / 100;
+  }
+  const totalInvoiceValue = taxableValue + cgstAmount + sgstAmount + igstAmount;
+
+  return {
+    invoiceDate: bag.invoiceDate || new Date().toISOString().slice(0, 10),
+    customerName: bag.customerName || "Marketplace Customer",
+    customerAddress: bag.customerAddress || "",
+    customerStateCode,
+    customerState,
+    sellerGstin,
+    warehouseName,
+    warehouseGstin,
+    warehouseState,
+    warehouseStateCode,
+    productName: productNameFromSku(bag.sku, bag.brandName),
+    hsnCode: hsnForCategory(brand.brandCategory),
+    quantity,
+    unitPrice: money(unitPrice),
+    taxableValue: money(taxableValue),
+    gstType: isIntra ? "INTRA" : "INTER",
+    cgstRate: money(cgstRate),
+    cgstAmount: money(cgstAmount),
+    sgstRate: money(sgstRate),
+    sgstAmount: money(sgstAmount),
+    igstRate: money(igstRate),
+    igstAmount: money(igstAmount),
+    totalInvoiceValue: money(totalInvoiceValue),
+    paymentMethod: bag.paymentMethod || "Prepaid",
+    platformName: PLATFORM_NAME,
+    platformGstin: PLATFORM_GSTIN,
+    orderStatus: normalizeOrderStatus(bag.omsState),
+    settlementCycle: bag.cycle,
+  };
 }
 
 /**
@@ -94,6 +219,7 @@ export async function generateInvoice(orderId: string): Promise<Invoice> {
   if (!brand.brandCode) throw new Error(`Brand ${brand.id} has no brandCode`);
 
   const f = computeFinancials(bag, brand);
+  const snap = await computeCustomerSnapshot(bag, brand);
   const invoiceNumber = await nextInvoiceNumber(brand.brandCode, "INVOICE");
 
   const [created] = await db
@@ -111,6 +237,7 @@ export async function generateInvoice(orderId: string): Promise<Invoice> {
       tdsDeducted: money(f.tdsDeducted),
       tcsCollected: money(f.tcsCollected),
       netPayable: money(f.netPayable),
+      ...snap,
     })
     .returning();
   return created;
@@ -118,7 +245,8 @@ export async function generateInvoice(orderId: string): Promise<Invoice> {
 
 /**
  * Generates a CREDIT_NOTE that reverses the original invoice for an order
- * (called on cancellation/return approval). Amounts are negated.
+ * (called on cancellation/return approval). Monetary amounts are negated; the
+ * customer-invoice snapshot (parties, product, GST split) is copied verbatim.
  */
 export async function generateCreditNote(orderId: string, reason: string): Promise<Invoice> {
   const [original] = await db
@@ -140,7 +268,7 @@ export async function generateCreditNote(orderId: string, reason: string): Promi
 
   const invoiceNumber = await nextInvoiceNumber(brand.brandCode, "CREDIT_NOTE");
 
-  const neg = (v: string) => money(-num(v));
+  const neg = (v: string | null) => money(-num(v));
   const [created] = await db
     .insert(invoicesTable)
     .values({
@@ -156,11 +284,144 @@ export async function generateCreditNote(orderId: string, reason: string): Promi
       tdsDeducted: neg(original.tdsDeducted),
       tcsCollected: neg(original.tcsCollected),
       netPayable: neg(original.netPayable),
+      // Customer-invoice snapshot — copy descriptive fields, negate monetary ones.
+      invoiceDate: new Date().toISOString().slice(0, 10),
+      customerName: original.customerName,
+      customerAddress: original.customerAddress,
+      customerStateCode: original.customerStateCode,
+      customerState: original.customerState,
+      sellerGstin: original.sellerGstin,
+      warehouseName: original.warehouseName,
+      warehouseGstin: original.warehouseGstin,
+      warehouseState: original.warehouseState,
+      warehouseStateCode: original.warehouseStateCode,
+      productName: original.productName,
+      hsnCode: original.hsnCode,
+      quantity: original.quantity,
+      unitPrice: original.unitPrice,
+      taxableValue: neg(original.taxableValue),
+      gstType: original.gstType,
+      cgstRate: original.cgstRate,
+      cgstAmount: neg(original.cgstAmount),
+      sgstRate: original.sgstRate,
+      sgstAmount: neg(original.sgstAmount),
+      igstRate: original.igstRate,
+      igstAmount: neg(original.igstAmount),
+      totalInvoiceValue: neg(original.totalInvoiceValue),
+      paymentMethod: original.paymentMethod,
+      platformName: original.platformName,
+      platformGstin: original.platformGstin,
+      orderStatus: "returned",
+      settlementCycle: original.settlementCycle,
       originalInvoiceId: original.id,
       reason,
     })
     .returning();
   return created;
+}
+
+/**
+ * Builds a generic `InvoiceDocument` for a customer tax invoice / credit note,
+ * reusing the shared PDF renderer (`pdfService`).
+ */
+export function buildCustomerInvoiceDocument(inv: Invoice): InvoiceDocument {
+  const isCn = inv.invoiceType === "CREDIT_NOTE";
+  const qty = inv.quantity ?? 1;
+  const unitPrice = num(inv.unitPrice);
+  const taxable = num(inv.taxableValue);
+  const isIntra = inv.gstType === "INTRA";
+
+  const summary: InvoiceDocument["summary"] = [
+    { label: "Taxable Value", value: formatINR(taxable), negative: isCn },
+  ];
+  if (isIntra) {
+    summary.push({ label: `CGST @ ${num(inv.cgstRate)}%`, value: formatINR(num(inv.cgstAmount)), negative: isCn });
+    summary.push({ label: `SGST @ ${num(inv.sgstRate)}%`, value: formatINR(num(inv.sgstAmount)), negative: isCn });
+  } else {
+    summary.push({ label: `IGST @ ${num(inv.igstRate)}%`, value: formatINR(num(inv.igstAmount)), negative: isCn });
+  }
+  if (num(inv.tcsCollected) !== 0) {
+    summary.push({ label: "TCS Collected (Sec 52)", value: formatINR(num(inv.tcsCollected)), negative: isCn });
+  }
+
+  return {
+    brandHeading: inv.brandName ?? "Brand",
+    docTitle: isCn ? "Credit Note" : "Tax Invoice",
+    invoiceNumber: inv.invoiceNumber,
+    metaItems: [
+      { label: "Invoice Date", value: inv.invoiceDate ?? "" },
+      { label: "Order ID", value: inv.orderId },
+      { label: "Order Status", value: (inv.orderStatus ?? "").toUpperCase() },
+      { label: "Payment", value: inv.paymentMethod ?? "" },
+      { label: "Settlement Period", value: inv.settlementCycle ?? "" },
+    ],
+    parties: [
+      {
+        heading: "Sold By (Seller)",
+        name: inv.brandName ?? "",
+        lines: [
+          `GSTIN: ${inv.sellerGstin ?? "-"}`,
+          `Sold via ${inv.platformName ?? PLATFORM_NAME}`,
+          `Platform GSTIN: ${inv.platformGstin ?? PLATFORM_GSTIN}`,
+        ],
+      },
+      {
+        heading: "Ship From (Warehouse)",
+        name: inv.warehouseName ?? "",
+        lines: [
+          `GSTIN: ${inv.warehouseGstin ?? "-"}`,
+          `State: ${inv.warehouseState ?? "-"} (${inv.warehouseStateCode ?? "-"})`,
+        ],
+      },
+      {
+        heading: "Bill To (Customer)",
+        name: inv.customerName ?? "",
+        lines: [
+          inv.customerAddress ?? "",
+          `Place of Supply: ${inv.customerState ?? "-"} (${inv.customerStateCode ?? "-"})`,
+        ].filter(Boolean),
+      },
+    ],
+    columns: [
+      { key: "product", header: "Product", width: 4 },
+      { key: "hsn", header: "HSN", width: 1.4 },
+      { key: "qty", header: "Qty", width: 1, align: "right" },
+      { key: "rate", header: "Unit Price", width: 1.8, align: "right" },
+      { key: "taxable", header: "Taxable Value", width: 2, align: "right" },
+    ],
+    rows: [
+      {
+        negative: isCn,
+        cells: {
+          product: inv.productName ?? "",
+          hsn: inv.hsnCode ?? "",
+          qty: String(qty),
+          rate: formatINR(unitPrice),
+          taxable: formatINR(taxable),
+        },
+      },
+    ],
+    summary,
+    netLabel: isCn ? "Total Credit Value" : "Total Invoice Value",
+    netValue: formatINR(num(inv.totalInvoiceValue)),
+    footerNotes: [
+      isIntra
+        ? "Intra-state supply — CGST + SGST levied (place of supply equals warehouse state)."
+        : "Inter-state supply — IGST levied (place of supply differs from warehouse state).",
+      "TCS is collected at source by the marketplace operator under Section 52 of the CGST Act.",
+      ...(inv.reason ? [`Reason: ${inv.reason}`] : []),
+      "This is a system-generated document and does not require a physical signature.",
+    ],
+    signatory: {
+      heading: `For ${inv.brandName ?? "Brand"}`,
+      lines: ["Authorised Signatory", `via ${inv.platformName ?? PLATFORM_NAME}`],
+    },
+  };
+}
+
+/** Renders a customer tax invoice / credit note as a PDF byte buffer. */
+export async function renderInvoicePdf(inv: Invoice): Promise<Uint8Array> {
+  return generateInvoicePdf(buildCustomerInvoiceDocument(inv));
 }
 
 /** Renders an invoice as a simple HTML document for download/preview. */
@@ -169,24 +430,23 @@ export function renderInvoiceHtml(inv: Invoice): string {
   const title = isCn ? "Credit Note" : "Tax Invoice";
   const row = (label: string, value: string) =>
     `<tr><td style="padding:6px 12px;color:#475569">${label}</td><td style="padding:6px 12px;text-align:right;font-variant-numeric:tabular-nums">${value}</td></tr>`;
-  const inr = (v: string) => `₹${num(v).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const inr = (v: string | null) => `₹${num(v).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   return `<!doctype html><html><head><meta charset="utf-8"><title>${inv.invoiceNumber}</title></head>
 <body style="font-family:system-ui,sans-serif;max-width:640px;margin:40px auto;color:#0f172a">
-  <h1 style="font-size:20px;margin:0 0 4px">Swasthera — ${title}</h1>
+  <h1 style="font-size:20px;margin:0 0 4px">${inv.brandName ?? "Swasthera"} — ${title}</h1>
   <p style="color:#64748b;margin:0 0 24px">${inv.invoiceNumber}</p>
-  <p><strong>Brand:</strong> ${inv.brandName ?? inv.brandId}<br/>
+  <p><strong>Customer:</strong> ${inv.customerName ?? "-"}<br/>
      <strong>Order:</strong> ${inv.orderId}<br/>
      <strong>Generated:</strong> ${new Date(inv.generatedAt).toLocaleString("en-IN")}</p>
   ${inv.reason ? `<p style="color:#b45309"><strong>Reason:</strong> ${inv.reason}</p>` : ""}
   <table style="width:100%;border-collapse:collapse;margin-top:16px;border:1px solid #e2e8f0">
-    ${row("Gross Merchandise Value", inr(inv.gmv))}
-    ${row("Commission", inr(inv.commissionAmount))}
-    ${row("GST on Commission (18%)", inr(inv.gstOnCommission))}
-    ${row("TDS Deducted", inr(inv.tdsDeducted))}
-    ${row("TCS Collected", inr(inv.tcsCollected))}
+    ${row("Taxable Value", inr(inv.taxableValue))}
+    ${inv.gstType === "INTRA"
+      ? row(`CGST @ ${num(inv.cgstRate)}%`, inr(inv.cgstAmount)) + row(`SGST @ ${num(inv.sgstRate)}%`, inr(inv.sgstAmount))
+      : row(`IGST @ ${num(inv.igstRate)}%`, inr(inv.igstAmount))}
     <tr style="border-top:2px solid #0f172a;font-weight:700">
-      <td style="padding:10px 12px">Net Payable</td>
-      <td style="padding:10px 12px;text-align:right;font-variant-numeric:tabular-nums">${inr(inv.netPayable)}</td>
+      <td style="padding:10px 12px">Total Invoice Value</td>
+      <td style="padding:10px 12px;text-align:right;font-variant-numeric:tabular-nums">${inr(inv.totalInvoiceValue)}</td>
     </tr>
   </table>
 </body></html>`;

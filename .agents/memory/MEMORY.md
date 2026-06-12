@@ -5,3 +5,4 @@
 - [KYB via GSTIN](kyb-via-gstin.md) — KYB has no separate detail-page step; it's auto-PASSED on GSTIN fetch at onboarding; don't gate submit on kybStatus.
 - [Entity governance pattern](entity-governance-pattern.md) — brand/warehouse edits go through propose→approve/reject; lock legacy PUT routes to checker; PENDING entities must not mutate live primary state.
 - [Commercial rate source of truth](commercial-rate-source-of-truth.md) — settlement reads commission/tcs/tds/mdr from the onboarding row, not brands; brand-level rate edits must propagate to onboarding on approval or they never reach compute.
+- [Role header on downloads](role-header-on-downloads.md) — X-Role injected only on fetch(), not anchor downloads; keep GET/download API routes unguarded or they 403 for everyone.

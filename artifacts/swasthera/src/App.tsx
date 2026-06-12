@@ -15,6 +15,7 @@ import { ComplianceRegister } from "./pages/ComplianceRegister";
 import { SettlementList } from "./pages/SettlementList";
 import { SettlementDetail } from "./pages/SettlementDetail";
 import { PayoutList } from "./pages/PayoutList";
+import { InvoiceRepository } from "./pages/InvoiceRepository";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -38,6 +39,7 @@ function Router() {
         <Route path="/settlements" component={SettlementList} />
         <Route path="/settlements/:id" component={SettlementDetail} />
         <Route path="/payouts" component={PayoutList} />
+        <Route path="/invoices" component={InvoiceRepository} />
         <Route component={NotFound} />
       </Switch>
     </Layout>

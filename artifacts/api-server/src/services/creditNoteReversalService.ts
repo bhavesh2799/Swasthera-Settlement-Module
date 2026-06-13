@@ -19,7 +19,7 @@ import {
 } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { stateName } from "./stateCodes";
-import { transactionPeriod, parseLocalDate } from "./tdsReversalService";
+import { transactionPeriod, parseLocalDate, cycleFromDate } from "./tdsReversalService";
 import type { Invoice } from "@workspace/db";
 import type { Request } from "express";
 
@@ -53,11 +53,16 @@ function cycleMonthYear(cycle: string): { month: number; year: number } | null {
  * the arrival date — using REAL, settleable cycle labels rather than a
  * synthesized one (which would never match the settlement engine's strict
  * cycle-equality consumption). Preference order:
- *   1. The bag's own original cycle, if it falls in the arrival month (the
- *      common case — CN arrives within the same cycle).
- *   2. Any existing bag cycle for this brand that falls in the arrival month.
- *   3. Fall back to the bag's original cycle (guaranteed to be a settleable
- *      label, so the adjustment is consumed on that cycle's (re)compute).
+ *   1. The bag's own original cycle, ONLY if it falls in the arrival month
+ *      (the common case — CN arrives within the same cycle the order settled).
+ *   2. Any other existing bag cycle for this brand that falls in the arrival
+ *      month (a real, already-settleable label for that month).
+ *   3. The canonical arrival-month label (`MMM-YYYY`) when no cycle exists yet
+ *      for the arrival month.
+ *
+ * The reversal must NEVER back-post into the original order's cycle when the
+ * credit note arrives in a later month (per the arrival-driven rule) — so the
+ * original cycle is only ever returned when it IS the arrival month.
  */
 async function resolveArrivalCycle(onboardingId: number, originalCycle: string, arrival: Date): Promise<string> {
   const am = arrival.getMonth() + 1;
@@ -76,10 +81,9 @@ async function resolveArrivalCycle(onboardingId: number, originalCycle: string, 
       const my = cycleMonthYear(c);
       return !!my && my.month === am && my.year === ay;
     });
-  if (matches.includes(originalCycle)) return originalCycle;
   if (matches.length > 0) return matches[0];
 
-  return originalCycle;
+  return cycleFromDate(arrival);
 }
 
 /** End-of-month date (YYYY-MM-DD) for the bag's cycle month — the default expected arrival. */

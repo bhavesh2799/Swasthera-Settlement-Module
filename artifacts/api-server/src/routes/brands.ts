@@ -27,6 +27,26 @@ function parsePending(raw: string | null): Record<string, unknown> | null {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const MOBILE_RE = /^[6-9]\d{9}$/;
+
+/**
+ * Validates a SPOC contact block (name/email/mobile). Returns an error string if
+ * any field is missing or malformed, otherwise null. Both the Finance and the
+ * Operations SPOC are mandatory for every brand (governance requirement).
+ */
+function validateSpoc(
+  label: string,
+  name?: string | null,
+  email?: string | null,
+  mobile?: string | null,
+): string | null {
+  if (!name || !String(name).trim()) return `${label} SPOC name is required`;
+  if (!email || !EMAIL_RE.test(String(email).trim())) return `${label} SPOC email is invalid`;
+  if (!mobile || !MOBILE_RE.test(String(mobile).trim())) return `${label} SPOC mobile is invalid`;
+  return null;
+}
+
 function genBrandCode(id: number) {
   return `BR-${String(id).padStart(5, "0")}`;
 }
@@ -208,6 +228,21 @@ router.post("/onboardings/:id/brands", authorize(["maker", "admin"]), async (req
       return res.status(400).json({ error: "brandName, brandCategory, brandType are required" });
     }
 
+    // Both the Finance and the Operations SPOC are mandatory for every brand. A
+    // brand may inherit them from its onboarding, so validate the resolved values.
+    const spocName = body.spocName ?? ob.spocName;
+    const spocEmail = body.spocEmail ?? ob.spocEmail;
+    const spocMobile = body.spocMobile ?? ob.spocMobile;
+    const opsSpocName = body.opsSpocName ?? ob.opsSpocName;
+    const opsSpocEmail = body.opsSpocEmail ?? ob.opsSpocEmail;
+    const opsSpocMobile = body.opsSpocMobile ?? ob.opsSpocMobile;
+    const spocErr =
+      validateSpoc("Finance", spocName, spocEmail, spocMobile) ??
+      validateSpoc("Operations", opsSpocName, opsSpocEmail, opsSpocMobile);
+    if (spocErr) {
+      return res.status(400).json({ error: spocErr });
+    }
+
     const [brand] = await db
       .insert(brandsTable)
       .values({
@@ -225,12 +260,12 @@ router.post("/onboardings/:id/brands", authorize(["maker", "admin"]), async (req
         tdsRate: String(body.tdsRate ?? ob.tdsRate ?? "1"),
         mdrRate: String(body.mdrRate ?? ob.mdrRate ?? "0"),
         tcsApplicable: body.tcsApplicable !== false,
-        spocName: body.spocName ?? ob.spocName,
-        spocEmail: body.spocEmail ?? ob.spocEmail,
-        spocMobile: body.spocMobile ?? ob.spocMobile,
-        opsSpocName: body.opsSpocName ?? ob.opsSpocName,
-        opsSpocEmail: body.opsSpocEmail ?? ob.opsSpocEmail,
-        opsSpocMobile: body.opsSpocMobile ?? ob.opsSpocMobile,
+        spocName,
+        spocEmail,
+        spocMobile,
+        opsSpocName,
+        opsSpocEmail,
+        opsSpocMobile,
         status: "PENDING_APPROVAL",
       })
       .returning();
@@ -318,6 +353,24 @@ router.post("/brands/:id/propose-edit", authorize(["maker", "admin"]), async (re
     }
     if (Object.keys(proposed).length === 0) {
       return res.status(400).json({ error: "No editable fields supplied" });
+    }
+
+    // If a maker edits any part of a SPOC block, the resulting block (merged with
+    // the brand's current values) must remain a complete, valid contact. Both
+    // SPOCs stay mandatory across edits (governance requirement).
+    const pick = (field: keyof typeof brand, key: string) =>
+      (proposed[key] !== undefined ? (proposed[key] as string) : (brand[field] as string | null));
+    const touchesFinance = ["spocName", "spocEmail", "spocMobile"].some((k) => k in proposed);
+    const touchesOps = ["opsSpocName", "opsSpocEmail", "opsSpocMobile"].some((k) => k in proposed);
+    const editSpocErr =
+      (touchesFinance
+        ? validateSpoc("Finance", pick("spocName", "spocName"), pick("spocEmail", "spocEmail"), pick("spocMobile", "spocMobile"))
+        : null) ??
+      (touchesOps
+        ? validateSpoc("Operations", pick("opsSpocName", "opsSpocName"), pick("opsSpocEmail", "opsSpocEmail"), pick("opsSpocMobile", "opsSpocMobile"))
+        : null);
+    if (editSpocErr) {
+      return res.status(400).json({ error: editSpocErr });
     }
 
     const [row] = await db

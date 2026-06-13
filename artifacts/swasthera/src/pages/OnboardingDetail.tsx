@@ -118,6 +118,27 @@ type DocKey =
 interface DocDef { key: DocKey; label: string; required: boolean; hint: string; }
 interface DocSection { level: string; title: string; docs: DocDef[]; }
 
+const SPOC_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const SPOC_MOBILE_RE = /^[6-9]\d{9}$/;
+
+/**
+ * Both the Finance and Operations SPOC are mandatory for every brand. Returns
+ * true only when all six contact fields are present and well-formed.
+ */
+function brandSpocsValid(f: {
+  spocName: string; spocEmail: string; spocMobile: string;
+  opsSpocName: string; opsSpocEmail: string; opsSpocMobile: string;
+}): boolean {
+  const okBlock = (name: string, email: string, mobile: string) =>
+    name.trim().length > 0 &&
+    SPOC_EMAIL_RE.test(email.trim()) &&
+    SPOC_MOBILE_RE.test(mobile.trim());
+  return (
+    okBlock(f.spocName, f.spocEmail, f.spocMobile) &&
+    okBlock(f.opsSpocName, f.opsSpocEmail, f.opsSpocMobile)
+  );
+}
+
 const DOC_SECTIONS: DocSection[] = [
   {
     level: "company",
@@ -432,6 +453,10 @@ export function OnboardingDetail() {
 
   const handleAddBrand = async () => {
     if (!addBrandForm.brandName || !addBrandForm.brandCategory || !addBrandForm.brandType) return;
+    if (!brandSpocsValid(addBrandForm)) {
+      toast({ title: "Both Finance and Operations SPOC details are required", variant: "destructive" });
+      return;
+    }
     setAddBrandLoading(true);
     try {
       const r = await fetch(`/api/onboardings/${id}/brands`, {
@@ -504,6 +529,10 @@ export function OnboardingDetail() {
 
   const handleEditBrand = async () => {
     if (!editBrandId || !editBrandForm.brandName || !editBrandForm.brandCategory) return;
+    if (!brandSpocsValid(editBrandForm)) {
+      toast({ title: "Both Finance and Operations SPOC details are required", variant: "destructive" });
+      return;
+    }
     setEditBrandLoading(true);
     try {
       const r = await fetch(`/api/brands/${editBrandId}/propose-edit`, {
@@ -1862,7 +1891,7 @@ export function OnboardingDetail() {
               </div>
             </div>
             <Separator />
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Finance SPOC</p>
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Finance SPOC <span className="text-red-500">*</span></p>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <Label className="text-sm">SPOC Name</Label>
@@ -1878,7 +1907,7 @@ export function OnboardingDetail() {
               </div>
             </div>
             <Separator />
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Operations SPOC</p>
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Operations SPOC <span className="text-red-500">*</span></p>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <Label className="text-sm">SPOC Name</Label>
@@ -1896,7 +1925,7 @@ export function OnboardingDetail() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowAddBrand(false)}>Cancel</Button>
-            <Button onClick={handleAddBrand} disabled={addBrandLoading || !addBrandForm.brandName || !addBrandForm.brandCategory}>
+            <Button onClick={handleAddBrand} disabled={addBrandLoading || !addBrandForm.brandName || !addBrandForm.brandCategory || !brandSpocsValid(addBrandForm)}>
               {addBrandLoading ? "Adding..." : "Add Brand"}
             </Button>
           </DialogFooter>
@@ -2105,7 +2134,7 @@ export function OnboardingDetail() {
               <Input type="number" step="0.01" min="0" value={editBrandForm.tdsRate} onChange={(e) => setEditBrandForm((p) => ({ ...p, tdsRate: e.target.value }))} />
             </div>
             <div className="col-span-2"><Separator /></div>
-            <div className="col-span-2"><p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Finance SPOC</p></div>
+            <div className="col-span-2"><p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Finance SPOC <span className="text-red-500">*</span></p></div>
             <div className="space-y-1.5">
               <Label className="text-sm">SPOC Name</Label>
               <Input value={editBrandForm.spocName} onChange={(e) => setEditBrandForm((p) => ({ ...p, spocName: e.target.value }))} placeholder="Priya Sharma" />
@@ -2119,7 +2148,7 @@ export function OnboardingDetail() {
               <Input value={editBrandForm.spocMobile} onChange={(e) => setEditBrandForm((p) => ({ ...p, spocMobile: e.target.value }))} placeholder="+91 9876543210" />
             </div>
             <div className="col-span-2"><Separator /></div>
-            <div className="col-span-2"><p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Operations SPOC</p></div>
+            <div className="col-span-2"><p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Operations SPOC <span className="text-red-500">*</span></p></div>
             <div className="space-y-1.5">
               <Label className="text-sm">SPOC Name</Label>
               <Input value={editBrandForm.opsSpocName} onChange={(e) => setEditBrandForm((p) => ({ ...p, opsSpocName: e.target.value }))} placeholder="Rohan Mehta" />
@@ -2135,7 +2164,7 @@ export function OnboardingDetail() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowEditBrand(false)}>Cancel</Button>
-            <Button onClick={handleEditBrand} disabled={editBrandLoading || !editBrandForm.brandName || !editBrandForm.brandCategory}>
+            <Button onClick={handleEditBrand} disabled={editBrandLoading || !editBrandForm.brandName || !editBrandForm.brandCategory || !brandSpocsValid(editBrandForm)}>
               {editBrandLoading ? "Submitting..." : "Submit for Approval"}
             </Button>
           </DialogFooter>

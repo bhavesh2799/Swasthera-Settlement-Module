@@ -260,6 +260,9 @@ export function OnboardingDetail() {
   const approveMutation = useApproveOnboarding();
   const rejectMutation = useRejectOnboarding();
 
+  const [kybRunning, setKybRunning] = useState(false);
+  const [kybChecks, setKybChecks] = useState<{ key: string; label: string; status: string; detail: string }[]>([]);
+
   const [rejectNotes, setRejectNotes] = useState("");
   const [showRejectDialog, setShowRejectDialog] = useState(false);
   const [editNotes, setEditNotes] = useState("");
@@ -960,6 +963,26 @@ export function OnboardingDetail() {
     });
   };
 
+  const handleRunKyb = async () => {
+    setKybRunning(true);
+    try {
+      const r = await fetch(`/api/onboardings/${id}/kyb-check`, { method: "POST", headers: { "Content-Type": "application/json" } });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data?.error ?? "KYB check failed");
+      setKybChecks(Array.isArray(data.checks) ? data.checks : []);
+      toast({
+        title: data.kybStatus === "PASSED" ? "KYB passed" : "KYB failed",
+        description: data.message,
+        variant: data.kybStatus === "PASSED" ? undefined : "destructive",
+      });
+      invalidate();
+    } catch (err) {
+      toast({ title: "KYB check failed", description: err instanceof Error ? err.message : undefined, variant: "destructive" });
+    } finally {
+      setKybRunning(false);
+    }
+  };
+
   const handleApprove = () => {
     approveMutation.mutate({ id, data: { notes: "Approved — all documents verified" } }, {
       onSuccess: () => { toast({ title: "Onboarding approved — Fynd sync initiated" }); invalidate(); }
@@ -1018,7 +1041,7 @@ export function OnboardingDetail() {
             <Badge variant="outline" className="font-mono text-xs">{onboarding.ref}</Badge>
             <Badge variant="outline" className="text-xs">v{(onboarding as unknown as Record<string, unknown>).version as number ?? 1}</Badge>
             {onboarding.kybStatus === "PASSED" && (
-              <Badge className="bg-green-100 text-green-800 border-transparent hover:bg-green-100"><ShieldCheck className="mr-1 h-3 w-3" />KYB Verified via GSTIN</Badge>
+              <Badge className="bg-green-100 text-green-800 border-transparent hover:bg-green-100"><ShieldCheck className="mr-1 h-3 w-3" />KYB Verified</Badge>
             )}
           </div>
           <div className="flex flex-wrap items-center gap-3 mt-1">
@@ -1036,7 +1059,7 @@ export function OnboardingDetail() {
         <div className="flex gap-2 flex-wrap">
           {/* BRD §3.1: Maker sees Submit; cannot Approve/Reject. Checker sees Approve/Reject; cannot Submit */}
           {isMaker && onboarding.status === "DRAFT" && (
-            <Button onClick={handleSubmit} disabled={submitMutation.isPending}>
+            <Button onClick={handleSubmit} disabled={submitMutation.isPending || onboarding.kybStatus !== "PASSED"} title={onboarding.kybStatus !== "PASSED" ? "Run and pass the KYB check before submitting" : undefined}>
               <Send className="mr-2 h-4 w-4" />
               Submit for Review
             </Button>
@@ -1055,7 +1078,7 @@ export function OnboardingDetail() {
             </>
           )}
           {isMaker && onboarding.status === "REJECTED" && (
-            <Button onClick={handleSubmit} disabled={submitMutation.isPending} className="bg-amber-600 hover:bg-amber-700">
+            <Button onClick={handleSubmit} disabled={submitMutation.isPending || onboarding.kybStatus !== "PASSED"} title={onboarding.kybStatus !== "PASSED" ? "Run and pass the KYB check before submitting" : undefined} className="bg-amber-600 hover:bg-amber-700">
               <Send className="mr-2 h-4 w-4" />
               Re-submit for Review
             </Button>
@@ -1072,6 +1095,45 @@ export function OnboardingDetail() {
           )}
         </div>
       </div>
+
+      {/* KYB Gate (BRD §3.2) — company KYB fetch must run & pass before submit */}
+      {(onboarding.status === "DRAFT" || onboarding.status === "REJECTED") && (
+        <Card className={`shadow-sm border ${onboarding.kybStatus === "PASSED" ? "border-green-200 bg-green-50/40" : onboarding.kybStatus === "FAILED" ? "border-red-200 bg-red-50/40" : "border-amber-200 bg-amber-50/40"}`}>
+          <CardContent className="p-5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <ShieldCheck className={`h-5 w-5 mt-0.5 ${onboarding.kybStatus === "PASSED" ? "text-green-600" : onboarding.kybStatus === "FAILED" ? "text-red-600" : "text-amber-600"}`} />
+                <div>
+                  <p className="font-semibold text-slate-800 text-sm">
+                    Company KYB Verification
+                    {onboarding.kybStatus === "PASSED" && <span className="ml-2 text-green-700">· Passed</span>}
+                    {onboarding.kybStatus === "FAILED" && <span className="ml-2 text-red-700">· Failed</span>}
+                    {onboarding.kybStatus === "NOT_STARTED" && <span className="ml-2 text-amber-700">· Not started</span>}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Verifies PAN, GSTIN, CIN and bank account. Must pass before this onboarding can be submitted for Checker review.
+                  </p>
+                </div>
+              </div>
+              {isMaker && (
+                <Button size="sm" variant={onboarding.kybStatus === "PASSED" ? "outline" : "default"} onClick={handleRunKyb} disabled={kybRunning}>
+                  {kybRunning ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Running…</> : <><ShieldCheck className="mr-2 h-4 w-4" /> {onboarding.kybStatus === "NOT_STARTED" ? "Run KYB Check" : "Re-run KYB Check"}</>}
+                </Button>
+              )}
+            </div>
+            {kybChecks.length > 0 && (
+              <div className="mt-4 grid gap-1.5 sm:grid-cols-2">
+                {kybChecks.map((c) => (
+                  <div key={c.key} className="flex items-start gap-2 text-xs">
+                    {c.status === "passed" ? <CheckCircle className="h-3.5 w-3.5 text-green-600 mt-0.5 shrink-0" /> : c.status === "failed" ? <XCircle className="h-3.5 w-3.5 text-red-600 mt-0.5 shrink-0" /> : <span className="h-3.5 w-3.5 text-slate-400 mt-0.5 shrink-0 text-center">–</span>}
+                    <span className="text-slate-700"><span className="font-medium">{c.label}:</span> {c.detail}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid gap-6 md:grid-cols-2">
         {/* Company & Tax */}

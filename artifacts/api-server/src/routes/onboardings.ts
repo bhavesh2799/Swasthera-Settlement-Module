@@ -3,7 +3,7 @@ import { db } from "@workspace/db";
 import { onboardingsTable, activityTable, commissionMasterTable, brandsTable, warehousesTable, bankAccountsTable } from "@workspace/db";
 import { eq, like, and, SQL } from "drizzle-orm";
 import { authorize } from "../middlewares/rbac";
-import { runKyb, PAN_RE, GSTIN_RE } from "../services/kybService";
+import { runKyb } from "../services/kybService";
 import { writeAudit } from "../services/audit";
 import { notify } from "../services/notify";
 
@@ -127,15 +127,15 @@ router.post("/onboardings", async (req, res) => {
   try {
     const body = req.body;
     const ref = genRef();
-    // KYB is performed up-front via the GSTIN fetch. GST registration is mandatory, so
-    // an onboarding is only considered KYB-verified when both its GSTIN and PAN pass
-    // format validation (statutory requirement for marketplace settlement).
-    const kybVerified = GSTIN_RE.test(body.masterGstin ?? "") && PAN_RE.test(body.pan ?? "");
+    // KYB is NOT auto-passed at create time. GST registration is mandatory, and the
+    // Maker must run the full KYB fetch (POST /onboardings/:id/kyb-check — PAN, GST,
+    // CIN and live bank verification) before the onboarding can be submitted for
+    // review. A new onboarding therefore always starts NOT_STARTED.
     const [row] = await db.insert(onboardingsTable).values({
       ref,
       status: "DRAFT",
-      kybStatus: kybVerified ? "PASSED" : "NOT_STARTED",
-      kybVerifiedAt: kybVerified ? new Date() : undefined,
+      kybStatus: "NOT_STARTED",
+      kybVerifiedAt: undefined,
       companyName: body.companyName,
       tradeName: body.tradeName,
       companyType: body.companyType,
@@ -539,9 +539,11 @@ router.post("/onboardings/:id/submit", authorize(["maker", "admin"]), async (req
     if (!ob) return res.status(404).json({ error: "Not found" });
 
     // GST registration is mandatory and the company-level KYB fetch must have run
-    // and passed before a Maker can submit for Checker review.
-    if (ob.kybStatus !== "PASSED") {
-      return res.status(400).json({ error: "Company KYB must be run and passed (GST + PAN verified) before submitting for review." });
+    // and passed before a Maker can submit for Checker review. kybVerifiedAt is only
+    // set by the /kyb-check fetch, so requiring it proves the check actually ran
+    // (a PASSED status alone is not sufficient evidence).
+    if (ob.kybStatus !== "PASSED" || !ob.kybVerifiedAt) {
+      return res.status(400).json({ error: "Company KYB must be run and passed (GST + PAN + bank verified) before submitting for review." });
     }
 
     const maker = submittedBy || "Anjali Patel";

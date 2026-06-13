@@ -1,24 +1,25 @@
 ---
-name: KYB gate has two independent pass paths
-description: Onboarding kybStatus can be set PASSED at create time OR via the kyb-check endpoint; both must validate, not just check presence.
+name: KYB gate is the single authoritative onboarding governance check
+description: Onboarding kybStatus only becomes PASSED via the kyb-check endpoint; create starts NOT_STARTED and submit requires a verified KYB timestamp.
 ---
 
-# KYB gate: two independent pass paths
+# KYB gate: one authoritative path
 
-`onboardings.kybStatus` can become `PASSED` two different ways, and the submit
-gate (`POST /onboardings/:id/submit`) only checks `kybStatus === "PASSED"`:
+`onboardings.kybStatus` only becomes `PASSED` through the explicit check
+endpoint (`POST /onboardings/:id/kyb-check`), which runs `runKyb` in
+`services/kybService.ts` (PAN + mandatory GST + conditional CIN + live bank
+IFSC lookup). Onboarding creation always starts `NOT_STARTED` with no
+`kybVerifiedAt` — there is no create-time auto-pass.
 
-1. **Create time** (`POST /onboardings`) — sets PASSED based on a `kybVerified`
-   flag computed inline in `routes/onboardings.ts`.
-2. **Explicit check** (`POST /onboardings/:id/kyb-check`) — runs `runKyb` in
-   `services/kybService.ts` (PAN + GST format, plus real bank IFSC lookup and CIN).
+The submit gate (`POST /onboardings/:id/submit`) blocks unless
+`kybStatus === "PASSED"` **and** `kybVerifiedAt` is set, so presence of a
+status alone cannot bypass it; the timestamp proves the real check ran.
 
-**Why this matters:** create-time once set `kybVerified = !!body.masterGstin`
-(presence only), so any garbage GSTIN string passed the governance gate. It now
-requires `GSTIN_RE.test(masterGstin) && PAN_RE.test(pan)` (both regexes exported
-from kybService).
+**Why this matters:** an earlier version set PASSED at create time from a
+presence-only signal (`!!body.masterGstin`), so garbage GSTINs passed the
+governance gate. GST registration is now mandatory and the only trusted
+verification is the full kyb-check run.
 
-**How to apply:** if you change KYB validation rules, update BOTH paths or they
-drift. The create-time path is a lighter format-only check; the kyb-check
-endpoint is the full verification (bank + CIN). Don't make the submit gate
-trust a presence-only signal.
+**How to apply:** keep KYB validation in one place (`runKyb`). Never reintroduce
+a create-time pass path, and never let the submit gate trust `kybStatus` without
+also requiring `kybVerifiedAt`.

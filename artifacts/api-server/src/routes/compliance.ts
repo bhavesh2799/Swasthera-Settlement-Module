@@ -5,6 +5,7 @@ import { eq, and, sql, inArray, like, desc } from "drizzle-orm";
 import { reversalDeadline, isPastReversalDeadline, classifyCancellation } from "../services/tdsReversalService";
 import { postCreditNoteReversal } from "../services/creditNoteReversalService";
 import { authorize } from "../middlewares/rbac";
+import { buildWorkbook, sendWorkbook } from "../services/excelService";
 
 const router = Router();
 
@@ -171,6 +172,93 @@ router.get("/compliance/tcs-records", async (req, res) => {
   }
 });
 
+router.get("/compliance/tcs-records/export.xlsx", async (req, res) => {
+  try {
+    const month = (req.query.month as string) || "May";
+    const year = parseInt((req.query.year as string) || "2026");
+    const prefix = cyclePrefix(month, year);
+
+    const [cycleBags, tcsRecs, allOnboardings] = await Promise.all([
+      db.select().from(bagsTable).where(like(bagsTable.cycle, `${prefix}%`)),
+      db.select().from(tcsRecordsTable).where(and(eq(tcsRecordsTable.month, month), eq(tcsRecordsTable.year, year))),
+      db.select().from(onboardingsTable),
+    ]);
+
+    const obMap = new Map(allOnboardings.map((o) => [o.id, o]));
+    const tcsStatusByBrand = new Map<string, string>();
+    for (const r of tcsRecs) {
+      if (!r.isReversal) tcsStatusByBrand.set(r.brandName, r.status);
+    }
+
+    const groups = new Map<string, typeof cycleBags>();
+    for (const bag of cycleBags) {
+      const key = `${bag.brandId}__${bag.stateCode ?? ""}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(bag);
+    }
+
+    const data = Array.from(groups.entries()).map(([key, bags]) => {
+      const [brandIdStr, stateCode] = key.split("__");
+      const brandId = parseInt(brandIdStr);
+      const ob = obMap.get(brandId);
+      const firstBag = bags[0];
+      const r = (n: number) => Math.round(n * 100) / 100;
+      const grossGmv = r(bags.reduce((s, b) => s + parseFloat(b.esp) * b.qty, 0));
+      const totalTcsAmount = r(bags.reduce((s, b) => s + parseFloat(b.tcsAmount), 0));
+      const igstBags = bags.filter((b) => stateCode && b.customerStateCode && stateCode !== b.customerStateCode);
+      const intrastateBags = bags.filter((b) => !b.customerStateCode || !stateCode || stateCode === b.customerStateCode);
+      const igstTcsAmount = r(igstBags.reduce((s, b) => s + parseFloat(b.tcsAmount), 0));
+      const intrastateTcsAmount = r(intrastateBags.reduce((s, b) => s + parseFloat(b.tcsAmount), 0));
+      return {
+        brandName: firstBag.brandName,
+        companyName: ob?.companyName ?? "",
+        stateCode,
+        stateName: STATE_NAMES[stateCode] ?? stateCode,
+        stateGstin: firstBag.stateGstin ?? "",
+        bagCount: bags.length,
+        igstBagCount: igstBags.length,
+        intrastateBagCount: intrastateBags.length,
+        grossGmv,
+        tcsRate: 1.0,
+        igstTcsAmount,
+        intrastateTcsAmount,
+        totalTcsAmount,
+        status: tcsStatusByBrand.get(firstBag.brandName) ?? "Accrued",
+      };
+    });
+
+    const dateStr = new Date().toISOString().split("T")[0];
+    const buf = await buildWorkbook([{
+      name: "TCS Register",
+      title: `TCS State-wise Register — ${month} ${year}`,
+      columns: [
+        { key: "brandName",           header: "Brand",            width: 22 },
+        { key: "companyName",         header: "Company",          width: 24 },
+        { key: "stateCode",           header: "State Code",       width: 12 },
+        { key: "stateName",           header: "State",            width: 20 },
+        { key: "stateGstin",          header: "State GSTIN",      width: 22 },
+        { key: "bagCount",            header: "Total Bags",       width: 12, type: "integer" as const, total: true },
+        { key: "igstBagCount",        header: "IGST Bags",        width: 12, type: "integer" as const },
+        { key: "intrastateBagCount",  header: "Intrastate Bags",  width: 16, type: "integer" as const },
+        { key: "grossGmv",            header: "Gross GMV (₹)",    width: 18, type: "currency" as const, total: true },
+        { key: "tcsRate",             header: "TCS Rate %",       width: 12, type: "percent" as const },
+        { key: "igstTcsAmount",       header: "IGST TCS (₹)",     width: 16, type: "currency" as const, total: true },
+        { key: "intrastateTcsAmount", header: "Intrastate TCS (₹)", width: 18, type: "currency" as const, total: true },
+        { key: "totalTcsAmount",      header: "Total TCS (₹)",    width: 16, type: "currency" as const, total: true },
+        { key: "status",              header: "Status",           width: 14 },
+      ],
+      rows: data,
+      totals: true,
+    }]);
+
+    sendWorkbook(res, `tcs-register-${month}-${year}-${dateStr}.xlsx`, buf);
+    return;
+  } catch (err) {
+    req.log.error({ err }, "tcs export error");
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 // GET /compliance/tds-records — bag-level view aggregated by brand (TDS at company/TAN level).
 // Each brand row includes per-bag breakdown + any reversal entries from tds_records.
 // TDS is reversible before the 7th-of-following-month deposit deadline.
@@ -256,6 +344,84 @@ router.get("/compliance/tds-records", async (req, res) => {
     return res.json(result);
   } catch (err) {
     req.log.error({ err }, "tds records error");
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.get("/compliance/tds-records/export.xlsx", async (req, res) => {
+  try {
+    const month = (req.query.month as string) || "May";
+    const year = parseInt((req.query.year as string) || "2026");
+    const prefix = cyclePrefix(month, year);
+
+    const [cycleBags, tdsRecs, allOnboardings] = await Promise.all([
+      db.select().from(bagsTable).where(like(bagsTable.cycle, `${prefix}%`)),
+      db.select().from(tdsRecordsTable).where(and(eq(tdsRecordsTable.month, month), eq(tdsRecordsTable.year, year))),
+      db.select().from(onboardingsTable),
+    ]);
+
+    const obMap = new Map(allOnboardings.map((o) => [o.id, o]));
+    const tdsStatusByCompany = new Map<string, { status: string; tan?: string | null }>();
+    for (const r of tdsRecs) {
+      if (!r.isReversal) tdsStatusByCompany.set(r.companyName, { status: r.status, tan: r.tan });
+    }
+
+    const groups = new Map<number, typeof cycleBags>();
+    for (const bag of cycleBags) {
+      if (!groups.has(bag.brandId)) groups.set(bag.brandId, []);
+      groups.get(bag.brandId)!.push(bag);
+    }
+
+    const data = Array.from(groups.entries()).map(([brandId, bags]) => {
+      const ob = obMap.get(brandId);
+      const companyName = ob?.companyName ?? bags[0]?.brandName ?? "";
+      const statusInfo = tdsStatusByCompany.get(companyName);
+      const r = (n: number) => Math.round(n * 100) / 100;
+      const tdsAmount = r(bags.reduce((s, b) => s + parseFloat(b.tdsAmount), 0));
+      const grossPayment = r(bags.reduce((s, b) => s + parseFloat(b.esp) * b.qty, 0));
+      const brandBagIds = new Set(bags.map((b) => b.bagId));
+      const reversals = tdsRecs.filter((r) => r.isReversal && (r.originalBagId ? brandBagIds.has(r.originalBagId) : r.companyName === companyName));
+      const tdsReversed = r(reversals.reduce((s, rv) => s + Math.abs(parseFloat(rv.tdsAmount)), 0));
+      return {
+        brandName: ob?.brandName ?? bags[0]?.brandName ?? "",
+        companyName,
+        tan: statusInfo?.tan ?? ob?.tan ?? "",
+        bagCount: bags.length,
+        grossPayment,
+        tdsRate: 1.0,
+        tdsAmount,
+        tdsReversed,
+        reversalCount: reversals.length,
+        netTds: r(tdsAmount - tdsReversed),
+        status: statusInfo?.status ?? "Pending",
+      };
+    });
+
+    const dateStr = new Date().toISOString().split("T")[0];
+    const buf = await buildWorkbook([{
+      name: "TDS Register",
+      title: `TDS Register — ${month} ${year}`,
+      columns: [
+        { key: "brandName",    header: "Brand",            width: 22 },
+        { key: "companyName",  header: "Company",          width: 24 },
+        { key: "tan",          header: "TAN",              width: 14 },
+        { key: "bagCount",     header: "Bags",             width: 10, type: "integer" as const, total: true },
+        { key: "grossPayment", header: "Gross Payment (₹)",width: 20, type: "currency" as const, total: true },
+        { key: "tdsRate",      header: "TDS Rate %",       width: 12, type: "percent" as const },
+        { key: "tdsAmount",    header: "TDS Accrued (₹)",  width: 18, type: "currency" as const, total: true },
+        { key: "tdsReversed",  header: "TDS Reversed (₹)", width: 18, type: "currency" as const, total: true },
+        { key: "reversalCount",header: "Reversals",        width: 12, type: "integer" as const },
+        { key: "netTds",       header: "Net TDS (₹)",      width: 16, type: "currency" as const, total: true },
+        { key: "status",       header: "Status",           width: 14 },
+      ],
+      rows: data,
+      totals: true,
+    }]);
+
+    sendWorkbook(res, `tds-register-${month}-${year}-${dateStr}.xlsx`, buf);
+    return;
+  } catch (err) {
+    req.log.error({ err }, "tds export error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -617,6 +783,110 @@ router.get("/compliance/gst-register", async (req, res) => {
     });
   } catch (err) {
     req.log.error({ err }, "gst register error");
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.get("/compliance/gst-register/export.xlsx", async (req, res) => {
+  try {
+    const month = (req.query.month as string) || "May";
+    const year = parseInt((req.query.year as string) || "2026");
+    const brandIdFilter = req.query.brandId ? parseInt(req.query.brandId as string) : undefined;
+    const prefix = cyclePrefix(month, year);
+
+    const cycleBags = await db.select().from(bagsTable).where(
+      brandIdFilter
+        ? and(like(bagsTable.cycle, `${prefix}%`), eq(bagsTable.brandId, brandIdFilter))
+        : like(bagsTable.cycle, `${prefix}%`)
+    );
+
+    const orderIds = cycleBags.map((b) => b.orderId);
+    const invoices = orderIds.length > 0
+      ? await db.select().from(invoicesTable).where(and(inArray(invoicesTable.orderId, orderIds), eq(invoicesTable.invoiceType, "INVOICE")))
+      : [];
+    const creditNotes = orderIds.length > 0
+      ? await db.select().from(invoicesTable).where(and(inArray(invoicesTable.orderId, orderIds), eq(invoicesTable.invoiceType, "CREDIT_NOTE")))
+      : [];
+
+    const invoiceByOrder = new Map(invoices.map((i) => [i.orderId, i]));
+    const cnByOrder = new Map(creditNotes.map((c) => [c.orderId, c]));
+
+    const data = cycleBags.map((b) => {
+      const inv = invoiceByOrder.get(b.orderId);
+      const cn = cnByOrder.get(b.orderId);
+      const esp = parseFloat(b.esp) * b.qty;
+      const warehouseState = b.stateCode ?? "";
+      const customerState = b.customerStateCode ?? "";
+      const gstType = inv?.gstType ?? (warehouseState && customerState && warehouseState !== customerState ? "INTER" : "INTRA");
+      const taxableValue = inv ? parseFloat(inv.taxableValue ?? "0") : esp;
+      const cgstAmount = inv ? parseFloat(inv.cgstAmount ?? "0") : 0;
+      const sgstAmount = inv ? parseFloat(inv.sgstAmount ?? "0") : 0;
+      const igstAmount = inv ? parseFloat(inv.igstAmount ?? "0") : 0;
+      const totalInvoiceValue = inv ? parseFloat(inv.totalInvoiceValue ?? "0") : esp;
+      return {
+        invoiceNumber: inv?.invoiceNumber ?? "",
+        invoiceDate: inv?.invoiceDate ?? b.invoiceDate ?? "",
+        orderId: b.orderId,
+        bagId: b.bagId,
+        brandName: b.brandName,
+        customerName: b.customerName ?? "",
+        customerState: b.customerState ?? "",
+        sellerGstin: inv?.sellerGstin ?? "",
+        warehouseStateCode: warehouseState,
+        gstType,
+        esp,
+        taxableValue,
+        cgstRate: inv ? parseFloat(inv.cgstRate ?? "0") : 0,
+        cgstAmount,
+        sgstRate: inv ? parseFloat(inv.sgstRate ?? "0") : 0,
+        sgstAmount,
+        igstRate: inv ? parseFloat(inv.igstRate ?? "0") : 0,
+        igstAmount,
+        totalGstAmount: cgstAmount + sgstAmount + igstAmount,
+        totalInvoiceValue,
+        omsState: b.omsState,
+        creditNoteNumber: cn?.invoiceNumber ?? "",
+        creditNoteValue: cn ? parseFloat(cn.totalInvoiceValue) : 0,
+      };
+    });
+
+    const dateStr = new Date().toISOString().split("T")[0];
+    const buf = await buildWorkbook([{
+      name: "GST Register",
+      title: `GST Invoice Register — ${month} ${year}`,
+      columns: [
+        { key: "invoiceNumber",   header: "Invoice No.",       width: 20 },
+        { key: "invoiceDate",     header: "Invoice Date",      width: 14, type: "date" as const },
+        { key: "orderId",         header: "Order ID",          width: 18 },
+        { key: "bagId",           header: "Bag ID",            width: 22 },
+        { key: "brandName",       header: "Brand",             width: 22 },
+        { key: "customerName",    header: "Customer",          width: 20 },
+        { key: "customerState",   header: "Customer State",    width: 16 },
+        { key: "sellerGstin",     header: "Seller GSTIN",      width: 20 },
+        { key: "warehouseStateCode",header:"Ship-from State",  width: 14 },
+        { key: "gstType",         header: "GST Type",          width: 10 },
+        { key: "esp",             header: "ESP (₹)",           width: 16, type: "currency" as const, total: true },
+        { key: "taxableValue",    header: "Taxable Value (₹)", width: 18, type: "currency" as const, total: true },
+        { key: "cgstRate",        header: "CGST %",            width: 10, type: "percent" as const },
+        { key: "cgstAmount",      header: "CGST (₹)",          width: 14, type: "currency" as const, total: true },
+        { key: "sgstRate",        header: "SGST %",            width: 10, type: "percent" as const },
+        { key: "sgstAmount",      header: "SGST (₹)",          width: 14, type: "currency" as const, total: true },
+        { key: "igstRate",        header: "IGST %",            width: 10, type: "percent" as const },
+        { key: "igstAmount",      header: "IGST (₹)",          width: 14, type: "currency" as const, total: true },
+        { key: "totalGstAmount",  header: "Total GST (₹)",     width: 16, type: "currency" as const, total: true },
+        { key: "totalInvoiceValue",header:"Invoice Value (₹)", width: 18, type: "currency" as const, total: true },
+        { key: "omsState",        header: "OMS State",         width: 14 },
+        { key: "creditNoteNumber",header: "Credit Note No.",   width: 18 },
+        { key: "creditNoteValue", header: "Credit Note (₹)",   width: 16, type: "currency" as const },
+      ],
+      rows: data,
+      totals: true,
+    }]);
+
+    sendWorkbook(res, `gst-register-${month}-${year}-${dateStr}.xlsx`, buf);
+    return;
+  } catch (err) {
+    req.log.error({ err }, "gst export error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });

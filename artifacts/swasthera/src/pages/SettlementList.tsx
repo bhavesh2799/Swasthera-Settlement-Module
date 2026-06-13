@@ -21,6 +21,7 @@ import {
   Building2,
   Landmark,
   AlertTriangle,
+  Download,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
 
@@ -290,6 +291,14 @@ export function SettlementList() {
         {/* ── Tab 1: Settlement Register ── */}
         <TabsContent value="register" className="space-y-4 mt-0">
           <div className="flex gap-2 justify-end">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-9 text-slate-600 border-slate-200"
+              onClick={() => window.open(`/api/settlements/export.xlsx${statusFilter !== "all" ? `?status=${statusFilter}` : ""}`, "_blank")}
+            >
+              <Download className="mr-1.5 h-3.5 w-3.5" /> Export Excel
+            </Button>
             <Select value={statusFilter} onValueChange={setStatusFilter}>
               <SelectTrigger className="w-44 bg-white shadow-sm border-slate-200">
                 <SelectValue placeholder="Filter Status" />

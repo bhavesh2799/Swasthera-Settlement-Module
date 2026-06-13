@@ -1,11 +1,12 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
 import { onboardingsTable, activityTable, commissionMasterTable, brandsTable, warehousesTable, bankAccountsTable } from "@workspace/db";
-import { eq, like, and, SQL } from "drizzle-orm";
+import { eq, like, and, inArray, SQL } from "drizzle-orm";
 import { authorize } from "../middlewares/rbac";
 import { runKyb } from "../services/kybService";
 import { writeAudit } from "../services/audit";
 import { notify } from "../services/notify";
+import { buildWorkbook, sendWorkbook, docLink } from "../services/excelService";
 
 interface BankAccountInput {
   accountNumber: string;
@@ -119,6 +120,177 @@ router.get("/onboardings", async (req, res) => {
     })));
   } catch (err) {
     req.log.error({ err }, "list onboardings error");
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.get("/onboardings/export.xlsx", async (req, res) => {
+  try {
+    const { status, search } = req.query as { status?: string; search?: string };
+    const conditions: SQL[] = [];
+    if (status) conditions.push(eq(onboardingsTable.status, status as "DRAFT" | "SUBMITTED" | "APPROVED" | "REJECTED" | "ACTIVE"));
+    if (search) conditions.push(like(onboardingsTable.companyName, `%${search}%`));
+
+    const onboardings = conditions.length > 0
+      ? await db.select().from(onboardingsTable).where(and(...conditions)).orderBy(onboardingsTable.createdAt)
+      : await db.select().from(onboardingsTable).orderBy(onboardingsTable.createdAt);
+
+    const obIds = onboardings.map((o) => o.id);
+    const [brands, warehouses] = obIds.length > 0
+      ? await Promise.all([
+          db.select().from(brandsTable).where(inArray(brandsTable.onboardingId, obIds)).orderBy(brandsTable.createdAt),
+          db.select().from(warehousesTable).where(inArray(warehousesTable.onboardingId, obIds)).orderBy(warehousesTable.createdAt),
+        ])
+      : [[], []];
+
+    const companyRows = onboardings.map((o) => ({
+      ref: o.ref,
+      companyId: `CO-${String(o.id).padStart(5, "0")}`,
+      companyName: o.companyName,
+      companyType: o.companyType ?? "",
+      pan: o.pan,
+      cin: o.cin ?? "",
+      masterGstin: o.masterGstin,
+      tan: o.tan ?? "",
+      registeredAddress: o.registeredAddress ?? "",
+      stateCode: o.stateCode ?? "",
+      brandName: o.brandName,
+      brandLegalName: o.brandLegalName ?? "",
+      status: o.status,
+      kybStatus: o.kybStatus,
+      submittedAt: o.submittedAt ? o.submittedAt.toISOString().split("T")[0] : "",
+      panDoc: docLink(o.panDocUrl, "PAN"),
+      gstCert: docLink(o.gstCertUrl, "GST"),
+      cinDoc: docLink(o.cinDocUrl, "CIN"),
+      cheque: docLink(o.cancelledChequeUrl, "Cheque"),
+      agreement: docLink(o.signedAgreementUrl, "Agreement"),
+      dsig: docLink(o.digitalSignatureUrl, "DSig"),
+      msme: docLink(o.msmeCertUrl, "MSME"),
+      tanCopy: docLink(o.tanCopyUrl, "TAN"),
+    }));
+
+    const brandRows = brands.map((b) => ({
+      brandCode: b.brandCode ?? `BR-${String(b.id).padStart(5, "0")}`,
+      companyId: b.companyId ?? `CO-${String(b.onboardingId).padStart(5, "0")}`,
+      brandName: b.brandName,
+      brandLegalName: b.brandLegalName ?? "",
+      brandCategory: b.brandCategory ?? "",
+      brandType: b.brandType ?? "",
+      commissionType: b.commissionType ?? "",
+      commissionRate: parseFloat(String(b.commissionRate)),
+      returnWindowDays: b.returnWindowDays ?? 0,
+      tcsRate: parseFloat(String(b.tcsRate)),
+      tdsRate: parseFloat(String(b.tdsRate)),
+      mdrRate: parseFloat(String(b.mdrRate)),
+      tcsApplicable: b.tcsApplicable ? "Yes" : "No",
+      spocName: b.spocName ?? "",
+      spocEmail: b.spocEmail ?? "",
+      spocMobile: b.spocMobile ?? "",
+      opsSpocName: b.opsSpocName ?? "",
+      opsSpocEmail: b.opsSpocEmail ?? "",
+      status: b.status,
+      fyndBrandId: b.fyndBrandId ?? "",
+    }));
+
+    const warehouseRows = warehouses.map((w) => ({
+      warehouseCode: w.warehouseCode ?? `WH-${String(w.id).padStart(5, "0")}`,
+      companyId: `CO-${String(w.onboardingId).padStart(5, "0")}`,
+      brandId: w.brandId,
+      warehouseName: w.warehouseName,
+      warehouseState: w.warehouseState ?? "",
+      warehouseGstin: w.warehouseGstin,
+      stateCode: w.stateCode ?? w.warehouseGstin.substring(0, 2),
+      warehouseAddress: w.warehouseAddress ?? "",
+      isPrimary: w.isPrimary ? "Yes" : "No",
+      isActive: w.isActive ? "Yes" : "No",
+      status: w.status,
+      fyndLocationId: w.fyndLocationId ?? "",
+    }));
+
+    const dateStr = new Date().toISOString().split("T")[0];
+    const buf = await buildWorkbook([
+      {
+        name: "Companies",
+        title: "Company & Onboarding Register",
+        columns: [
+          { key: "ref",              header: "Ref",              width: 14 },
+          { key: "companyId",        header: "Company ID",       width: 13 },
+          { key: "companyName",      header: "Company Name",     width: 28 },
+          { key: "companyType",      header: "Type",             width: 14 },
+          { key: "pan",              header: "PAN",              width: 14 },
+          { key: "cin",              header: "CIN",              width: 22 },
+          { key: "masterGstin",      header: "Master GSTIN",     width: 20 },
+          { key: "tan",              header: "TAN",              width: 14 },
+          { key: "registeredAddress",header: "Registered Address",width: 36 },
+          { key: "stateCode",        header: "State Code",       width: 12 },
+          { key: "brandName",        header: "Brand Name",       width: 22 },
+          { key: "brandLegalName",   header: "Brand Legal Name", width: 26 },
+          { key: "status",           header: "Status",           width: 14 },
+          { key: "kybStatus",        header: "KYB",              width: 10 },
+          { key: "submittedAt",      header: "Submitted On",     width: 14, type: "date" as const },
+          { key: "panDoc",           header: "PAN Doc",          width: 10 },
+          { key: "gstCert",          header: "GST Cert",         width: 10 },
+          { key: "cinDoc",           header: "CIN Doc",          width: 10 },
+          { key: "cheque",           header: "Cancelled Cheque", width: 14 },
+          { key: "agreement",        header: "Agreement",        width: 12 },
+          { key: "dsig",             header: "Digital Sig",      width: 12 },
+          { key: "msme",             header: "MSME Cert",        width: 12 },
+          { key: "tanCopy",          header: "TAN Copy",         width: 10 },
+        ],
+        rows: companyRows,
+      },
+      {
+        name: "Brands",
+        title: "Brand Register",
+        columns: [
+          { key: "brandCode",       header: "Brand Code",       width: 14 },
+          { key: "companyId",       header: "Company ID",       width: 13 },
+          { key: "brandName",       header: "Brand Name",       width: 22 },
+          { key: "brandLegalName",  header: "Brand Legal Name", width: 26 },
+          { key: "brandCategory",   header: "Category",         width: 16 },
+          { key: "brandType",       header: "Type",             width: 14 },
+          { key: "commissionType",  header: "Comm. Type",       width: 14 },
+          { key: "commissionRate",  header: "Comm. %",          width: 10, type: "percent" as const },
+          { key: "returnWindowDays",header: "Return Window",    width: 14, type: "integer" as const },
+          { key: "tcsRate",         header: "TCS %",            width: 10, type: "percent" as const },
+          { key: "tdsRate",         header: "TDS %",            width: 10, type: "percent" as const },
+          { key: "mdrRate",         header: "MDR %",            width: 10, type: "percent" as const },
+          { key: "tcsApplicable",   header: "TCS Applicable",   width: 14 },
+          { key: "spocName",        header: "Finance SPOC",     width: 20 },
+          { key: "spocEmail",       header: "Finance Email",    width: 26 },
+          { key: "spocMobile",      header: "Finance Mobile",   width: 16 },
+          { key: "opsSpocName",     header: "Ops SPOC",         width: 20 },
+          { key: "opsSpocEmail",    header: "Ops Email",        width: 26 },
+          { key: "status",          header: "Status",           width: 12 },
+          { key: "fyndBrandId",     header: "Fynd Brand ID",    width: 16 },
+        ],
+        rows: brandRows,
+      },
+      {
+        name: "Warehouses",
+        title: "Warehouse Register",
+        columns: [
+          { key: "warehouseCode",   header: "Warehouse Code",   width: 16 },
+          { key: "companyId",       header: "Company ID",       width: 13 },
+          { key: "brandId",         header: "Brand ID",         width: 10, type: "integer" as const },
+          { key: "warehouseName",   header: "Warehouse Name",   width: 26 },
+          { key: "warehouseState",  header: "State",            width: 16 },
+          { key: "stateCode",       header: "State Code",       width: 12 },
+          { key: "warehouseGstin",  header: "GSTIN",            width: 22 },
+          { key: "warehouseAddress",header: "Address",          width: 36 },
+          { key: "isPrimary",       header: "Primary",          width: 10 },
+          { key: "isActive",        header: "Active",           width: 10 },
+          { key: "status",          header: "Status",           width: 12 },
+          { key: "fyndLocationId",  header: "Fynd Location ID", width: 18 },
+        ],
+        rows: warehouseRows,
+      },
+    ]);
+
+    sendWorkbook(res, `master-data-${dateStr}.xlsx`, buf);
+    return;
+  } catch (err) {
+    req.log.error({ err }, "master-data export error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });

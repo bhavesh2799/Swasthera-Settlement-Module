@@ -6,7 +6,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Search, Plus, Loader2 } from "lucide-react";
+import { Search, Plus, Loader2, Download } from "lucide-react";
 
 function StatusBadge({ status }: { status: string }) {
   switch (status) {
@@ -68,6 +68,18 @@ export function OnboardingList() {
               onChange={(e) => setSearch(e.target.value)}
             />
           </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 text-slate-600 border-slate-200"
+            onClick={() => {
+              const qs = new URLSearchParams();
+              if (search) qs.set("search", search);
+              window.open(`/api/onboardings/export.xlsx${qs.toString() ? `?${qs}` : ""}`, "_blank");
+            }}
+          >
+            <Download className="mr-1.5 h-3.5 w-3.5" /> Export Excel
+          </Button>
         </CardHeader>
         <CardContent className="p-0">
           <Table>

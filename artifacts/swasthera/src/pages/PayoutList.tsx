@@ -212,18 +212,28 @@ export function PayoutList() {
           <h1 className="text-3xl font-bold tracking-tight text-slate-900">Payouts</h1>
           <p className="text-slate-500 mt-1">Maker-Checker bank transfer workflow with auto-generated UTR</p>
         </div>
-        <Select value={statusFilter} onValueChange={setStatusFilter}>
-          <SelectTrigger className="w-48 bg-white shadow-sm border-slate-200">
-            <SelectValue placeholder="Filter Status" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Statuses</SelectItem>
-            <SelectItem value="PENDING_APPROVAL">Pending Initiation</SelectItem>
-            <SelectItem value="INITIATED">Awaiting Approval</SelectItem>
-            <SelectItem value="UTR_RECORDED">UTR Recorded</SelectItem>
-            <SelectItem value="SETTLED">Settled</SelectItem>
-          </SelectContent>
-        </Select>
+        <div className="flex gap-2 items-center">
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-9 text-slate-600 border-slate-200"
+            onClick={() => window.open(`/api/payouts/export.xlsx${statusFilter !== "all" ? `?status=${statusFilter}` : ""}`, "_blank")}
+          >
+            <Download className="mr-1.5 h-3.5 w-3.5" /> Export Excel
+          </Button>
+          <Select value={statusFilter} onValueChange={setStatusFilter}>
+            <SelectTrigger className="w-48 bg-white shadow-sm border-slate-200">
+              <SelectValue placeholder="Filter Status" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Statuses</SelectItem>
+              <SelectItem value="PENDING_APPROVAL">Pending Initiation</SelectItem>
+              <SelectItem value="INITIATED">Awaiting Approval</SelectItem>
+              <SelectItem value="UTR_RECORDED">UTR Recorded</SelectItem>
+              <SelectItem value="SETTLED">Settled</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
       </div>
 
       {/* Flow banner */}

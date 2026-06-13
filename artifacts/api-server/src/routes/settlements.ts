@@ -9,6 +9,7 @@ import { resolveRoutedSettlement, type DestinationGroup } from "../services/juri
 import { buildCommissionResolver } from "../services/commissionResolver";
 import { notify } from "../services/notify";
 import { generateInvoicePdf, formatINR, groupINR, type InvoiceDocument, type PdfRow } from "../services/pdfService";
+import { buildWorkbook, sendWorkbook } from "../services/excelService";
 
 /**
  * Atomically assigns (once) and returns a stable per-brand sequential
@@ -76,6 +77,53 @@ router.get("/settlements", async (req, res) => {
     })));
   } catch (err) {
     req.log.error({ err }, "list settlements error");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.get("/settlements/export.xlsx", async (req, res) => {
+  try {
+    const { status } = req.query as { status?: string };
+    const rows = status
+      ? await db.select().from(settlementsTable).where(eq(settlementsTable.status, status as "COMPUTED" | "PENDING_APPROVAL" | "APPROVED" | "PAID")).orderBy(settlementsTable.createdAt)
+      : await db.select().from(settlementsTable).orderBy(settlementsTable.createdAt);
+
+    const data = rows.map((r) => ({
+      cycle: r.cycle,
+      companyId: `CO-${String(r.onboardingId).padStart(5, "0")}`,
+      companyName: r.companyName,
+      brandName: r.brandName,
+      eligibleBags: r.eligibleBags,
+      grossGmv: parseFloat(r.grossGmv),
+      netPayable: parseFloat(r.netPayable),
+      carryForward: parseFloat(r.carryForward),
+      status: r.status,
+      createdAt: r.createdAt.toISOString().split("T")[0],
+    }));
+
+    const buf = await buildWorkbook([{
+      name: "Settlements",
+      title: "Settlement Register" + (status ? ` — ${status}` : ""),
+      columns: [
+        { key: "cycle",        header: "Cycle",             width: 16 },
+        { key: "companyId",    header: "Company ID",        width: 13 },
+        { key: "companyName",  header: "Company",           width: 24 },
+        { key: "brandName",    header: "Brand",             width: 22 },
+        { key: "eligibleBags", header: "Eligible Bags",     width: 14, type: "integer" as const, total: true },
+        { key: "grossGmv",     header: "Gross GMV (₹)",     width: 18, type: "currency" as const, total: true },
+        { key: "netPayable",   header: "Net Payable (₹)",   width: 18, type: "currency" as const, total: true },
+        { key: "carryForward", header: "Carry Forward (₹)", width: 16, type: "currency" as const },
+        { key: "status",       header: "Status",            width: 18 },
+        { key: "createdAt",    header: "Computed On",       width: 14, type: "date" as const },
+      ],
+      rows: data,
+      totals: true,
+    }]);
+
+    const label = status ? `-${status}` : "";
+    sendWorkbook(res, `settlements${label}-${new Date().toISOString().split("T")[0]}.xlsx`, buf);
+  } catch (err) {
+    req.log.error({ err }, "settlements export error");
     res.status(500).json({ error: "Internal server error" });
   }
 });

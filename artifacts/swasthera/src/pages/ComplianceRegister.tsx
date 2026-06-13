@@ -417,6 +417,20 @@ export function ComplianceRegister() {
     window.open("/api/compliance/credit-notes/export", "_blank");
   };
 
+  const downloadTcs = () => {
+    window.open(`/api/compliance/tcs-records/export.xlsx?month=${month}&year=${year}`, "_blank");
+  };
+
+  const downloadTds = () => {
+    window.open(`/api/compliance/tds-records/export.xlsx?month=${month}&year=${year}`, "_blank");
+  };
+
+  const downloadGst = () => {
+    const qs = new URLSearchParams({ month, year });
+    if (gstBrandFilter && gstBrandFilter !== "all") qs.set("brandId", gstBrandFilter);
+    window.open(`/api/compliance/gst-register/export.xlsx?${qs}`, "_blank");
+  };
+
   const handleMarkCreditNoteReceived = async () => {
     if (!cnReceiveDialog) return;
     setCnReceiveLoading(true);
@@ -581,6 +595,15 @@ export function ComplianceRegister() {
           </Select>
           <Button variant="outline" onClick={() => setShowReversalDialog(true)}>
             <RotateCcw className="mr-2 h-4 w-4" /> Log TDS/TCS Reversal
+          </Button>
+          <Button variant="outline" size="sm" className="h-9 text-slate-600 border-slate-200" onClick={downloadTcs}>
+            <Download className="mr-1.5 h-3.5 w-3.5" /> TCS
+          </Button>
+          <Button variant="outline" size="sm" className="h-9 text-slate-600 border-slate-200" onClick={downloadTds}>
+            <Download className="mr-1.5 h-3.5 w-3.5" /> TDS
+          </Button>
+          <Button variant="outline" size="sm" className="h-9 text-slate-600 border-slate-200" onClick={downloadGst}>
+            <Download className="mr-1.5 h-3.5 w-3.5" /> GST
           </Button>
         </div>
       </div>

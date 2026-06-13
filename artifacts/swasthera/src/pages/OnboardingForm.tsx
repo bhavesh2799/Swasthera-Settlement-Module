@@ -32,8 +32,7 @@ const onboardingSchema = z.object({
   pan: z.string().regex(/^[A-Z]{5}[0-9]{4}[A-Z]{1}$/i, "PAN must be 10 chars e.g. AAAPL1234C"),
   cin: z.string().optional(),
   llpCode: z.string().optional(),
-  gstAvailable: z.boolean().optional(),
-  masterGstin: z.string().optional(),
+  masterGstin: z.string().min(15, "GSTIN must be 15 characters"),
   tan: z.string().optional(),
   registeredAddress: z.string().min(1, "Required"),
   registrationStatus: z.string().optional(),
@@ -45,6 +44,9 @@ const onboardingSchema = z.object({
   spocName: z.string().min(1, "SPOC name is required"),
   spocEmail: z.string().email("Invalid email"),
   spocMobile: z.string().min(10, "Invalid mobile"),
+  opsSpocName: z.string().min(1, "Operations SPOC name is required"),
+  opsSpocEmail: z.string().email("Invalid email"),
+  opsSpocMobile: z.string().min(10, "Invalid mobile"),
   brandName: z.string().min(1, "Required"),
   brandCategory: z.string().min(1, "Required"),
   brandType: z.string().min(1, "Required"),
@@ -142,7 +144,6 @@ export function OnboardingForm() {
       pan: "",
       cin: "",
       llpCode: "",
-      gstAvailable: true,
       masterGstin: "",
       tan: "",
       registeredAddress: "",
@@ -157,6 +158,9 @@ export function OnboardingForm() {
       spocName: "",
       spocEmail: "",
       spocMobile: "",
+      opsSpocName: "",
+      opsSpocEmail: "",
+      opsSpocMobile: "",
       brandName: "",
       brandCategory: "",
       brandType: "",
@@ -180,7 +184,6 @@ export function OnboardingForm() {
 
   const commissionType = form.watch("commissionType");
   const companyType = form.watch("companyType");
-  const gstAvailable = form.watch("gstAvailable");
   const brandAgreementUrl = form.watch("brandCompanyAgreementUrl");
 
   const [ifscLoading, setIfscLoading] = useState<number | null>(null);
@@ -188,11 +191,10 @@ export function OnboardingForm() {
   const [warehouseGstLoading, setWarehouseGstLoading] = useState(false);
   const [sameAsCompany, setSameAsCompany] = useState(false);
 
-  const entityRequires = (field: "cin" | "llpCode" | "gstn") => {
+  const entityRequires = (field: "cin" | "llpCode") => {
     const t = companyType;
     if (field === "cin") return t === "PRIVATE_LIMITED" || t === "PUBLIC_LIMITED";
     if (field === "llpCode") return t === "LLP";
-    if (field === "gstn") return gstAvailable !== false;
     return false;
   };
 
@@ -352,6 +354,10 @@ export function OnboardingForm() {
       brandSpocName: data.spocName,
       brandSpocEmail: data.spocEmail,
       brandSpocMobile: data.spocMobile,
+      // Operations SPOC (brand level)
+      opsSpocName: data.opsSpocName,
+      opsSpocEmail: data.opsSpocEmail,
+      opsSpocMobile: data.opsSpocMobile,
     };
     if (data.commissionType === "TIERED") {
       payload.tierConfig = JSON.stringify(tierSlabs);
@@ -395,38 +401,22 @@ export function OnboardingForm() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="p-6 space-y-4">
-                <FormField control={control} name="gstAvailable" render={({ field }) => (
-                  <FormItem className="flex flex-row items-center gap-3 rounded-md border border-indigo-200 bg-white px-3 py-2">
-                    <FormControl>
-                      <input
-                        type="checkbox"
-                        className="h-4 w-4 accent-indigo-600"
-                        checked={field.value !== false}
-                        onChange={(e) => field.onChange(e.target.checked)}
-                      />
-                    </FormControl>
-                    <FormLabel className="!mt-0 text-sm font-normal text-slate-600">GST is available for this entity (uncheck to enter company details manually)</FormLabel>
+                <FormField control={control} name="masterGstin" render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Master GSTIN <span className="text-red-500">*</span></FormLabel>
+                    <div className="flex gap-2">
+                      <FormControl>
+                        <Input placeholder="27AABCZ1234D1Z5" {...field} value={(field.value as string) ?? ""} />
+                      </FormControl>
+                      <Button type="button" disabled={gstLoading} onClick={fetchViaKyb} className="shrink-0 bg-indigo-600 hover:bg-indigo-700">
+                        <Sparkles className="h-3.5 w-3.5 mr-1.5" />
+                        {gstLoading ? "Fetching..." : "Fetch Details via KYB"}
+                      </Button>
+                    </div>
+                    <FormDescription className="text-xs">GST registration is mandatory. Auto-fills legal name, PAN, address, registration status &amp; nature of business (simulated GSTN).</FormDescription>
+                    <FormMessage />
                   </FormItem>
                 )} />
-
-                {gstAvailable !== false && (
-                  <FormField control={control} name="masterGstin" render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Master GSTIN <span className="text-red-500">*</span></FormLabel>
-                      <div className="flex gap-2">
-                        <FormControl>
-                          <Input placeholder="27AABCZ1234D1Z5" {...field} value={(field.value as string) ?? ""} />
-                        </FormControl>
-                        <Button type="button" disabled={gstLoading} onClick={fetchViaKyb} className="shrink-0 bg-indigo-600 hover:bg-indigo-700">
-                          <Sparkles className="h-3.5 w-3.5 mr-1.5" />
-                          {gstLoading ? "Fetching..." : "Fetch Details via KYB"}
-                        </Button>
-                      </div>
-                      <FormDescription className="text-xs">Auto-fills legal name, PAN, address, registration status &amp; nature of business (simulated GSTN).</FormDescription>
-                      <FormMessage />
-                    </FormItem>
-                  )} />
-                )}
               </CardContent>
             </Card>
 
@@ -619,6 +609,18 @@ export function OnboardingForm() {
                 <TextField control={control} name="spocName" label="SPOC Name" placeholder="Priya Sharma" required />
                 <TextField control={control} name="spocEmail" label="SPOC Email" placeholder="priya@brand.com" description="Reports and invoices are emailed here" required />
                 <TextField control={control} name="spocMobile" label="SPOC Mobile" placeholder="+91 9876543210" required />
+              </CardContent>
+            </Card>
+
+            {/* Operations SPOC — brand level */}
+            <Card className="shadow-sm border-slate-200/60 bg-white">
+              <CardHeader className="bg-slate-50/50 border-b border-slate-100 py-4">
+                <CardTitle className="text-base">Operations SPOC (Brand)</CardTitle>
+              </CardHeader>
+              <CardContent className="p-6 grid grid-cols-2 gap-4">
+                <TextField control={control} name="opsSpocName" label="SPOC Name" placeholder="Rohan Mehta" required />
+                <TextField control={control} name="opsSpocEmail" label="SPOC Email" placeholder="rohan@brand.com" description="Operational/logistics coordination contact" required />
+                <TextField control={control} name="opsSpocMobile" label="SPOC Mobile" placeholder="+91 9876501234" required />
               </CardContent>
             </Card>
 

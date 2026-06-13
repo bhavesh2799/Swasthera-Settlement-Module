@@ -3,7 +3,7 @@ import { db } from "@workspace/db";
 import { onboardingsTable, activityTable, commissionMasterTable, brandsTable, warehousesTable, bankAccountsTable } from "@workspace/db";
 import { eq, like, and, SQL } from "drizzle-orm";
 import { authorize } from "../middlewares/rbac";
-import { runKyb } from "../services/kybService";
+import { runKyb, PAN_RE, GSTIN_RE } from "../services/kybService";
 import { writeAudit } from "../services/audit";
 import { notify } from "../services/notify";
 
@@ -36,10 +36,10 @@ function parsePending(raw: string | null): Record<string, unknown> | null {
 // Company + document fields a Maker may edit (post-approval via propose-changes,
 // or directly via PUT while DRAFT/REJECTED).
 const ONBOARDING_TEXT_FIELDS = [
-  "companyName","tradeName","companyType","pan","cin","llpCode","masterGstin","gstAvailable","tan","registeredAddress",
+  "companyName","tradeName","companyType","pan","cin","llpCode","masterGstin","tan","registeredAddress",
   "entityTypeOther","registrationStatus","dateOfRegistration","taxpayerType","jurisdictionCode","natureOfBusiness",
   "brandName","brandLegalName","brandCategory","brandType","tcsApplicable",
-  "bankAccount","bankIfsc","bankName","spocName","spocEmail","spocMobile",
+  "bankAccount","bankIfsc","bankName","spocName","spocEmail","spocMobile","opsSpocName","opsSpocEmail","opsSpocMobile",
   "warehouseName","warehouseState","warehouseGstin","warehouseAddress","commissionType","returnWindowDays",
   "panDocUrl","gstCertUrl","cinDocUrl","cancelledChequeUrl","signedAgreementUrl","digitalSignatureUrl",
   "msmeCertUrl","tanCopyUrl",
@@ -127,9 +127,10 @@ router.post("/onboardings", async (req, res) => {
   try {
     const body = req.body;
     const ref = genRef();
-    // KYB is performed up-front via the GSTIN fetch, so an onboarding created with a
-    // GSTIN is considered KYB-verified and needs no separate verification step later.
-    const kybVerified = !!body.masterGstin;
+    // KYB is performed up-front via the GSTIN fetch. GST registration is mandatory, so
+    // an onboarding is only considered KYB-verified when both its GSTIN and PAN pass
+    // format validation (statutory requirement for marketplace settlement).
+    const kybVerified = GSTIN_RE.test(body.masterGstin ?? "") && PAN_RE.test(body.pan ?? "");
     const [row] = await db.insert(onboardingsTable).values({
       ref,
       status: "DRAFT",
@@ -142,7 +143,7 @@ router.post("/onboardings", async (req, res) => {
       cin: body.cin,
       llpCode: body.llpCode,
       masterGstin: body.masterGstin,
-      gstAvailable: body.gstAvailable !== false,
+      gstAvailable: true,
       tan: body.tan,
       registeredAddress: body.registeredAddress,
       stateCode: body.masterGstin ? body.masterGstin.substring(0, 2) : undefined,
@@ -163,6 +164,9 @@ router.post("/onboardings", async (req, res) => {
       spocName: body.spocName,
       spocEmail: body.spocEmail,
       spocMobile: body.spocMobile,
+      opsSpocName: body.opsSpocName,
+      opsSpocEmail: body.opsSpocEmail,
+      opsSpocMobile: body.opsSpocMobile,
       warehouseName: body.warehouseName,
       warehouseState: body.warehouseState,
       warehouseGstin: body.warehouseGstin,
@@ -216,6 +220,9 @@ router.post("/onboardings", async (req, res) => {
       spocName: body.brandSpocName ?? body.spocName,
       spocEmail: body.brandSpocEmail ?? body.spocEmail,
       spocMobile: body.brandSpocMobile ?? body.spocMobile,
+      opsSpocName: body.brandOpsSpocName ?? body.opsSpocName,
+      opsSpocEmail: body.brandOpsSpocEmail ?? body.opsSpocEmail,
+      opsSpocMobile: body.brandOpsSpocMobile ?? body.opsSpocMobile,
       brandCompanyAgreementUrl: body.brandCompanyAgreementUrl,
       status: "ACTIVE",
     }).returning();
@@ -531,8 +538,11 @@ router.post("/onboardings/:id/submit", authorize(["maker", "admin"]), async (req
     const [ob] = await db.select().from(onboardingsTable).where(eq(onboardingsTable.id, parseInt(String(req.params.id))));
     if (!ob) return res.status(404).json({ error: "Not found" });
 
-    // KYB is verified up-front via the GSTIN fetch during onboarding, so there is no
-    // separate KYB gate at submission time — the Maker can submit directly.
+    // GST registration is mandatory and the company-level KYB fetch must have run
+    // and passed before a Maker can submit for Checker review.
+    if (ob.kybStatus !== "PASSED") {
+      return res.status(400).json({ error: "Company KYB must be run and passed (GST + PAN verified) before submitting for review." });
+    }
 
     const maker = submittedBy || "Anjali Patel";
     // Resubmission after rejection bumps the version (BRD FIX 7)
@@ -703,6 +713,9 @@ function mapOnboarding(r: typeof onboardingsTable.$inferSelect) {
     spocName: r.spocName,
     spocEmail: r.spocEmail,
     spocMobile: r.spocMobile,
+    opsSpocName: r.opsSpocName,
+    opsSpocEmail: r.opsSpocEmail,
+    opsSpocMobile: r.opsSpocMobile,
     warehouseName: r.warehouseName,
     warehouseState: r.warehouseState,
     warehouseGstin: r.warehouseGstin,

@@ -28,6 +28,10 @@ export const brandsTable = pgTable("brands", {
   spocName: text("spoc_name"),
   spocEmail: text("spoc_email"),
   spocMobile: text("spoc_mobile"),
+  // Operations SPOC (brand level)
+  opsSpocName: text("ops_spoc_name"),
+  opsSpocEmail: text("ops_spoc_email"),
+  opsSpocMobile: text("ops_spoc_mobile"),
   // Brand–Company agreement / linkage (BRD FIX 5)
   brandCompanyAgreementUrl: text("brand_company_agreement_url"),
   // Fynd sync IDs

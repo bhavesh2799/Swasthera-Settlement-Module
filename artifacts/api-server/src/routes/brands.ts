@@ -46,6 +46,12 @@ function mapBrand(b: typeof brandsTable.$inferSelect) {
     brandCategory: b.brandCategory,
     brandType: b.brandType,
     status: b.status,
+    spocName: b.spocName,
+    spocEmail: b.spocEmail,
+    spocMobile: b.spocMobile,
+    opsSpocName: b.opsSpocName,
+    opsSpocEmail: b.opsSpocEmail,
+    opsSpocMobile: b.opsSpocMobile,
     commissionRate: parseFloat(String(b.commissionRate)),
     commissionType: b.commissionType,
     tierConfig: b.tierConfig ? JSON.parse(b.tierConfig) : null,
@@ -116,6 +122,12 @@ router.get("/onboardings/:id/brands", async (req, res) => {
           brandLegalName: ob.brandLegalName,
           brandCategory: ob.brandCategory,
           brandType: ob.brandType,
+          spocName: ob.spocName,
+          spocEmail: ob.spocEmail,
+          spocMobile: ob.spocMobile,
+          opsSpocName: ob.opsSpocName,
+          opsSpocEmail: ob.opsSpocEmail,
+          opsSpocMobile: ob.opsSpocMobile,
           commissionRate: ob.commissionRate,
           commissionType: ob.commissionType ?? "FLAT_PERCENT",
           returnWindowDays: ob.returnWindowDays,
@@ -184,6 +196,12 @@ router.post("/onboardings/:id/brands", authorize(["maker", "admin"]), async (req
       tdsRate?: number;
       mdrRate?: number;
       tcsApplicable?: boolean;
+      spocName?: string;
+      spocEmail?: string;
+      spocMobile?: string;
+      opsSpocName?: string;
+      opsSpocEmail?: string;
+      opsSpocMobile?: string;
     };
 
     if (!body.brandName || !body.brandCategory || !body.brandType) {
@@ -207,6 +225,12 @@ router.post("/onboardings/:id/brands", authorize(["maker", "admin"]), async (req
         tdsRate: String(body.tdsRate ?? ob.tdsRate ?? "1"),
         mdrRate: String(body.mdrRate ?? ob.mdrRate ?? "0"),
         tcsApplicable: body.tcsApplicable !== false,
+        spocName: body.spocName ?? ob.spocName,
+        spocEmail: body.spocEmail ?? ob.spocEmail,
+        spocMobile: body.spocMobile ?? ob.spocMobile,
+        opsSpocName: body.opsSpocName ?? ob.opsSpocName,
+        opsSpocEmail: body.opsSpocEmail ?? ob.opsSpocEmail,
+        opsSpocMobile: body.opsSpocMobile ?? ob.opsSpocMobile,
         status: "PENDING_APPROVAL",
       })
       .returning();
@@ -252,6 +276,12 @@ router.put("/brands/:id", authorize(["checker", "admin"]), async (req, res) => {
     if (body.tdsRate !== undefined) updates.tdsRate = String(body.tdsRate);
     if (body.mdrRate !== undefined) updates.mdrRate = String(body.mdrRate);
     if (body.tcsApplicable !== undefined) updates.tcsApplicable = body.tcsApplicable as boolean;
+    if (body.spocName !== undefined) updates.spocName = body.spocName as string;
+    if (body.spocEmail !== undefined) updates.spocEmail = body.spocEmail as string;
+    if (body.spocMobile !== undefined) updates.spocMobile = body.spocMobile as string;
+    if (body.opsSpocName !== undefined) updates.opsSpocName = body.opsSpocName as string;
+    if (body.opsSpocEmail !== undefined) updates.opsSpocEmail = body.opsSpocEmail as string;
+    if (body.opsSpocMobile !== undefined) updates.opsSpocMobile = body.opsSpocMobile as string;
     if (body.status !== undefined) updates.status = body.status as typeof brandsTable.$inferInsert["status"];
     if (body.fyndBrandId !== undefined) updates.fyndBrandId = body.fyndBrandId as string;
     updates.updatedAt = new Date();
@@ -273,6 +303,7 @@ router.put("/brands/:id", authorize(["checker", "admin"]), async (req, res) => {
 const BRAND_EDITABLE = [
   "brandName", "brandLegalName", "brandCategory", "brandType",
   "commissionRate", "commissionType", "returnWindowDays", "tcsRate", "tdsRate", "mdrRate", "tcsApplicable",
+  "spocName", "spocEmail", "spocMobile", "opsSpocName", "opsSpocEmail", "opsSpocMobile",
 ] as const;
 
 router.post("/brands/:id/propose-edit", authorize(["maker", "admin"]), async (req, res) => {

@@ -14,8 +14,8 @@ export interface KybResult {
   summary: string;
 }
 
-const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]{1}$/i;
-const GSTIN_RE = /^\d{2}[A-Z]{5}\d{4}[A-Z]\d[A-Z]\d$/i;
+export const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]{1}$/i;
+export const GSTIN_RE = /^\d{2}[A-Z]{5}\d{4}[A-Z]\d[A-Z]\d$/i;
 const CIN_RE = /^[LUu]\d{5}[A-Za-z]{2}\d{4}[A-Za-z]{3}\d{6}$/;
 const IFSC_RE = /^[A-Z]{4}0[A-Z0-9]{6}$/i;
 
@@ -34,10 +34,10 @@ async function verifyBank(ifsc: string): Promise<{ ok: boolean; detail: string }
 
 /**
  * Runs the full KYB verification sequence for an onboarding.
- * PAN + bank are always checked; GST is checked unless the entity is a
- * sub-threshold proprietorship; CIN is only checked for entity types that
- * legally have one (Pvt/Public/LLP). GST/CIN are format-validated (simulated —
- * no live GSTN/MCA API key); bank uses the real IFSC API.
+ * PAN, GST and bank are always checked (GST registration is mandatory for every
+ * marketplace brand); CIN is only checked for entity types that legally have one
+ * (Pvt/Public/LLP). GST/CIN are format-validated (simulated — no live GSTN/MCA
+ * API key); bank uses the real IFSC API.
  */
 export async function runKyb(ob: Onboarding): Promise<KybResult> {
   const entityType = normaliseEntityType(ob.companyType);
@@ -52,19 +52,14 @@ export async function runKyb(ob: Onboarding): Promise<KybResult> {
     detail: panOk ? `PAN ${ob.pan} verified` : `PAN "${ob.pan}" format invalid (expected AAAAA9999A)`,
   });
 
-  // GST
-  const gstRequired = !(entityType === "proprietorship" && ob.gstAvailable === false);
-  if (!gstRequired) {
-    checks.push({ key: "gst", label: "GSTIN (GST Registry)", status: "skipped", detail: "Sub-threshold proprietorship — GST not required" });
-  } else {
-    const gstOk = GSTIN_RE.test(ob.masterGstin ?? "");
-    checks.push({
-      key: "gst",
-      label: "GSTIN (GST Registry)",
-      status: gstOk ? "passed" : "failed",
-      detail: gstOk ? `GSTIN ${ob.masterGstin} active (simulated)` : `GSTIN "${ob.masterGstin}" format invalid`,
-    });
-  }
+  // GST — mandatory for every entity (statutory requirement for marketplace settlement)
+  const gstOk = GSTIN_RE.test(ob.masterGstin ?? "");
+  checks.push({
+    key: "gst",
+    label: "GSTIN (GST Registry)",
+    status: gstOk ? "passed" : "failed",
+    detail: gstOk ? `GSTIN ${ob.masterGstin} active (simulated)` : `GSTIN "${ob.masterGstin ?? ""}" format invalid or missing`,
+  });
 
   // CIN — only for entities that have one
   const cinRequired = entityType === "private_limited" || entityType === "public_limited" || entityType === "llp";

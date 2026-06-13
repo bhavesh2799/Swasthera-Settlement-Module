@@ -657,6 +657,12 @@ components:
           type: string
         spocMobile:
           type: string
+        opsSpocName:
+          type: string
+        opsSpocEmail:
+          type: string
+        opsSpocMobile:
+          type: string
         brandName:
           type: string
         brandCategory:
@@ -738,6 +744,12 @@ components:
           type: string
         spocMobile:
           type: string
+        opsSpocName:
+          type: string
+        opsSpocEmail:
+          type: string
+        opsSpocMobile:
+          type: string
         brandName:
           type: string
         brandCategory:
@@ -790,6 +802,12 @@ components:
         spocEmail:
           type: string
         spocMobile:
+          type: string
+        opsSpocName:
+          type: string
+        opsSpocEmail:
+          type: string
+        opsSpocMobile:
           type: string
         brandName:
           type: string

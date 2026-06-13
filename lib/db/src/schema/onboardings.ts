@@ -39,10 +39,14 @@ export const onboardingsTable = pgTable("onboardings", {
   bankAccount: text("bank_account").notNull(),
   bankIfsc: text("bank_ifsc").notNull(),
   bankName: text("bank_name").notNull(),
-  // SPOC
+  // Finance SPOC (primary brand)
   spocName: text("spoc_name"),
   spocEmail: text("spoc_email"),
   spocMobile: text("spoc_mobile"),
+  // Operations SPOC (primary brand)
+  opsSpocName: text("ops_spoc_name"),
+  opsSpocEmail: text("ops_spoc_email"),
+  opsSpocMobile: text("ops_spoc_mobile"),
   // Warehouse
   warehouseName: text("warehouse_name").notNull(),
   warehouseState: text("warehouse_state").notNull(),

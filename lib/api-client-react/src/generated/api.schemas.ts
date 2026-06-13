@@ -149,6 +149,9 @@ export interface Onboarding {
   spocName?: string;
   spocEmail?: string;
   spocMobile?: string;
+  opsSpocName?: string;
+  opsSpocEmail?: string;
+  opsSpocMobile?: string;
   brandName: string;
   brandCategory: string;
   brandType: string;
@@ -188,6 +191,9 @@ export interface CreateOnboardingBody {
   spocName?: string;
   spocEmail?: string;
   spocMobile?: string;
+  opsSpocName?: string;
+  opsSpocEmail?: string;
+  opsSpocMobile?: string;
   brandName: string;
   brandCategory: string;
   brandType: string;
@@ -215,6 +221,9 @@ export interface UpdateOnboardingBody {
   spocName?: string;
   spocEmail?: string;
   spocMobile?: string;
+  opsSpocName?: string;
+  opsSpocEmail?: string;
+  opsSpocMobile?: string;
   brandName?: string;
   brandCategory?: string;
   brandType?: string;

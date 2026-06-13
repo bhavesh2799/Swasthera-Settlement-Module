@@ -3,3 +3,4 @@
 - [Bank account lazy migration](bank-lazy-migration.md) — seed / legacy onboardings store bank data in denormalized columns only; bankAccountsTable may be empty even when a bank exists.
 - [Invoice number race condition](invoice-number-race.md) — generateInvoice reads MAX(invoice_number) then inserts; parallel calls get same MAX → duplicate key. Always call sequentially (for loop, not Promise.all).
 - [Compliance tie-out source](compliance-tieout-source.md) — header tie-out cards + close banner must read /compliance/reconciliation totals (incl. tcsFiled/tdsFiled), never mix with tcs-tds summary, or they disagree. (Reconciliation tab removed; query now feeds header only.)
+- [KYB gate paths](kyb-gate-paths.md) — onboarding kybStatus=PASSED set two ways (create-time format check vs kyb-check endpoint); both must validate GST+PAN, never presence-only, or the submit gate is bypassable.

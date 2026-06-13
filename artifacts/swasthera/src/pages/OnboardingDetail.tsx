@@ -40,6 +40,12 @@ interface BrandItem {
   tdsRate: number;
   tcsApplicable: boolean;
   fyndBrandId: string | null;
+  spocName: string | null;
+  spocEmail: string | null;
+  spocMobile: string | null;
+  opsSpocName: string | null;
+  opsSpocEmail: string | null;
+  opsSpocMobile: string | null;
   pendingChanges?: Record<string, unknown> | null;
 }
 
@@ -300,6 +306,8 @@ export function OnboardingDetail() {
     brandName: "", brandLegalName: "", brandCategory: "", brandType: "RETAILER",
     commissionType: "FLAT_PERCENT", commissionRate: "", returnWindowDays: "15",
     tcsRate: "1", tdsRate: "1",
+    spocName: "", spocEmail: "", spocMobile: "",
+    opsSpocName: "", opsSpocEmail: "", opsSpocMobile: "",
   });
   const [addBrandLoading, setAddBrandLoading] = useState(false);
 
@@ -321,6 +329,8 @@ export function OnboardingDetail() {
     brandName: "", brandLegalName: "", brandCategory: "", brandType: "RETAILER",
     commissionType: "FLAT_PERCENT", commissionRate: "", returnWindowDays: "15",
     tcsRate: "1", tdsRate: "1",
+    spocName: "", spocEmail: "", spocMobile: "",
+    opsSpocName: "", opsSpocEmail: "", opsSpocMobile: "",
   });
   const [editBrandLoading, setEditBrandLoading] = useState(false);
 
@@ -438,7 +448,7 @@ export function OnboardingDetail() {
       if (!r.ok) throw new Error("Failed");
       toast({ title: "Brand added successfully" });
       setShowAddBrand(false);
-      setAddBrandForm({ brandName: "", brandLegalName: "", brandCategory: "", brandType: "RETAILER", commissionType: "FLAT_PERCENT", commissionRate: "", returnWindowDays: "15", tcsRate: "1", tdsRate: "1" });
+      setAddBrandForm({ brandName: "", brandLegalName: "", brandCategory: "", brandType: "RETAILER", commissionType: "FLAT_PERCENT", commissionRate: "", returnWindowDays: "15", tcsRate: "1", tdsRate: "1", spocName: "", spocEmail: "", spocMobile: "", opsSpocName: "", opsSpocEmail: "", opsSpocMobile: "" });
       refetchBrands();
     } catch {
       toast({ title: "Failed to add brand", variant: "destructive" });
@@ -482,6 +492,12 @@ export function OnboardingDetail() {
       returnWindowDays: String(brand.returnWindowDays ?? "15"),
       tcsRate: String(brand.tcsRate ?? "1"),
       tdsRate: String(brand.tdsRate ?? "1"),
+      spocName: brand.spocName ?? "",
+      spocEmail: brand.spocEmail ?? "",
+      spocMobile: brand.spocMobile ?? "",
+      opsSpocName: brand.opsSpocName ?? "",
+      opsSpocEmail: brand.opsSpocEmail ?? "",
+      opsSpocMobile: brand.opsSpocMobile ?? "",
     });
     setShowEditBrand(true);
   };
@@ -1244,6 +1260,16 @@ export function OnboardingDetail() {
                 </div>
               </div>
             )}
+            {onboarding.opsSpocName && (
+              <div className="col-span-2 pt-2 border-t border-slate-100 mt-2">
+                <p className="text-xs text-slate-500 font-medium uppercase tracking-wider mb-2">Operations SPOC</p>
+                <div className="text-sm text-slate-900 space-y-1">
+                  <p className="font-medium">{onboarding.opsSpocName}</p>
+                  <p className="text-slate-500">{onboarding.opsSpocEmail}</p>
+                  <p className="text-slate-500">{onboarding.opsSpocMobile}</p>
+                </div>
+              </div>
+            )}
             <div className="col-span-2">
               <JurisdictionMapping
                 onboardingId={Number(id)}
@@ -1586,6 +1612,28 @@ export function OnboardingDetail() {
                           </div>
                         </div>
 
+                        {/* Brand SPOCs */}
+                        {(brand.spocName || brand.opsSpocName) && (
+                          <div className="grid grid-cols-2 gap-3">
+                            {brand.spocName && (
+                              <div className="rounded border border-slate-200 bg-white p-3">
+                                <p className="text-[10px] text-slate-400 uppercase tracking-wider font-medium mb-1">Finance SPOC</p>
+                                <p className="text-xs font-medium text-slate-800">{brand.spocName}</p>
+                                <p className="text-xs text-slate-500">{brand.spocEmail}</p>
+                                <p className="text-xs text-slate-500">{brand.spocMobile}</p>
+                              </div>
+                            )}
+                            {brand.opsSpocName && (
+                              <div className="rounded border border-slate-200 bg-white p-3">
+                                <p className="text-[10px] text-slate-400 uppercase tracking-wider font-medium mb-1">Operations SPOC</p>
+                                <p className="text-xs font-medium text-slate-800">{brand.opsSpocName}</p>
+                                <p className="text-xs text-slate-500">{brand.opsSpocEmail}</p>
+                                <p className="text-xs text-slate-500">{brand.opsSpocMobile}</p>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
                         {/* Tier slabs if TIERED */}
                         {brand.commissionType === "TIERED" && brand.tierConfig && brand.tierConfig.length > 0 && (
                           <div className="rounded border border-amber-200 bg-amber-50/60 p-3">
@@ -1813,6 +1861,38 @@ export function OnboardingDetail() {
                 <Input type="number" step="0.01" min="0" value={addBrandForm.tdsRate} onChange={(e) => setAddBrandForm((p) => ({ ...p, tdsRate: e.target.value }))} />
               </div>
             </div>
+            <Separator />
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Finance SPOC</p>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label className="text-sm">SPOC Name</Label>
+                <Input value={addBrandForm.spocName} onChange={(e) => setAddBrandForm((p) => ({ ...p, spocName: e.target.value }))} placeholder="Priya Sharma" />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-sm">SPOC Email</Label>
+                <Input value={addBrandForm.spocEmail} onChange={(e) => setAddBrandForm((p) => ({ ...p, spocEmail: e.target.value }))} placeholder="priya@brand.com" />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-sm">SPOC Mobile</Label>
+                <Input value={addBrandForm.spocMobile} onChange={(e) => setAddBrandForm((p) => ({ ...p, spocMobile: e.target.value }))} placeholder="+91 9876543210" />
+              </div>
+            </div>
+            <Separator />
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Operations SPOC</p>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label className="text-sm">SPOC Name</Label>
+                <Input value={addBrandForm.opsSpocName} onChange={(e) => setAddBrandForm((p) => ({ ...p, opsSpocName: e.target.value }))} placeholder="Rohan Mehta" />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-sm">SPOC Email</Label>
+                <Input value={addBrandForm.opsSpocEmail} onChange={(e) => setAddBrandForm((p) => ({ ...p, opsSpocEmail: e.target.value }))} placeholder="rohan@brand.com" />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-sm">SPOC Mobile</Label>
+                <Input value={addBrandForm.opsSpocMobile} onChange={(e) => setAddBrandForm((p) => ({ ...p, opsSpocMobile: e.target.value }))} placeholder="+91 9876501234" />
+              </div>
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowAddBrand(false)}>Cancel</Button>
@@ -2023,6 +2103,34 @@ export function OnboardingDetail() {
             <div className="space-y-1.5">
               <Label className="text-sm">TDS Rate (%)</Label>
               <Input type="number" step="0.01" min="0" value={editBrandForm.tdsRate} onChange={(e) => setEditBrandForm((p) => ({ ...p, tdsRate: e.target.value }))} />
+            </div>
+            <div className="col-span-2"><Separator /></div>
+            <div className="col-span-2"><p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Finance SPOC</p></div>
+            <div className="space-y-1.5">
+              <Label className="text-sm">SPOC Name</Label>
+              <Input value={editBrandForm.spocName} onChange={(e) => setEditBrandForm((p) => ({ ...p, spocName: e.target.value }))} placeholder="Priya Sharma" />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-sm">SPOC Email</Label>
+              <Input value={editBrandForm.spocEmail} onChange={(e) => setEditBrandForm((p) => ({ ...p, spocEmail: e.target.value }))} placeholder="priya@brand.com" />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-sm">SPOC Mobile</Label>
+              <Input value={editBrandForm.spocMobile} onChange={(e) => setEditBrandForm((p) => ({ ...p, spocMobile: e.target.value }))} placeholder="+91 9876543210" />
+            </div>
+            <div className="col-span-2"><Separator /></div>
+            <div className="col-span-2"><p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Operations SPOC</p></div>
+            <div className="space-y-1.5">
+              <Label className="text-sm">SPOC Name</Label>
+              <Input value={editBrandForm.opsSpocName} onChange={(e) => setEditBrandForm((p) => ({ ...p, opsSpocName: e.target.value }))} placeholder="Rohan Mehta" />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-sm">SPOC Email</Label>
+              <Input value={editBrandForm.opsSpocEmail} onChange={(e) => setEditBrandForm((p) => ({ ...p, opsSpocEmail: e.target.value }))} placeholder="rohan@brand.com" />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-sm">SPOC Mobile</Label>
+              <Input value={editBrandForm.opsSpocMobile} onChange={(e) => setEditBrandForm((p) => ({ ...p, opsSpocMobile: e.target.value }))} placeholder="+91 9876501234" />
             </div>
           </div>
           <DialogFooter>

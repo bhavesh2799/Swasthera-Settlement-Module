@@ -10,13 +10,17 @@ services:
     runtime: node
     plan: free          # upgrade to starter/standard for production
 
-    # Render auto-detects pnpm from pnpm-lock.yaml.
+    # Build steps:
     # 1. Install deps
-    # 2. Build all workspace packages (typecheck + vite + esbuild)
-    # 3. Push DB schema (drizzle-kit push — idempotent, safe to run on every deploy)
+    # 2. Build lib TypeScript references only (generates .d.ts files the frontend needs)
+    # 3. Build the frontend (Vite) and backend (esbuild) — skips mockup-sandbox and
+    #    other dev-only artifacts in artifacts/* that have TypeScript errors on Render
+    # 4. Push DB schema (drizzle-kit push — idempotent, safe to run on every deploy)
     buildCommand: >-
       pnpm install --frozen-lockfile &&
-      pnpm run build &&
+      pnpm run typecheck:libs &&
+      pnpm --filter @workspace/swasthera run build &&
+      pnpm --filter @workspace/api-server run build &&
       pnpm --filter @workspace/db push
 
     # Start the bundled Express server; Render injects PORT automatically

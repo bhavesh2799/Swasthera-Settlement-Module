@@ -19,7 +19,7 @@ import {
 } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { stateName } from "./stateCodes";
-import { transactionPeriod, cycleFromDate, parseLocalDate } from "./tdsReversalService";
+import { transactionPeriod, parseLocalDate } from "./tdsReversalService";
 import type { Invoice } from "@workspace/db";
 import type { Request } from "express";
 
@@ -29,6 +29,58 @@ const MONTH_NAMES = [
   "January", "February", "March", "April", "May", "June",
   "July", "August", "September", "October", "November", "December",
 ];
+
+const MONTH_ABBREV = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+
+/**
+ * Parses a settlement-cycle label into its calendar month/year. Cycles are
+ * operator-chosen strings with several conventions in use: `MMM-YYYY`
+ * (`JUN-2026`), `MMM-YYYY-<suffix>` (`JUN-2026-DEMO`, `MAY-2026-C1`), and
+ * `YYYY-MM` (`2026-06`). Returns null if the label doesn't encode a month.
+ */
+function cycleMonthYear(cycle: string): { month: number; year: number } | null {
+  const parts = cycle.split("-");
+  const mi = MONTH_ABBREV.indexOf((parts[0] ?? "").toUpperCase());
+  if (mi >= 0 && /^\d{4}$/.test(parts[1] ?? "")) return { month: mi + 1, year: parseInt(parts[1], 10) };
+  if (/^\d{4}$/.test(parts[0] ?? "") && /^\d{1,2}$/.test(parts[1] ?? "")) {
+    return { month: parseInt(parts[1], 10), year: parseInt(parts[0], 10) };
+  }
+  return null;
+}
+
+/**
+ * Resolves the settlement cycle a credit-note reversal should post into, given
+ * the arrival date — using REAL, settleable cycle labels rather than a
+ * synthesized one (which would never match the settlement engine's strict
+ * cycle-equality consumption). Preference order:
+ *   1. The bag's own original cycle, if it falls in the arrival month (the
+ *      common case — CN arrives within the same cycle).
+ *   2. Any existing bag cycle for this brand that falls in the arrival month.
+ *   3. Fall back to the bag's original cycle (guaranteed to be a settleable
+ *      label, so the adjustment is consumed on that cycle's (re)compute).
+ */
+async function resolveArrivalCycle(onboardingId: number, originalCycle: string, arrival: Date): Promise<string> {
+  const am = arrival.getMonth() + 1;
+  const ay = arrival.getFullYear();
+
+  const oc = cycleMonthYear(originalCycle);
+  if (oc && oc.month === am && oc.year === ay) return originalCycle;
+
+  const rows = await db
+    .selectDistinct({ cycle: bagsTable.cycle })
+    .from(bagsTable)
+    .where(eq(bagsTable.brandId, onboardingId));
+  const matches = rows
+    .map((r) => r.cycle)
+    .filter((c): c is string => {
+      const my = cycleMonthYear(c);
+      return !!my && my.month === am && my.year === ay;
+    });
+  if (matches.includes(originalCycle)) return originalCycle;
+  if (matches.length > 0) return matches[0];
+
+  return originalCycle;
+}
 
 /** End-of-month date (YYYY-MM-DD) for the bag's cycle month — the default expected arrival. */
 function defaultExpectedArrival(now: Date = new Date()): string {
@@ -100,7 +152,7 @@ export async function postCreditNoteReversal(
 ): Promise<{ posted: boolean; arrivalCycle: string; month: string; year: number; tdsReversed: number; tcsReversed: number; cnAmount: number }> {
   const arrivalDate = parseLocalDate(actualArrivalDate);
   const { month, year } = transactionPeriod(arrivalDate);
-  const arrivalCycle = cycleFromDate(arrivalDate);
+  const arrivalCycle = await resolveArrivalCycle(entry.onboardingId, entry.originalCycle, arrivalDate);
 
   const tdsAmt = parseFloat(entry.tdsAmount);
   const tcsAmt = parseFloat(entry.tcsAmount);

@@ -56,3 +56,19 @@ export function transactionPeriod(transactionDate: Date): { month: string; year:
   const months = ["January","February","March","April","May","June","July","August","September","October","November","December"];
   return { month: months[transactionDate.getMonth()], year: transactionDate.getFullYear() };
 }
+
+/**
+ * Settlement cycle label for a date — "MMM-YYYY" (e.g. "JUN-2026"), matching the
+ * cycle format used by bags and settlement runs. Credit-note-driven reversals
+ * (Task #12) post into the cycle of the month the credit note arrives in.
+ */
+export function cycleFromDate(date: Date): string {
+  const abbrev = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
+  return `${abbrev[date.getMonth()]}-${date.getFullYear()}`;
+}
+
+/** Parses a YYYY-MM-DD string as a local date (avoids UTC off-by-one). */
+export function parseLocalDate(dateStr: string): Date {
+  const [y, m, d] = dateStr.split("-").map((n) => parseInt(n, 10));
+  return new Date(y, (m || 1) - 1, d || 1);
+}

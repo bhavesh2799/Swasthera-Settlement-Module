@@ -249,6 +249,39 @@ interface CommissionGstData {
   rows: CommissionGstRow[];
 }
 
+interface CreditNoteRow {
+  id: number;
+  onboardingId: number;
+  brandName: string;
+  bagId: string;
+  orderId: string;
+  creditNoteInvoiceId: number | null;
+  creditNoteNumber: string | null;
+  scenario: string;
+  originalCycle: string;
+  status: "AWAITING" | "RECEIVED";
+  expectedArrivalDate: string | null;
+  actualArrivalDate: string | null;
+  arrivalCycle: string | null;
+  tdsAmount: number;
+  tcsAmount: number;
+  cnAmount: number;
+  reason: string | null;
+  createdAt: string;
+}
+interface CreditNoteRegisterResponse {
+  awaiting: CreditNoteRow[];
+  received: CreditNoteRow[];
+  totals: {
+    awaitingCount: number;
+    receivedCount: number;
+    awaitingTds: number;
+    awaitingTcs: number;
+    receivedTds: number;
+    receivedTcs: number;
+  };
+}
+
 export function ComplianceRegister() {
   const [month, setMonth] = useState("May");
   const [year, setYear] = useState("2026");
@@ -271,6 +304,11 @@ export function ComplianceRegister() {
   const [markLoading, setMarkLoading] = useState(false);
 
   const [gstBrandFilter, setGstBrandFilter] = useState<string>("all");
+
+  // Credit Note Register (Task #12) — mark-received dialog
+  const [cnReceiveDialog, setCnReceiveDialog] = useState<CreditNoteRow | null>(null);
+  const [cnReceiveDate, setCnReceiveDate] = useState<string>(new Date().toISOString().split("T")[0]);
+  const [cnReceiveLoading, setCnReceiveLoading] = useState(false);
 
   const params = { month, year: parseInt(year) };
   const summaryKey = ["/api/compliance/tcs-tds", params];
@@ -362,6 +400,45 @@ export function ComplianceRegister() {
   const downloadLedger = () => {
     if (!ledgerBrandId) return;
     window.open(`/api/compliance/ledger/${ledgerBrandId}/export${ledgerQs ? `?${ledgerQs}` : ""}`, "_blank");
+  };
+
+  // Credit Note Register (Task #12)
+  const creditNotesKey = ["/api/compliance/credit-notes"];
+  const { data: creditNotes, isLoading: isLoadingCreditNotes } = useQuery<CreditNoteRegisterResponse>({
+    queryKey: creditNotesKey,
+    queryFn: async () => {
+      const r = await fetch("/api/compliance/credit-notes");
+      if (!r.ok) throw new Error("Failed to load credit note register");
+      return r.json();
+    },
+  });
+
+  const downloadCreditNotes = () => {
+    window.open("/api/compliance/credit-notes/export", "_blank");
+  };
+
+  const handleMarkCreditNoteReceived = async () => {
+    if (!cnReceiveDialog) return;
+    setCnReceiveLoading(true);
+    try {
+      const res = await fetch(`/api/compliance/credit-notes/${cnReceiveDialog.id}/receive`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ actualArrivalDate: cnReceiveDate }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Failed to mark received");
+      toast({ title: "Credit note received", description: data.message });
+      setCnReceiveDialog(null);
+      queryClient.invalidateQueries({ queryKey: creditNotesKey });
+      queryClient.invalidateQueries({ queryKey: summaryKey });
+      queryClient.invalidateQueries({ queryKey: tcsKey });
+      queryClient.invalidateQueries({ queryKey: tdsKey });
+    } catch (err: unknown) {
+      toast({ title: "Failed to mark received", description: (err as Error).message, variant: "destructive" });
+    } finally {
+      setCnReceiveLoading(false);
+    }
   };
 
   // Handle 422 carry-forward gracefully (not as an error)
@@ -662,6 +739,14 @@ export function ComplianceRegister() {
           </TabsTrigger>
           <TabsTrigger value="ledger" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
             <BookOpen className="mr-1.5 h-4 w-4" /> Brand Ledger
+          </TabsTrigger>
+          <TabsTrigger value="credit-notes" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
+            <Receipt className="mr-1.5 h-4 w-4" /> Credit Notes
+            {creditNotes && creditNotes.totals.awaitingCount > 0 && (
+              <span className="ml-1.5 text-[10px] font-semibold bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full">
+                {creditNotes.totals.awaitingCount}
+              </span>
+            )}
           </TabsTrigger>
           <TabsTrigger value="calendar" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
             <Calendar className="mr-1.5 h-3.5 w-3.5" />
@@ -1280,6 +1365,121 @@ export function ComplianceRegister() {
           </Card>
         </TabsContent>
 
+        {/* Credit Note Register (Task #12) — awaiting vs received credit notes */}
+        <TabsContent value="credit-notes" className="m-0 space-y-4">
+          <Card className="shadow-sm border-slate-200/60 bg-white">
+            <div className="px-6 py-3 border-b border-slate-100 bg-blue-50/40 flex items-start gap-2">
+              <Info className="h-3.5 w-3.5 text-blue-500 mt-0.5 flex-shrink-0" />
+              <p className="text-xs text-blue-700">
+                A cancellation/return reversal posts when its credit note arrives — not on the statutory
+                deadline. Mark a credit note as <span className="font-medium">received</span> to reverse its
+                TDS, TCS and credit-note adjustment into the settlement cycle of the arrival month.
+              </p>
+            </div>
+            <CardHeader className="flex flex-row items-center justify-between gap-2 py-3">
+              <div className="flex items-center gap-3 text-xs text-slate-500">
+                <span className="inline-flex items-center gap-1">
+                  <span className="h-2 w-2 rounded-full bg-amber-400" />
+                  Awaiting {creditNotes?.totals.awaitingCount ?? 0}
+                </span>
+                <span className="inline-flex items-center gap-1">
+                  <span className="h-2 w-2 rounded-full bg-green-500" />
+                  Received {creditNotes?.totals.receivedCount ?? 0}
+                </span>
+              </div>
+              <Button variant="outline" size="sm" onClick={downloadCreditNotes} className="h-8 text-xs">
+                <Download className="mr-1.5 h-3.5 w-3.5" /> Download CSV
+              </Button>
+            </CardHeader>
+            <CardContent className="p-0">
+              {isLoadingCreditNotes ? (
+                <div className="h-32 flex items-center justify-center"><Loader2 className="animate-spin text-slate-400" /></div>
+              ) : (!creditNotes || (creditNotes.awaiting.length === 0 && creditNotes.received.length === 0)) ? (
+                <div className="h-24 flex items-center justify-center text-slate-400 text-sm">
+                  No credit notes yet. Cancel or accept a return from the Orders page to log one here.
+                </div>
+              ) : (
+                <Table>
+                  <TableHeader className="bg-slate-50/80">
+                    <TableRow className="border-slate-100">
+                      <TableHead className="font-medium text-slate-500 h-10 px-4">Order ID</TableHead>
+                      <TableHead className="font-medium text-slate-500 h-10">Brand</TableHead>
+                      <TableHead className="font-medium text-slate-500 h-10">Credit Note</TableHead>
+                      <TableHead className="font-medium text-slate-500 h-10">Scenario</TableHead>
+                      <TableHead className="font-medium text-slate-500 h-10 text-right">TDS</TableHead>
+                      <TableHead className="font-medium text-slate-500 h-10 text-right">TCS</TableHead>
+                      <TableHead className="font-medium text-slate-500 h-10 text-right">CN Amount</TableHead>
+                      <TableHead className="font-medium text-slate-500 h-10">Expected</TableHead>
+                      <TableHead className="font-medium text-slate-500 h-10">Actual / Cycle</TableHead>
+                      <TableHead className="font-medium text-slate-500 h-10 text-right pr-4">Action</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {creditNotes.awaiting.length > 0 && (
+                      <TableRow className="bg-amber-50/60 border-amber-100/70 hover:bg-amber-50/60">
+                        <TableCell colSpan={10} className="px-4 py-2 text-xs font-semibold text-amber-800">
+                          Awaiting Credit Note — reversal pending arrival ({creditNotes.awaiting.length})
+                        </TableCell>
+                      </TableRow>
+                    )}
+                    {creditNotes.awaiting.map((cn) => (
+                      <TableRow key={cn.id} className="border-slate-100">
+                        <TableCell className="px-4 font-mono text-xs text-slate-700">{cn.orderId}</TableCell>
+                        <TableCell className="text-sm text-slate-700">{cn.brandName}</TableCell>
+                        <TableCell className="font-mono text-xs text-slate-600">{cn.creditNoteNumber ?? "—"}</TableCell>
+                        <TableCell><Badge variant="outline" className="text-slate-600 text-[11px]">{cn.scenario}</Badge></TableCell>
+                        <TableCell className="text-right tabular-nums text-sm text-slate-700">{fmt(cn.tdsAmount)}</TableCell>
+                        <TableCell className="text-right tabular-nums text-sm text-slate-700">{fmt(cn.tcsAmount)}</TableCell>
+                        <TableCell className="text-right tabular-nums text-sm text-slate-700">{fmt(cn.cnAmount)}</TableCell>
+                        <TableCell className="text-xs text-slate-500">{cn.expectedArrivalDate ?? "—"}</TableCell>
+                        <TableCell>
+                          <Badge className="bg-amber-100 text-amber-800 hover:bg-amber-100/80 border-transparent">Awaiting</Badge>
+                        </TableCell>
+                        <TableCell className="text-right pr-4">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 text-xs"
+                            onClick={() => { setCnReceiveDate(new Date().toISOString().split("T")[0]); setCnReceiveDialog(cn); }}
+                          >
+                            <CheckCircle2 className="mr-1 h-3.5 w-3.5" /> Mark Received
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                    {creditNotes.received.length > 0 && (
+                      <TableRow className="bg-green-50/50 border-green-100/70 hover:bg-green-50/50">
+                        <TableCell colSpan={10} className="px-4 py-2 text-xs font-semibold text-green-800">
+                          Received — reversal posted ({creditNotes.received.length})
+                        </TableCell>
+                      </TableRow>
+                    )}
+                    {creditNotes.received.map((cn) => (
+                      <TableRow key={cn.id} className="border-slate-100">
+                        <TableCell className="px-4 font-mono text-xs text-slate-700">{cn.orderId}</TableCell>
+                        <TableCell className="text-sm text-slate-700">{cn.brandName}</TableCell>
+                        <TableCell className="font-mono text-xs text-slate-600">{cn.creditNoteNumber ?? "—"}</TableCell>
+                        <TableCell><Badge variant="outline" className="text-slate-600 text-[11px]">{cn.scenario}</Badge></TableCell>
+                        <TableCell className="text-right tabular-nums text-sm text-slate-700">{fmt(cn.tdsAmount)}</TableCell>
+                        <TableCell className="text-right tabular-nums text-sm text-slate-700">{fmt(cn.tcsAmount)}</TableCell>
+                        <TableCell className="text-right tabular-nums text-sm text-slate-700">{fmt(cn.cnAmount)}</TableCell>
+                        <TableCell className="text-xs text-slate-500">{cn.expectedArrivalDate ?? "—"}</TableCell>
+                        <TableCell className="text-xs">
+                          <div className="text-slate-600">{cn.actualArrivalDate ?? "—"}</div>
+                          {cn.arrivalCycle && <div className="text-[10px] font-medium text-green-700">→ {cn.arrivalCycle}</div>}
+                        </TableCell>
+                        <TableCell className="text-right pr-4">
+                          <Badge className="bg-green-100 text-green-800 hover:bg-green-100/80 border-transparent">Received</Badge>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
         {/* Compliance Calendar */}
         <TabsContent value="calendar" className="m-0">
           <Card className="shadow-sm border-slate-200/60 bg-white">
@@ -1412,6 +1612,36 @@ export function ComplianceRegister() {
             <Button variant="outline" onClick={() => setTdsMarkDialog(null)}>Cancel</Button>
             <Button onClick={handleMarkTdsDeposited} disabled={markLoading}>
               {markLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />} Confirm
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Mark Credit Note Received Dialog (Task #12) */}
+      <Dialog open={!!cnReceiveDialog} onOpenChange={(open) => !open && setCnReceiveDialog(null)}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Mark Credit Note Received</DialogTitle>
+            <DialogDescription>
+              {cnReceiveDialog?.creditNoteNumber ?? cnReceiveDialog?.orderId} — {cnReceiveDialog?.brandName}.
+              The reversal posts into the settlement cycle of the arrival month.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <div className="rounded-md border border-slate-200 bg-slate-50/60 p-3 text-xs text-slate-600 space-y-1">
+              <div className="flex justify-between"><span>TDS to reverse</span><span className="tabular-nums font-medium text-slate-800">{fmt(cnReceiveDialog?.tdsAmount ?? 0)}</span></div>
+              <div className="flex justify-between"><span>TCS to reverse</span><span className="tabular-nums font-medium text-slate-800">{fmt(cnReceiveDialog?.tcsAmount ?? 0)}</span></div>
+              <div className="flex justify-between"><span>Credit note amount</span><span className="tabular-nums font-medium text-slate-800">{fmt(cnReceiveDialog?.cnAmount ?? 0)}</span></div>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-slate-700">Actual Arrival Date</label>
+              <Input type="date" value={cnReceiveDate} onChange={(e) => setCnReceiveDate(e.target.value)} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCnReceiveDialog(null)}>Cancel</Button>
+            <Button onClick={handleMarkCreditNoteReceived} disabled={cnReceiveLoading}>
+              {cnReceiveLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />} Confirm Received
             </Button>
           </DialogFooter>
         </DialogContent>

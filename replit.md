@@ -76,7 +76,10 @@ All routes under `/api/`:
 - `GET /compliance/tcs-tds` — TCS/TDS summary (gross, reversals, net) by month/year
 - `GET /compliance/tcs-records` — State-wise TCS register (includes reversal entries)
 - `GET /compliance/tds-records` — Company TDS register (includes reversal entries)
-- `POST /compliance/reversal` — Log TCS/TDS reversal for a bag (BRD §5.4); inserts negative entries, marks bag on_hold
+- `POST /compliance/reversal` — Mark a bag's AWAITING credit note as received (manual path); posts the reversal into the arrival-month cycle. Requires a CN already logged via the Orders cancel/return flow.
+- `GET /compliance/credit-notes` — Credit Note Register: awaiting + received groups with totals (awaitingTds/Tcs, receivedTds/Tcs)
+- `POST /compliance/credit-notes/:id/receive` — Mark a credit note received (records actualArrivalDate); posts negative TDS + negative TCS (parity) and a CREDIT_NOTE settlement adjustment into the arrival-month cycle. Concurrency-safe + idempotent (409 if already received)
+- `GET /compliance/credit-notes/export` — Credit Note Register CSV
 - `GET /compliance/calendar` — 13 compliance due dates incl. Form 27EQ, 26Q, 16A
 - `GET/POST /settlements` — Settlement list & compute new run (brand vs marketplace promotions tracked separately)
 - `GET /settlements/:id` — Settlement with waterfall detail
@@ -98,7 +101,7 @@ All routes under `/api/`:
   - Fynd Sync IDs (post-approval)
   - Role-gated actions: Maker sees Submit, Checker sees Approve/Reject
 - `/orders` — Bag register (TCS/TDS per bag, eligibility, return window)
-- `/compliance` — TCS/TDS registers with reversal entry rows (amber highlighted), net after reversals in summary cards, Log Reversal button, 13-entry compliance calendar
+- `/compliance` — TCS/TDS registers with reversal entry rows (amber highlighted), net after reversals in summary cards, Log Reversal button, **Credit Notes tab** (awaiting/received groups, awaiting-count badge, Mark Received dialog, CSV export), 13-entry compliance calendar
 - `/settlements` — Settlement list with status filter
 - `/settlements/:id` — Settlement detail with:
   - BRD §7 deduction waterfall (numbered steps 1–10, brand vs marketplace promotions split)
@@ -120,9 +123,15 @@ Every captured order generates an `invoices` row. Each row can be downloaded as 
 - **Brand settlement invoice** — `GET /api/invoices/:id/brand-pdf` (`buildBrandInvoiceDocument`): the deduction waterfall the marketplace raises against the brand (GMV → commission → GST on commission → TDS → TCS → net payable to brand).
 - A legacy HTML preview still exists at `GET /api/invoices/:id/download` but the UI no longer links to it — both the Orders invoice dialog and the Invoice Repository download PDFs.
 
+## Reversal timing model — credit-note-arrival-driven
+
+Tax reversals are **driven by credit-note arrival, not by the 7th-of-next-month statutory deadline.** When a reversal-eligible cancel/return is confirmed on the Orders page, the credit note is generated and logged in the `credit_note_register` as **AWAITING** — no tax reversal posts yet. When finance marks the credit note **RECEIVED** (Compliance → Credit Notes tab, recording the actual arrival date), the negative TDS, negative TCS (parity), and CREDIT_NOTE settlement adjustment all post into the settlement cycle of the **arrival month** (e.g. a CN arriving in June lands in JUN-2026). The settlement engine already sums adjustments by cycle, so it picks these up automatically.
+
+Scenario classification (pre-delivery cancel / in-window return / window-expired-rejected / brand-rejected) is unchanged — only the tax-reversal timing moved from deadline-based to arrival-based. The mark-received action is concurrency-safe and idempotent (atomic AWAITING→RECEIVED gate inside a DB transaction; a duplicate or concurrent receive returns 409 and posts nothing).
+
 ## Seeing reversals manually (UI)
 
-Reversal actions live on the **Orders page** (`/orders`) and require the **Backend** role (switch via the role toggle in the sidebar footer — the Actions/Reverse column only renders for Backend). Each bag row has a Reverse (↺) button → opens the ReversalDialog, which calls `GET /transactions/:orderId/reversal-preview` (read-only) and shows the classified scenario + statutory deadline before you confirm. The Return Window column also shows a red "Reversal by <date>" warning when the deadline has passed.
+Reversal actions live on the **Orders page** (`/orders`) and require the **Backend** role (switch via the role toggle in the sidebar footer — the Actions/Reverse column only renders for Backend). Each bag row has a Reverse (↺) button → opens the ReversalDialog, which calls `GET /transactions/:orderId/reversal-preview` (read-only) and shows the classified scenario before you confirm. Confirming logs an AWAITING credit note; the actual tax reversal is posted later from the Credit Notes tab when the CN is marked received.
 
 ## Seed Data (MAY-2026-C1 cycle)
 
@@ -134,10 +143,10 @@ Active brands: Zara India, H&M India, Fabindia + 2 new onboardings (Manyavar, Bi
 
 ### Reversal demo bags (JUN-2026-DEMO cycle)
 
-Three Zara India bags (each with a captured invoice) are seeded so all reversal cases are runnable live from the Orders page in the Backend role:
-- `DEMO-PREDELIVERY-CANCEL` — not yet delivered (delivery_date NULL) → Reverse triggers Pre-delivery cancellation (scenario 1) → CANCELLED + credit note + reversal (deadline in the future, eligible).
-- `DEMO-RETURN-INWINDOW` — delivered, return window open → Reverse initiates a return (scenario 2); then accept (credit note + reversal) or reject (window restored).
-- `DEMO-RETURN-PASTWINDOW` — delivered, window expired, reversal deadline already past (red warning) → Reverse is rejected (scenario 3): no credit note, audit log only.
+Three Zara India bags (each with a captured invoice) are seeded so all reversal cases are runnable live from the Orders page in the Backend role. Confirming a reversal now logs an AWAITING credit note (no immediate tax reversal); post the reversal from Compliance → Credit Notes → Mark Received:
+- `DEMO-PREDELIVERY-CANCEL` — not yet delivered (delivery_date NULL) → Reverse triggers Pre-delivery cancellation (scenario 1) → CANCELLED + credit note logged AWAITING.
+- `DEMO-RETURN-INWINDOW` — delivered, return window open → Reverse initiates a return (scenario 2); then accept (credit note logged AWAITING) or reject (window restored).
+- `DEMO-RETURN-PASTWINDOW` — delivered, window expired → Reverse is rejected (scenario 3): no credit note, audit log only.
 
 These are inserted directly in Postgres (no seed script exists); recreate via `POST /bags` + `POST /transactions/capture` (X-Role: backend), and `UPDATE bags SET delivery_date=NULL` for the pre-delivery one (POST /bags always defaults a delivery date).
 

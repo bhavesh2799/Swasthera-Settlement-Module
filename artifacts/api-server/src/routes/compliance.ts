@@ -1,8 +1,9 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
-import { tcsRecordsTable, tdsRecordsTable, bagsTable, activityTable, settlementsTable, payoutsTable, onboardingsTable, settlementAdjustmentsTable, invoicesTable } from "@workspace/db";
-import { eq, and, sql, inArray, like } from "drizzle-orm";
-import { reversalDeadline, isPastReversalDeadline, canReverseTDS, transactionPeriod, classifyCancellation } from "../services/tdsReversalService";
+import { tcsRecordsTable, tdsRecordsTable, bagsTable, activityTable, settlementsTable, payoutsTable, onboardingsTable, invoicesTable, creditNoteRegisterTable } from "@workspace/db";
+import { eq, and, sql, inArray, like, desc } from "drizzle-orm";
+import { reversalDeadline, isPastReversalDeadline, classifyCancellation } from "../services/tdsReversalService";
+import { postCreditNoteReversal } from "../services/creditNoteReversalService";
 import { authorize } from "../middlewares/rbac";
 
 const router = Router();
@@ -686,149 +687,215 @@ router.post("/compliance/reversal", authorize(["backend", "admin"]), async (req,
     const [bag] = await db.select().from(bagsTable).where(eq(bagsTable.bagId, bagId));
     if (!bag) return res.status(404).json({ error: "Bag not found" });
 
-    const tdsAmt = parseFloat(bag.tdsAmount);
-    const tcsAmt = parseFloat(bag.tcsAmount);
-    if (tdsAmt === 0 && tcsAmt === 0) {
-      return res.status(400).json({ error: "No TDS or TCS accrual found for this bag to reverse" });
-    }
+    // Credit-note-driven model (Task #12): reversals are no longer tied to the
+    // 7th-of-month statutory deadline. A reversal posts when the credit note
+    // arrives. This endpoint marks the bag's AWAITING credit note as received
+    // (recording the arrival date) which triggers the reversal into the arrival
+    // month's settlement cycle.
+    const [entry] = await db
+      .select()
+      .from(creditNoteRegisterTable)
+      .where(eq(creditNoteRegisterTable.bagId, bagId))
+      .limit(1);
 
-    // Enforce the canonical reversal path: only bags that have already completed
-    // the order cancel/return flow may use this endpoint. Active orders must go
-    // through POST /transactions/:orderId/cancel (or /return/accept) which enforces
-    // scenario classification, credit-note generation, and brand acceptance atomically.
-    const cancellationCase = classifyCancellation(bag.deliveryDate, bag.windowExpiryDate);
-    if (bag.reversalStatus === "WINDOW_EXPIRED_REJECTED") {
+    if (!entry) {
+      // No credit note has been generated yet — must go through the Orders page
+      // cancel/return flow first, which generates the CN and logs it AWAITING.
+      const cancellationCase = classifyCancellation(bag.deliveryDate, bag.windowExpiryDate);
+      if (bag.reversalStatus === "WINDOW_EXPIRED_REJECTED") {
+        return res.status(400).json({
+          error: `Bag ${bagId} was rejected due to an expired return window (Scenario 3 — BRD §5.4). No tax reversal can be logged.`,
+          reversalStatus: bag.reversalStatus,
+        });
+      }
       return res.status(400).json({
-        error: `Bag ${bagId} was rejected due to an expired return window (Scenario 3 — BRD §5.4). No tax reversal can be logged.`,
-        reversalStatus: bag.reversalStatus,
-      });
-    }
-    if (bag.reversalStatus === "RETURN_INITIATED") {
-      return res.status(400).json({
-        error: `Bag ${bagId} has a return in progress. Accept or reject the return from the Orders page before logging a tax reversal.`,
-        redirectHint: "/orders",
-        reversalStatus: bag.reversalStatus,
-      });
-    }
-    if (!bag.reversalStatus && cancellationCase !== "PAST_RETURN_WINDOW") {
-      // Active order that hasn't gone through the cancel/return flow yet.
-      // Must use the Orders page to get credit-note generation + scenario enforcement.
-      const label = cancellationCase === "PRE_DELIVERY"
-        ? "not yet delivered"
-        : "within return window";
-      return res.status(400).json({
-        error: `Bag ${bagId} is ${label} and has not been cancelled or returned yet. Use the Orders page to initiate the cancellation/return flow — credit-note generation and scenario rules are enforced there.`,
+        error: `Bag ${bagId} has no credit note awaiting reversal. Cancel or accept the return from the Orders page first — that generates the credit note and logs it in the Credit Note Register as awaiting.`,
         redirectHint: "/orders",
         cancellationCase,
       });
     }
 
-    // Eligibility derives strictly from bag data — client-supplied month/year are
-    // only used for display labels and must not influence the statutory deadline check.
-    const txnDate = bag.invoiceDate ? new Date(bag.invoiceDate) : new Date(bag.createdAt);
-    const deadline = reversalDeadline(txnDate);
-    const reversalEligible = canReverseTDS(txnDate, new Date());
-    const { month: txnMonth, year: txnYear } = transactionPeriod(txnDate);
-
-    if (!reversalEligible) {
-      // Both deposit deadlines have passed — write carry-forward adjustments for
-      // the next settlement cycle and return 422 so the caller shows the right message.
-      if (tdsAmt > 0) {
-        await db.insert(settlementAdjustmentsTable).values({
-          onboardingId: bag.brandId,
-          cycle: bag.cycle,
-          bagId: bag.bagId,
-          adjustmentType: "TDS_CARRY_FORWARD",
-          amount: tdsAmt.toFixed(2),
-          reason: `TDS deposit deadline ${deadline} passed — carried forward from compliance reversal (${reason})`,
-        });
-      }
-      if (tcsAmt > 0) {
-        await db.insert(settlementAdjustmentsTable).values({
-          onboardingId: bag.brandId,
-          cycle: bag.cycle,
-          bagId: bag.bagId,
-          adjustmentType: "TCS_CARRY_FORWARD",
-          amount: tcsAmt.toFixed(2),
-          reason: `TCS GSTR-8 deadline ${deadline} passed — credit carried forward from compliance reversal (${reason})`,
-        });
-      }
-      await db.insert(activityTable).values({
-        user: req.user?.name ?? "System",
-        action: `TDS/TCS already deposited for ${bagId} (deadline ${deadline} passed) — carry-forwards recorded (${reason})`,
-        entityType: "compliance",
-        entityRef: bagId,
-        level: "warning",
-      });
-      return res.status(422).json({
-        success: false,
-        reversalEligible: false,
-        deadline,
-        message: `Deposit deadline (${deadline}) has already passed for bag ${bagId}. TDS ₹${tdsAmt.toFixed(2)} and TCS ₹${tcsAmt.toFixed(2)} recorded as carry-forward adjustments for the next settlement cycle.`,
-        tdsCarryForward: tdsAmt,
-        tcsCarryForward: tcsAmt,
+    if (entry.status === "RECEIVED") {
+      return res.status(409).json({
+        error: `Credit note for bag ${bagId} was already received on ${entry.actualArrivalDate} and reversed into ${entry.arrivalCycle}.`,
+        creditNoteRegister: entry,
       });
     }
 
-    // Deadline has not passed — insert negative reversal entries for both taxes.
-    if (tdsAmt > 0) {
-      const [origTds] = await db.select().from(tdsRecordsTable)
-        .where(and(eq(tdsRecordsTable.month, txnMonth), eq(tdsRecordsTable.year, txnYear)));
-      await db.insert(tdsRecordsTable).values({
-        month: txnMonth, year: txnYear,
-        companyName: origTds?.companyName ?? bag.brandName,
-        tan: origTds?.tan ?? "DELN00000A",
-        grossPayment: String(-parseFloat(bag.esp)),
-        tdsRate: "1.00",
-        tdsAmount: String(-tdsAmt),
-        netPaid: String(tdsAmt),
-        status: "Pending",
-        isReversal: true,
-        reversalReason: reason,
-        originalBagId: bagId,
+    const actualArrivalDate = new Date().toISOString().slice(0, 10);
+    const result = await postCreditNoteReversal(entry, actualArrivalDate, req.user?.name ?? "System");
+    if (!result.posted) {
+      return res.status(409).json({
+        error: `Credit note for bag ${bagId} was already received and reversed into ${result.arrivalCycle}.`,
       });
     }
-
-    if (tcsAmt > 0) {
-      await db.insert(tcsRecordsTable).values({
-        month: txnMonth, year: txnYear,
-        stateGstin: bag.stateGstin,
-        stateCode: bag.stateCode,
-        stateName: STATE_NAMES[bag.stateCode] ?? bag.stateCode,
-        brandName: bag.brandName,
-        taxableSupply: String(-parseFloat(bag.esp)),
-        tcsRate: "1.00",
-        tcsAmount: String(-tcsAmt),
-        status: "Accrued",
-        paymentDueDate: deadline,
-        isReversal: true,
-        reversalReason: reason,
-        originalBagId: bagId,
-      });
-    }
-
-    await db.update(bagsTable)
-      .set({ eligibility: "on_hold", omsState: "return_bag_delivered" })
-      .where(eq(bagsTable.bagId, bagId));
-
-    await db.insert(activityTable).values({
-      user: req.user?.name ?? "System",
-      action: `TDS/TCS reversal logged for bag ${bagId} (deadline ${deadline}) — ${reason}`,
-      entityType: "compliance",
-      entityRef: bagId,
-      level: "warning",
-    });
 
     return res.json({
       success: true,
-      reversalEligible: true,
-      deadline,
-      message: `TDS ₹${tdsAmt.toFixed(2)} and TCS ₹${tcsAmt.toFixed(2)} reversal logged for bag ${bagId}.`,
-      tdsReversed: tdsAmt,
-      tcsReversed: tcsAmt,
+      arrivalCycle: result.arrivalCycle,
+      message: `Credit note received ${actualArrivalDate} — TDS ₹${result.tdsReversed.toFixed(2)} and TCS ₹${result.tcsReversed.toFixed(2)} reversed into ${result.arrivalCycle} (${reason}).`,
+      tdsReversed: result.tdsReversed,
+      tcsReversed: result.tcsReversed,
     });
   } catch (err) {
     req.log.error({ err }, "compliance reversal error");
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Credit Note Register (Task #12) — awaiting vs received credit notes.
+// ---------------------------------------------------------------------------
+
+/** GET /compliance/credit-notes — register rows grouped into Awaiting / Received. */
+router.get("/compliance/credit-notes", async (req, res) => {
+  try {
+    const rows = await db
+      .select()
+      .from(creditNoteRegisterTable)
+      .orderBy(desc(creditNoteRegisterTable.createdAt));
+
+    const shape = (r: typeof rows[number]) => ({
+      id: r.id,
+      onboardingId: r.onboardingId,
+      brandName: r.brandName,
+      bagId: r.bagId,
+      orderId: r.orderId,
+      creditNoteInvoiceId: r.creditNoteInvoiceId,
+      creditNoteNumber: r.creditNoteNumber,
+      scenario: r.scenario,
+      originalCycle: r.originalCycle,
+      status: r.status,
+      expectedArrivalDate: r.expectedArrivalDate,
+      actualArrivalDate: r.actualArrivalDate,
+      arrivalCycle: r.arrivalCycle,
+      tdsAmount: parseFloat(r.tdsAmount),
+      tcsAmount: parseFloat(r.tcsAmount),
+      cnAmount: parseFloat(r.cnAmount),
+      reason: r.reason,
+      createdAt: r.createdAt,
+    });
+
+    const awaiting = rows.filter((r) => r.status === "AWAITING").map(shape);
+    const received = rows.filter((r) => r.status === "RECEIVED").map(shape);
+
+    return res.json({
+      awaiting,
+      received,
+      totals: {
+        awaitingCount: awaiting.length,
+        receivedCount: received.length,
+        awaitingTds: awaiting.reduce((s, r) => s + r.tdsAmount, 0),
+        awaitingTcs: awaiting.reduce((s, r) => s + r.tcsAmount, 0),
+        receivedTds: received.reduce((s, r) => s + r.tdsAmount, 0),
+        receivedTcs: received.reduce((s, r) => s + r.tcsAmount, 0),
+      },
+    });
+  } catch (err) {
+    req.log.error({ err }, "credit-note register error");
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+/**
+ * POST /compliance/credit-notes/:id/receive — mark a credit note as received.
+ * Records the actual arrival date, derives the arrival settlement cycle, and
+ * posts the TDS + TCS reversals + CREDIT_NOTE adjustment into that cycle.
+ */
+router.post("/compliance/credit-notes/:id/receive", authorize(["backend", "admin"]), async (req, res) => {
+  try {
+    const id = parseInt(String(req.params.id), 10);
+    if (Number.isNaN(id)) return res.status(400).json({ error: "Invalid id" });
+    const { actualArrivalDate } = req.body as { actualArrivalDate?: string };
+
+    const [entry] = await db
+      .select()
+      .from(creditNoteRegisterTable)
+      .where(eq(creditNoteRegisterTable.id, id))
+      .limit(1);
+    if (!entry) return res.status(404).json({ error: "Credit note register entry not found" });
+
+    if (entry.status === "RECEIVED") {
+      return res.status(409).json({
+        error: `Credit note ${entry.creditNoteNumber ?? entry.bagId} was already received on ${entry.actualArrivalDate} and reversed into ${entry.arrivalCycle}.`,
+      });
+    }
+
+    const arrivalDate = actualArrivalDate ?? new Date().toISOString().slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(arrivalDate)) {
+      return res.status(400).json({ error: "actualArrivalDate must be YYYY-MM-DD" });
+    }
+    // Reject calendar-invalid dates (e.g. 2026-13-40) that pass the regex but
+    // would roll over into the wrong settlement cycle.
+    const parsed = new Date(`${arrivalDate}T00:00:00Z`);
+    if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== arrivalDate) {
+      return res.status(400).json({ error: "actualArrivalDate is not a valid calendar date" });
+    }
+
+    const result = await postCreditNoteReversal(entry, arrivalDate, req.user?.name ?? "System");
+    if (!result.posted) {
+      return res.status(409).json({
+        error: `Credit note ${entry.creditNoteNumber ?? entry.bagId} was already received and reversed into ${result.arrivalCycle}.`,
+      });
+    }
+    return res.json({
+      success: true,
+      id,
+      actualArrivalDate: arrivalDate,
+      arrivalCycle: result.arrivalCycle,
+      tdsReversed: result.tdsReversed,
+      tcsReversed: result.tcsReversed,
+      cnAmount: result.cnAmount,
+      message: `Credit note received — TDS ₹${result.tdsReversed.toFixed(2)} and TCS ₹${result.tcsReversed.toFixed(2)} reversed into ${result.arrivalCycle}.`,
+    });
+  } catch (err) {
+    req.log.error({ err }, "credit-note receive error");
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+/** GET /compliance/credit-notes/export — register as CSV (Awaiting + Received). */
+router.get("/compliance/credit-notes/export", async (req, res) => {
+  try {
+    const rows = await db
+      .select()
+      .from(creditNoteRegisterTable)
+      .orderBy(desc(creditNoteRegisterTable.createdAt));
+
+    const header = [
+      "Status", "Order ID", "Bag ID", "Brand", "Credit Note", "Scenario",
+      "Original Cycle", "Expected Arrival", "Actual Arrival", "Arrival Cycle",
+      "TDS (INR)", "TCS (INR)", "Credit Note Amount (INR)", "Reason",
+    ];
+    const esc = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const lines = [
+      header.map(esc).join(","),
+      ...rows.map((r) =>
+        [
+          r.status,
+          r.orderId,
+          r.bagId,
+          r.brandName,
+          r.creditNoteNumber ?? "",
+          r.scenario,
+          r.originalCycle,
+          r.expectedArrivalDate ?? "",
+          r.actualArrivalDate ?? "",
+          r.arrivalCycle ?? "",
+          parseFloat(r.tdsAmount).toFixed(2),
+          parseFloat(r.tcsAmount).toFixed(2),
+          parseFloat(r.cnAmount).toFixed(2),
+          r.reason ?? "",
+        ].map(esc).join(","),
+      ),
+    ];
+    const csv = lines.join("\n");
+    const fname = `credit-note-register-${new Date().toISOString().split("T")[0]}.csv`;
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", `attachment; filename="${fname}"`);
+    return res.send(csv);
+  } catch (err) {
+    req.log.error({ err }, "credit-note export error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });

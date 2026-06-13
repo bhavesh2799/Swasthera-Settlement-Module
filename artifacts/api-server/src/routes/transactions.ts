@@ -1,18 +1,16 @@
 import { Router } from "express";
-import { db, bagsTable, invoicesTable, tcsRecordsTable, tdsRecordsTable, activityTable, settlementsTable, settlementAdjustmentsTable } from "@workspace/db";
-import { eq, and, desc } from "drizzle-orm";
+import { db, bagsTable, invoicesTable, activityTable } from "@workspace/db";
+import { eq } from "drizzle-orm";
 import { authorize } from "../middlewares/rbac";
 import { writeAudit } from "../services/audit";
 import { generateInvoice, generateCreditNote, renderInvoiceHtml } from "../services/invoiceService";
 import {
   canReverseTDS,
   classifyCancellation,
-  transactionPeriod,
   reversalDeadline,
   isPastReversalDeadline,
 } from "../services/tdsReversalService";
-import { stateName } from "../services/stateCodes";
-import type { Request } from "express";
+import { createCreditNoteRegisterEntry } from "../services/creditNoteReversalService";
 
 const router = Router();
 
@@ -21,121 +19,6 @@ type Bag = typeof bagsTable.$inferSelect;
 /** Resolves the transaction (invoice) date a bag's tax was accrued on. */
 function bagTxnDate(bag: Bag): Date {
   return bag.invoiceDate ? new Date(bag.invoiceDate) : new Date(bag.createdAt);
-}
-
-/**
- * Applies TDS and TCS reversal for a cancelled/returned bag, enforcing the timing
- * rules in tdsReversalService. Both taxes use the same 7th-of-following-month
- * deposit deadline (TDS per §194-O IT Act; TCS per §52 GST / GSTR-8 amendment).
- *
- * Within the deadline: negative TDS entry written to tds_records; negative TCS
- * entry written to tcs_records (GSTR-8 amendment reduces the marketplace's TCS
- * liability and credits the brand's electronic credit ledger).
- *
- * Past the deadline: both amounts have already been deposited/filed. A
- * TDS_CARRY_FORWARD and TCS_CARRY_FORWARD adjustment are logged so the next
- * settlement compute run can credit the brand. Eligibility is server-side only.
- */
-async function applyTaxReversal(req: Request, bag: Bag, reason: string) {
-  const txnDate = bagTxnDate(bag);
-  const reversalEligible = canReverseTDS(txnDate, new Date());
-  const tdsAmt = parseFloat(bag.tdsAmount);
-  const tcsAmt = parseFloat(bag.tcsAmount);
-  const { month, year } = transactionPeriod(txnDate);
-  const deadline = reversalDeadline(txnDate);
-
-  if (reversalEligible) {
-    // TDS: within deposit window — write negative reversal entry.
-    if (tdsAmt > 0) {
-      await db.insert(tdsRecordsTable).values({
-        month, year,
-        companyName: bag.brandName,
-        tan: "DELN00000A",
-        grossPayment: String(-parseFloat(bag.esp)),
-        tdsRate: "1.00",
-        tdsAmount: String(-tdsAmt),
-        netPaid: String(tdsAmt),
-        status: "Pending",
-        isReversal: true,
-        reversalReason: reason,
-        originalBagId: bag.bagId,
-      });
-    }
-    // TCS: within GSTR-8 filing window — write negative reversal entry (§52 GST).
-    if (tcsAmt > 0) {
-      await db.insert(tcsRecordsTable).values({
-        month, year,
-        stateGstin: bag.stateGstin,
-        stateCode: bag.stateCode,
-        stateName: stateName(bag.stateCode),
-        brandName: bag.brandName,
-        taxableSupply: String(-parseFloat(bag.esp)),
-        tcsRate: "1.00",
-        tcsAmount: String(-tcsAmt),
-        status: "Accrued",
-        paymentDueDate: deadline,
-        isReversal: true,
-        reversalReason: reason,
-        originalBagId: bag.bagId,
-      });
-    }
-  } else {
-    // Past deposit deadline — record carry-forward adjustments for the next
-    // settlement cycle so the brand receives the credit there instead.
-    if (tdsAmt > 0) {
-      await db.insert(settlementAdjustmentsTable).values({
-        onboardingId: bag.brandId,
-        cycle: bag.cycle,
-        bagId: bag.bagId,
-        adjustmentType: "TDS_CARRY_FORWARD",
-        amount: tdsAmt.toFixed(2),
-        reason: `TDS deadline ${deadline} passed — deposited, cannot reverse (${reason})`,
-      });
-    }
-    if (tcsAmt > 0) {
-      await db.insert(settlementAdjustmentsTable).values({
-        onboardingId: bag.brandId,
-        cycle: bag.cycle,
-        bagId: bag.bagId,
-        adjustmentType: "TCS_CARRY_FORWARD",
-        amount: tcsAmt.toFixed(2),
-        reason: `TCS deadline ${deadline} passed — GSTR-8 filed, credit carried forward (${reason})`,
-      });
-    }
-    await db.insert(activityTable).values({
-      user: req.user?.name ?? "System",
-      action: `TDS/TCS already deposited for ${bag.bagId} (deadline ${deadline} passed) — carry-forwards recorded for next settlement cycle (${reason})`,
-      entityType: "compliance",
-      entityRef: bag.bagId,
-      level: "warning",
-    });
-  }
-
-  return {
-    reversalEligible,
-    tdsReversed: reversalEligible ? tdsAmt : 0,
-    tdsCarryForward: !reversalEligible ? tdsAmt : 0,
-    tcsReversed: reversalEligible ? tcsAmt : 0,
-    tcsCarryForward: !reversalEligible ? tcsAmt : 0,
-    adjustmentLogged: !reversalEligible,
-    deadline,
-  };
-}
-
-/**
- * Records a CREDIT_NOTE adjustment in settlement_adjustments for the bag's
- * onboarding+cycle. Called immediately after any credit note is generated so
- * the next settlement compute run can deduct the CN amount from the brand's net.
- */
-async function recordCreditNoteAdjustment(bag: Bag, cnNetPayable: number, reason: string) {
-  await db.insert(settlementAdjustmentsTable).values({
-    onboardingId: bag.brandId,
-    cycle: bag.cycle,
-    bagId: bag.bagId,
-    adjustmentType: "CREDIT_NOTE",
-    amount: Math.abs(cnNetPayable).toFixed(2),
-    reason,
-  });
 }
 
 /**
@@ -310,10 +193,16 @@ router.post("/transactions/:orderId/cancel", authorize(["maker", "backend", "adm
       }
       throw err;
     }
-    const reversal = await applyTaxReversal(req, bag, cancelReason);
-    // Record the credit note amount as a structured settlement adjustment so
-    // the next settlement compute run deducts it from the brand's cycle net.
-    await recordCreditNoteAdjustment(bag, parseFloat(creditNote.netPayable), `Cancellation CN ${creditNote.invoiceNumber}`);
+    // Credit-note-driven reversal (Task #12): log the credit note as AWAITING in
+    // the register. The TDS/TCS reversal + CREDIT_NOTE settlement adjustment do NOT
+    // post now — they post into the arrival-month cycle when finance marks the
+    // credit note received.
+    const registerEntry = await createCreditNoteRegisterEntry(
+      bag,
+      creditNote,
+      "CANCELLED",
+      `Cancellation CN ${creditNote.invoiceNumber}`,
+    );
 
     await db.update(bagsTable)
       .set({ omsState: "cancelled", eligibility: "on_hold", reversalStatus: "CANCELLED", reversalReason: cancelReason })
@@ -326,10 +215,9 @@ router.post("/transactions/:orderId/cancel", authorize(["maker", "backend", "adm
         creditNote: creditNote.invoiceNumber,
         reason: cancelReason,
         case: cancellationCase,
-        reversalEligible: reversal.reversalEligible,
-        tdsReversed: reversal.tdsReversed,
-        tcsReversed: reversal.tcsReversed,
-        cnAdjustmentRecorded: true,
+        creditNoteRegisterId: registerEntry.id,
+        creditNoteStatus: "AWAITING",
+        expectedArrivalDate: registerEntry.expectedArrivalDate,
       },
     });
 
@@ -339,7 +227,8 @@ router.post("/transactions/:orderId/cancel", authorize(["maker", "backend", "adm
       scenario: 1,
       reversalStatus: "CANCELLED",
       creditNote,
-      ...reversal,
+      creditNoteRegister: registerEntry,
+      message: `Credit note ${creditNote.invoiceNumber} logged as awaiting arrival — tax reversal will post when received.`,
     });
   } catch (err) {
     req.log.error({ err }, "cancellation failed");
@@ -370,9 +259,13 @@ router.post("/transactions/:orderId/return/accept", authorize(["backend", "admin
       }
       throw err;
     }
-    const reversal = await applyTaxReversal(req, bag, reason);
-    // Record the credit note amount as a structured settlement adjustment.
-    await recordCreditNoteAdjustment(bag, parseFloat(creditNote.netPayable), `Return accept CN ${creditNote.invoiceNumber}`);
+    // Credit-note-driven reversal (Task #12): log AWAITING; reversal posts on receipt.
+    const registerEntry = await createCreditNoteRegisterEntry(
+      bag,
+      creditNote,
+      "RETURNED",
+      `Return accept CN ${creditNote.invoiceNumber}`,
+    );
 
     await db.update(bagsTable)
       .set({ reversalStatus: "RETURNED", omsState: "return_accepted", eligibility: "on_hold" })
@@ -384,10 +277,9 @@ router.post("/transactions/:orderId/return/accept", authorize(["backend", "admin
       changedFields: {
         creditNote: creditNote.invoiceNumber,
         reason,
-        reversalEligible: reversal.reversalEligible,
-        tdsReversed: reversal.tdsReversed,
-        tcsReversed: reversal.tcsReversed,
-        cnAdjustmentRecorded: true,
+        creditNoteRegisterId: registerEntry.id,
+        creditNoteStatus: "AWAITING",
+        expectedArrivalDate: registerEntry.expectedArrivalDate,
       },
     });
 
@@ -396,7 +288,8 @@ router.post("/transactions/:orderId/return/accept", authorize(["backend", "admin
       scenario: 2,
       reversalStatus: "RETURNED",
       creditNote,
-      ...reversal,
+      creditNoteRegister: registerEntry,
+      message: `Credit note ${creditNote.invoiceNumber} logged as awaiting arrival — tax reversal will post when received.`,
     });
   } catch (err) {
     req.log.error({ err }, "return accept failed");

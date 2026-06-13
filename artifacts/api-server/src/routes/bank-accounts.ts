@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { db, bankAccountsTable, brandsTable, activityTable, bankAccountJurisdictionsTable, onboardingsTable } from "@workspace/db";
+import { db, bankAccountsTable, brandsTable, activityTable, bankAccountJurisdictionsTable, warehouseBankRoutingTable, warehousesTable, onboardingsTable } from "@workspace/db";
 import { eq, and, ne } from "drizzle-orm";
 import { writeAudit } from "../services/audit";
 import { authorize } from "../middlewares/rbac";
@@ -399,6 +399,142 @@ router.delete("/onboardings/:id/jurisdiction-mappings/:stateCode", authorize(["m
     return res.json({ deleted: true, stateCode: code });
   } catch (err) {
     req.log.error({ err }, "delete jurisdiction mapping failed");
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// Warehouse → bank-account routing (Task #11) — the settlement routing source.
+// Each warehouse resolves to exactly one account; an account can hold many
+// warehouses. Warehouses with no mapping fall back to the primary account.
+// ----------------------------------------------------------------------------
+
+// List all warehouses for an onboarding with their current routing (if any).
+router.get("/onboardings/:id/warehouse-mappings", async (req, res) => {
+  try {
+    const onboardingId = parseInt(String(req.params.id));
+    const warehouses = await db
+      .select()
+      .from(warehousesTable)
+      .where(eq(warehousesTable.onboardingId, onboardingId));
+    const routing = await db
+      .select()
+      .from(warehouseBankRoutingTable)
+      .where(eq(warehouseBankRoutingTable.onboardingId, onboardingId));
+    const accounts = await db
+      .select()
+      .from(bankAccountsTable)
+      .where(eq(bankAccountsTable.onboardingId, onboardingId));
+    const acctById = new Map(accounts.map((a) => [a.id, a]));
+    const routeByWarehouse = new Map(routing.map((r) => [r.warehouseId, r]));
+    const primaryAccount = accounts.find((a) => a.isPrimary && a.status === "ACTIVE")
+      ?? accounts.find((a) => a.status === "ACTIVE")
+      ?? null;
+
+    const mappings = warehouses
+      .map((w) => {
+        const route = routeByWarehouse.get(w.id);
+        const acct = route ? acctById.get(route.bankAccountId) : undefined;
+        const effectiveAcct = acct ?? (primaryAccount ?? undefined);
+        return {
+          warehouseId: w.id,
+          warehouseCode: w.warehouseCode ?? `WH-${String(w.id).padStart(5, "0")}`,
+          warehouseName: w.warehouseName,
+          warehouseState: w.warehouseState,
+          brandId: w.brandId,
+          isMapped: !!acct,
+          bankAccountId: acct?.id ?? null,
+          bankName: effectiveAcct?.bankName ?? null,
+          accountNumber: effectiveAcct ? maskAcct(effectiveAcct.accountNumber) : null,
+          ifsc: effectiveAcct?.ifsc ?? null,
+          // True when this warehouse has no explicit mapping and is using the primary fallback.
+          usingPrimaryFallback: !acct && !!primaryAccount,
+        };
+      })
+      .sort((a, b) => a.warehouseCode.localeCompare(b.warehouseCode));
+    return res.json({ mappings });
+  } catch (err) {
+    req.log.error({ err }, "list warehouse mappings failed");
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Upsert a single warehouse → account mapping. A warehouse resolves to exactly
+// one account, so re-assigning a warehouse replaces its previous account.
+router.post("/onboardings/:id/warehouse-mappings", authorize(["maker", "checker", "admin"]), async (req, res) => {
+  try {
+    const onboardingId = parseInt(String(req.params.id));
+    const { warehouseId, bankAccountId } = req.body as { warehouseId?: number; bankAccountId?: number };
+    if (!warehouseId) return res.status(400).json({ error: "warehouseId is required" });
+    if (!bankAccountId) return res.status(400).json({ error: "bankAccountId is required" });
+
+    const [wh] = await db.select().from(warehousesTable).where(eq(warehousesTable.id, warehouseId));
+    if (!wh) return res.status(404).json({ error: "Warehouse not found" });
+    if (wh.onboardingId !== onboardingId) {
+      return res.status(400).json({ error: "Warehouse belongs to a different onboarding" });
+    }
+
+    const [acct] = await db.select().from(bankAccountsTable).where(eq(bankAccountsTable.id, bankAccountId));
+    if (!acct) return res.status(404).json({ error: "Bank account not found" });
+    if (acct.onboardingId !== onboardingId) {
+      return res.status(400).json({ error: "Bank account belongs to a different onboarding" });
+    }
+    if (acct.status !== "ACTIVE") {
+      return res.status(400).json({ error: "Only an ACTIVE bank account can be a routing destination" });
+    }
+
+    const [existing] = await db
+      .select()
+      .from(warehouseBankRoutingTable)
+      .where(eq(warehouseBankRoutingTable.warehouseId, warehouseId));
+
+    let row;
+    if (existing) {
+      [row] = await db
+        .update(warehouseBankRoutingTable)
+        .set({ bankAccountId, brandId: wh.brandId, updatedAt: new Date() })
+        .where(eq(warehouseBankRoutingTable.id, existing.id))
+        .returning();
+    } else {
+      [row] = await db
+        .insert(warehouseBankRoutingTable)
+        .values({ onboardingId, brandId: wh.brandId, warehouseId, bankAccountId })
+        .returning();
+    }
+
+    await writeAudit(req, { entityType: "WarehouseBankRouting", entityId: row.id, action: existing ? "update" : "create", changedFields: { warehouseId, bankAccountId } });
+    await logActivity(
+      req.user?.name ?? "Maker",
+      `Routed warehouse ${wh.warehouseCode ?? wh.warehouseName} settlements to ${acct.bankName} ${maskAcct(acct.accountNumber)}`,
+      String(wh.brandId),
+      "info",
+    );
+    return res.status(existing ? 200 : 201).json({ id: row.id, warehouseId, bankAccountId, brandId: wh.brandId });
+  } catch (err) {
+    req.log.error({ err }, "upsert warehouse mapping failed");
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Remove a warehouse mapping (warehouse then falls back to the primary account).
+router.delete("/onboardings/:id/warehouse-mappings/:warehouseId", authorize(["maker", "checker", "admin"]), async (req, res) => {
+  try {
+    const onboardingId = parseInt(String(req.params.id));
+    const warehouseId = parseInt(String(req.params.warehouseId));
+    // Scope the delete to the onboarding in the URL so a known warehouseId can
+    // never remove a mapping belonging to a different onboarding.
+    const [row] = await db
+      .delete(warehouseBankRoutingTable)
+      .where(and(
+        eq(warehouseBankRoutingTable.warehouseId, warehouseId),
+        eq(warehouseBankRoutingTable.onboardingId, onboardingId),
+      ))
+      .returning();
+    if (!row) return res.status(404).json({ error: "Mapping not found" });
+    await writeAudit(req, { entityType: "WarehouseBankRouting", entityId: row.id, action: "delete", changedFields: { warehouseId } });
+    return res.json({ deleted: true, warehouseId });
+  } catch (err) {
+    req.log.error({ err }, "delete warehouse mapping failed");
     return res.status(500).json({ error: "Internal server error" });
   }
 });

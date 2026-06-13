@@ -18,7 +18,7 @@ import { Label } from "@/components/ui/label";
 import { useState, useRef } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { useRole } from "@/contexts/RoleContext";
-import { JurisdictionMapping } from "@/components/JurisdictionMapping";
+import { WarehouseMapping } from "@/components/WarehouseMapping";
 import { Separator } from "@/components/ui/separator";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
@@ -1362,7 +1362,7 @@ export function OnboardingDetail() {
               </div>
             )}
             <div className="col-span-2">
-              <JurisdictionMapping
+              <WarehouseMapping
                 onboardingId={Number(id)}
                 accounts={bankAccounts}
                 canEdit={isMaker && onboarding.status !== "SUBMITTED"}

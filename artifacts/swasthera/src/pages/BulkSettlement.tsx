@@ -22,8 +22,8 @@ interface GroupSummary {
   accountMasked: string;
   ifsc: string;
   isPrimaryDestination: boolean;
-  stateCodes: string[];
-  stateNames: string[];
+  warehouseIds: number[];
+  warehouseLabels: string[];
   eligibleBags: number;
   grossGmv: number;
   netPayable: number;
@@ -262,7 +262,7 @@ export function BulkSettlement() {
                                   )}
                                 </div>
                                 <p className="text-xs text-slate-500 mt-0.5">
-                                  {g.stateNames.length > 0 ? g.stateNames.join(", ") : "Unmapped states"} · {g.eligibleBags} bags
+                                  {g.warehouseLabels.length > 0 ? g.warehouseLabels.join(", ") : "Unmapped warehouses"} · {g.eligibleBags} bags
                                   {g.carryForward < 0 && (
                                     <span className="text-amber-600"> · carry-forward {inr(g.carryForward)}</span>
                                   )}

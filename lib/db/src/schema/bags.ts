@@ -23,6 +23,10 @@ export const bagsTable = pgTable("bags", {
   cycle: text("cycle").notNull(),
   stateCode: text("state_code").notNull(),
   stateGstin: text("state_gstin").notNull(),
+  // Warehouse the bag shipped from (Task #11) — authoritative source for
+  // warehouse→bank-account settlement routing. Nullable: legacy/seed bags may
+  // predate this column and fall back to the brand's primary account.
+  warehouseId: integer("warehouse_id"),
   // OMS order attributes — customer / ship-to & payment (source for customer invoice)
   customerName: text("customer_name"),
   customerAddress: text("customer_address"),

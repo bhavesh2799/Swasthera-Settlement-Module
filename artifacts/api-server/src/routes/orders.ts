@@ -108,6 +108,7 @@ router.post("/bags", async (req, res) => {
       eligibility?: string;
       stateCode?: string;
       stateGstin?: string;
+      warehouseId?: number;
     };
 
     if (!body.brandId || !body.brandName || !body.cycle || !body.sku || !body.esp) {
@@ -133,23 +134,40 @@ router.post("/bags", async (req, res) => {
       stateGstin = body.stateGstin ?? ob.warehouseGstin ?? ob.masterGstin ?? "";
       returnWindowDays = ob.returnWindowDays ?? 7;
     }
-    // Prefer warehouse table data (more accurate — CO → BR → WH hierarchy)
-    const [primaryBrand] = await db.select().from(brandsTable)
-      .where(eq(brandsTable.onboardingId, body.brandId))
-      .orderBy(brandsTable.createdAt)
-      .limit(1);
-    if (primaryBrand) {
-      const [primaryWarehouse] = await db.select().from(warehousesTable)
-        .where(and(
-          eq(warehousesTable.brandId, primaryBrand.id),
-          eq(warehousesTable.isPrimary, true),
-          eq(warehousesTable.status, "ACTIVE"),
-          eq(warehousesTable.isActive, true),
-        ))
+    // Prefer warehouse table data (more accurate — CO → BR → WH hierarchy).
+    // Also resolve the warehouse the bag ships from for settlement routing
+    // (Task #11): an explicit body.warehouseId wins, else the primary warehouse.
+    let warehouseId: number | null = body.warehouseId ?? null;
+    if (warehouseId != null) {
+      const [explicitWh] = await db.select().from(warehousesTable)
+        .where(and(eq(warehousesTable.id, warehouseId), eq(warehousesTable.onboardingId, body.brandId)))
         .limit(1);
-      if (primaryWarehouse) {
-        stateCode = body.stateCode ?? primaryWarehouse.stateCode ?? stateCode;
-        stateGstin = body.stateGstin ?? primaryWarehouse.warehouseGstin ?? stateGstin;
+      if (explicitWh) {
+        stateCode = body.stateCode ?? explicitWh.stateCode ?? stateCode;
+        stateGstin = body.stateGstin ?? explicitWh.warehouseGstin ?? stateGstin;
+      } else {
+        warehouseId = null; // ignore a warehouse that doesn't belong to this brand
+      }
+    }
+    if (warehouseId == null) {
+      const [primaryBrand] = await db.select().from(brandsTable)
+        .where(eq(brandsTable.onboardingId, body.brandId))
+        .orderBy(brandsTable.createdAt)
+        .limit(1);
+      if (primaryBrand) {
+        const [primaryWarehouse] = await db.select().from(warehousesTable)
+          .where(and(
+            eq(warehousesTable.brandId, primaryBrand.id),
+            eq(warehousesTable.isPrimary, true),
+            eq(warehousesTable.status, "ACTIVE"),
+            eq(warehousesTable.isActive, true),
+          ))
+          .limit(1);
+        if (primaryWarehouse) {
+          warehouseId = primaryWarehouse.id;
+          stateCode = body.stateCode ?? primaryWarehouse.stateCode ?? stateCode;
+          stateGstin = body.stateGstin ?? primaryWarehouse.warehouseGstin ?? stateGstin;
+        }
       }
     }
 
@@ -179,6 +197,7 @@ router.post("/bags", async (req, res) => {
       cycle: body.cycle,
       stateCode,
       stateGstin,
+      warehouseId,
     }).returning();
 
     return res.status(201).json(mapBag(row));
@@ -254,6 +273,17 @@ router.post("/bags/bulk", async (req, res) => {
       : [];
     const brandMap = new Map(brands.map((b) => [b.id, b]));
 
+    // Primary warehouse per onboarding for settlement routing (Task #11).
+    const primaryWarehouses = brandIds.length > 0
+      ? await db.select().from(warehousesTable).where(and(
+          inArray(warehousesTable.onboardingId, brandIds),
+          eq(warehousesTable.isPrimary, true),
+          eq(warehousesTable.status, "ACTIVE"),
+          eq(warehousesTable.isActive, true),
+        ))
+      : [];
+    const primaryWarehouseByOnboarding = new Map(primaryWarehouses.map((w) => [w.onboardingId, w.id]));
+
     const today = new Date().toISOString().split("T")[0];
     const ts = Date.now();
 
@@ -288,6 +318,7 @@ router.post("/bags/bulk", async (req, res) => {
           return brand?.stateCode ?? brand?.masterGstin?.substring(0, 2) ?? "27";
         })(),
         stateGstin: brand?.warehouseGstin ?? brand?.masterGstin ?? "",
+        warehouseId: primaryWarehouseByOnboarding.get(Number(b.brandId)) ?? null,
       }).returning();
       return row;
     }));

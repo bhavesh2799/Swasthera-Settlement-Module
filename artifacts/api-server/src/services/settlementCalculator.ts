@@ -15,6 +15,13 @@ export interface SettlementBag {
   qty: number;
   tcsAmount: string;
   tdsAmount: string;
+  /**
+   * Commission rate (percent) effective on this bag's order date (Task #11).
+   * When present on any bag, commission is computed per-bag at its dated rate;
+   * the input-level `commissionRate` is used only as a fallback for bags missing
+   * a dated rate. When absent on all bags, the flat input rate applies.
+   */
+  commissionRate?: number;
 }
 
 export interface SettlementInput {
@@ -67,7 +74,28 @@ export function calculateSettlement(input: SettlementInput): SettlementResult {
   const grossGmv = input.bags.reduce((s, b) => s + num(b.esp) * b.qty, 0);
   // Brand-funded promotions ARE deducted; marketplace-funded promotions are NOT.
   const netBeforeCommission = grossGmv - brandPromotions;
-  const commission = (netBeforeCommission * input.commissionRate) / 100;
+
+  // Commission: when any bag carries a dated rate (Task #11) compute per-bag at
+  // its own rate, allocating brand promotions proportionally by GMV; otherwise
+  // use the flat input rate. The waterfall math below is identical either way —
+  // only the commission total (and the reported blended rate) differ.
+  const hasDatedRates = input.bags.some((b) => b.commissionRate != null);
+  let commission: number;
+  let effectiveCommissionRate: number;
+  if (hasDatedRates && grossGmv > 0) {
+    commission = input.bags.reduce((s, b) => {
+      const bagGmv = num(b.esp) * b.qty;
+      const promoShare = brandPromotions * (bagGmv / grossGmv);
+      const bagNet = bagGmv - promoShare;
+      const rate = b.commissionRate ?? input.commissionRate;
+      return s + (bagNet * rate) / 100;
+    }, 0);
+    effectiveCommissionRate =
+      netBeforeCommission !== 0 ? (commission / netBeforeCommission) * 100 : input.commissionRate;
+  } else {
+    commission = (netBeforeCommission * input.commissionRate) / 100;
+    effectiveCommissionRate = input.commissionRate;
+  }
   const gstOnCommission = commission * GST_ON_COMMISSION_RATE;
   const tcsAmount = input.bags.reduce((s, b) => s + num(b.tcsAmount), 0);
   const tdsAmount = input.bags.reduce((s, b) => s + num(b.tdsAmount), 0);
@@ -90,7 +118,7 @@ export function calculateSettlement(input: SettlementInput): SettlementResult {
     marketplacePromotions: round(marketplacePromotions),
     netBeforeCommission: round(netBeforeCommission),
     commission: round(commission),
-    commissionRate: input.commissionRate,
+    commissionRate: round(effectiveCommissionRate),
     gstOnCommission: round(gstOnCommission),
     tcsAmount: round(tcsAmount),
     tdsAmount: round(tdsAmount),

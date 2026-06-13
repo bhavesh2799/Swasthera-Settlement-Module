@@ -4,3 +4,4 @@
 - [Invoice number race condition](invoice-number-race.md) — generateInvoice reads MAX(invoice_number) then inserts; parallel calls get same MAX → duplicate key. Always call sequentially (for loop, not Promise.all).
 - [Compliance tie-out source](compliance-tieout-source.md) — header tie-out cards + close banner must read /compliance/reconciliation totals (incl. tcsFiled/tdsFiled), never mix with tcs-tds summary, or they disagree. (Reconciliation tab removed; query now feeds header only.)
 - [KYB gate paths](kyb-gate-paths.md) — onboarding kybStatus only reaches PASSED via kyb-check; create starts NOT_STARTED, submit requires kybStatus=PASSED AND kybVerifiedAt; no create-time auto-pass.
+- [Dated commission & doc snapshots](dated-commission-routing.md) — settle each bag at its order-date rate via commissionResolver; SoC/PDF must read the settlement's stored blended rate, never live commission_master, or docs drift retroactively.

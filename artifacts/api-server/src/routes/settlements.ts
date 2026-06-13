@@ -6,7 +6,7 @@ import { authorize } from "../middlewares/rbac";
 import { writeAudit } from "../services/audit";
 import { calculateSettlement } from "../services/settlementCalculator";
 import { resolveRoutedSettlement, type DestinationGroup } from "../services/jurisdictionRouting";
-import { stateName } from "../services/stateCodes";
+import { buildCommissionResolver } from "../services/commissionResolver";
 import { notify } from "../services/notify";
 import { generateInvoicePdf, formatINR, groupINR, type InvoiceDocument, type PdfRow } from "../services/pdfService";
 
@@ -113,8 +113,17 @@ router.post("/settlements", async (req, res) => {
       ));
     const creditNoteDeductions = adjustments.reduce((sum, a) => sum + parseFloat(a.amount), 0);
 
+    // Dated commission (Task #11): each bag is charged at the rate effective on
+    // its own order date, read from the versioned commission_master history.
+    const resolver = await buildCommissionResolver(ob.id, parseFloat(ob.commissionRate));
     const calc = calculateSettlement({
-      bags: eligibleBags.map((b) => ({ esp: b.esp, qty: b.qty, tcsAmount: b.tcsAmount, tdsAmount: b.tdsAmount })),
+      bags: eligibleBags.map((b) => ({
+        esp: b.esp,
+        qty: b.qty,
+        tcsAmount: b.tcsAmount,
+        tdsAmount: b.tdsAmount,
+        commissionRate: resolver.rateForDate(b.invoiceDate || (b.createdAt ? b.createdAt.toISOString().slice(0, 10) : "")),
+      })),
       commissionRate: parseFloat(ob.commissionRate),
       priorCarryForward,
       creditNoteDeductions,
@@ -135,7 +144,7 @@ router.post("/settlements", async (req, res) => {
       marketplacePromotions: calc.marketplacePromotions.toFixed(2),
       netBeforeCommission: calc.netBeforeCommission.toFixed(2),
       commission: calc.commission.toFixed(2),
-      commissionRate: ob.commissionRate,
+      commissionRate: calc.commissionRate.toFixed(2),
       gstOnCommission: calc.gstOnCommission.toFixed(2),
       tcsAmount: calc.tcsAmount.toFixed(2),
       tdsAmount: calc.tdsAmount.toFixed(2),
@@ -180,8 +189,8 @@ function groupSummary(g: DestinationGroup) {
     accountMasked: `••••${last4}`,
     ifsc: g.bankIfsc,
     isPrimaryDestination: g.isPrimaryDestination,
-    stateCodes: g.stateCodes,
-    stateNames: g.stateCodes.map((c) => stateName(c)),
+    warehouseIds: g.warehouseIds,
+    warehouseLabels: g.warehouseLabels,
     eligibleBags: g.bags.length,
     grossGmv: g.calc.grossGmv,
     netPayable: g.calc.netPayable,
@@ -261,7 +270,7 @@ router.post("/settlements/bulk/confirm", async (req, res) => {
           marketplacePromotions: g.calc.marketplacePromotions.toFixed(2),
           netBeforeCommission: g.calc.netBeforeCommission.toFixed(2),
           commission: g.calc.commission.toFixed(2),
-          commissionRate: ob.commissionRate,
+          commissionRate: g.calc.commissionRate.toFixed(2),
           gstOnCommission: g.calc.gstOnCommission.toFixed(2),
           tcsAmount: g.calc.tcsAmount.toFixed(2),
           tdsAmount: g.calc.tdsAmount.toFixed(2),
@@ -274,10 +283,10 @@ router.post("/settlements/bulk/confirm", async (req, res) => {
         }).returning();
 
         const dest = g.bankName ? `${g.bankName} ••••${g.bankAccount.slice(-4)}` : "primary account";
-        const states = g.stateCodes.length > 0 ? ` [${g.stateCodes.map((c) => stateName(c)).join(", ")}]` : "";
+        const warehouses = g.warehouseLabels.length > 0 ? ` [${g.warehouseLabels.join(", ")}]` : "";
         await db.insert(activityTable).values({
           user: req.user?.name ?? "Anjali Patel",
-          action: `Bulk settlement: ${ob.brandName} — ${cycle} → ${dest}${states} (${g.bags.length} bags, net ₹${g.calc.netPayable.toFixed(0)})`,
+          action: `Bulk settlement: ${ob.brandName} — ${cycle} → ${dest}${warehouses} (${g.bags.length} bags, net ₹${g.calc.netPayable.toFixed(0)})`,
           entityType: "settlement",
           entityRef: String(row.id),
           level: g.calc.carryForward < 0 ? "warning" : "info",
@@ -550,6 +559,9 @@ router.get("/settlements/:id/soc", async (req, res) => {
 
     const [payout] = await db.select().from(payoutsTable).where(eq(payoutsTable.settlementId, settlement.id));
 
+    // Use the blended rate persisted on the settlement at compute time (Task #11).
+    // Documents read this immutable snapshot, never live commission_master, so a
+    // later rate version can never retroactively alter a historical SoC.
     const commRate = parseFloat(settlement.commissionRate);
     const utr = payout?.utr ?? "";
     const settlementDate = payout?.settledAt?.toISOString().split("T")[0] ?? "";
@@ -645,6 +657,9 @@ router.get("/settlements/:id/invoice-pdf", async (req, res) => {
       invoiceNumber = await assignSettlementInvoiceNumber(settlementId, brandCode);
     }
 
+    // Blended effective rate persisted on the settlement at compute time (Task #11).
+    // The document derives from this immutable snapshot, never live
+    // commission_master, so later rate versions can't change a historical invoice.
     const commRate = parseFloat(settlement.commissionRate);
 
     // Settlement period from the bag invoice-date range; falls back to the cycle.

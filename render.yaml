@@ -1,0 +1,37 @@
+databases:
+  - name: swasthera-db
+    databaseName: swasthera
+    user: swasthera_user
+    plan: free          # upgrade to starter/standard for production
+
+services:
+  - type: web
+    name: swasthera
+    runtime: node
+    plan: free          # upgrade to starter/standard for production
+
+    # Render auto-detects pnpm from pnpm-lock.yaml.
+    # 1. Install deps
+    # 2. Build all workspace packages (typecheck + vite + esbuild)
+    # 3. Push DB schema (drizzle-kit push — idempotent, safe to run on every deploy)
+    buildCommand: >-
+      pnpm install --frozen-lockfile &&
+      pnpm run build &&
+      pnpm --filter @workspace/db push
+
+    # Start the bundled Express server; Render injects PORT automatically
+    startCommand: node artifacts/api-server/dist/index.mjs
+
+    envVars:
+      - key: NODE_ENV
+        value: production
+
+      # BASE_PATH must be "/" for a root-mounted single-service deployment
+      - key: BASE_PATH
+        value: /
+
+      # Render auto-populates DATABASE_URL from the linked database above
+      - key: DATABASE_URL
+        fromDatabase:
+          name: swasthera-db
+          property: connectionString
